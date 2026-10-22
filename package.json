@@ -1,0 +1,22 @@
+{
+  "name": "fitspace-netlify-public",
+  "version": "4.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "build": "node scripts/check-build.mjs",
+    "test": "node --test app/tests/*.test.cjs tests/*.test.mjs",
+    "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
+    "test:bundle": "node scripts/test-bundle.mjs"
+  },
+  "dependencies": {
+    "pg": "8.16.3"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.11",
+    "@electric-sql/pglite-socket": "^0.2.14",
+    "@netlify/zip-it-and-ship-it": "^16.5.0"
+  }
+}

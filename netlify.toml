@@ -1,0 +1,20 @@
+[build]
+  command = "npm run build"
+  publish = "site"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "24"
+
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["pg"]
+  included_files = ["app/*.cjs", "app/public/**", "lib/*.mjs"]
+
+# Every route is handled by the application function. App assets and
+# databases are never copied to the public publish directory.
+[[redirects]]
+  from = "/*"
+  to = "/.netlify/functions/platform"
+  status = 200
+  force = true
