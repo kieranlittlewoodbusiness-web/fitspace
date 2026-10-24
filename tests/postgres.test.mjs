@@ -84,3 +84,18 @@ test('old demo databases and missing owner setup fail safely; storage failures d
  process.env.DATA_NAMESPACE='legacy-demo';const response=await client().request('/api/me');assert.equal(response.status,503);assert.match(response.data.error,/demo accounts/);process.env.DATA_NAMESPACE=old;
  const before=await pool.query('SELECT snapshot FROM fitspace_preview_state WHERE namespace=$1',[old]);await assert.rejects(withSnapshot(pool,old,async()=>{throw new Error('fixture failure');}));const after=await pool.query('SELECT snapshot FROM fitspace_preview_state WHERE namespace=$1',[old]);assert.deepEqual(after.rows[0].snapshot,before.rows[0].snapshot);
 });
+
+
+test('custom nine-week block with seven participants cannot oversell; lowering below occupied places is rejected',async()=>{
+ const details=classData({title:'Nine weeks, seven participants',capacity:7,sessions:Array.from({length:9},(_,i)=>({starts_at:future(10+i*7),duration_minutes:60}))});
+ const created=await pt.request('/api/blocks','POST',details);assert.equal(created.status,201);const id=created.data.block.id;assert.equal(created.data.block.sessions.length,9);assert.equal(created.data.block.capacity,7);
+ const people=Array.from({length:10},()=>client());for(let i=0;i<people.length;i++)await people[i].signup('capacity-'+i+'@example.com');
+ const results=await Promise.all(people.map(c=>c.request('/api/bookings','POST',{block_id:id,checkout_token:crypto.randomUUID()})));assert.equal(results.filter(r=>r.status===201).length,7);assert.equal(results.filter(r=>r.status===409).length,3);
+ const get=async()=>(await client().request('/api/public/pts/six-week-club')).data.blocks.find(b=>b.id===id);
+ assert.equal((await get()).available,0);assert.equal((await pt.request('/api/blocks/'+id,'PUT',{...details,capacity:6})).status,409);
+ const winner=results.findIndex(r=>r.status===201);const paidId=results[winner].data.booking.id;assert.equal((await people[winner].request('/api/bookings/'+paidId+'/pay','POST',{result:'success'})).status,200);
+ assert.equal((await pt.request('/api/blocks/'+id,'PUT',{...details,capacity:8})).status,200);assert.equal((await get()).available,1);
+ const loser=results.findIndex(r=>r.status===409);assert.equal((await people[loser].request('/api/bookings','POST',{block_id:id,checkout_token:crypto.randomUUID()})).status,201);assert.equal((await get()).available,0);
+ await withSnapshot(pool,process.env.DATA_NAMESPACE,async filename=>{const d=connect(filename);d.prepare("UPDATE bookings SET expires_at=? WHERE block_id=? AND status='pending'").run(Date.now()-1,id);d.exec('PRAGMA wal_checkpoint(TRUNCATE)');d.close();return new Response('fixture');});assert.equal((await get()).available,7);assert.equal((await get()).paid_count,1);
+ for(const capacity of [0,101,2.5])assert.equal((await pt.request('/api/blocks','POST',{...details,capacity})).status,400);
+});

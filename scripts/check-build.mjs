@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url);
 require('node:sqlite');
 require('pg');
 const files = ['netlify/functions/platform.mjs', 'app/server.cjs', 'app/db.cjs',
-  'app/auth.cjs', 'app/payments.cjs', 'app/emails.cjs', 'app/public/app.js',
+  'app/password-reset.cjs', 'app/stripe-mode.cjs', 'app/auth.cjs', 'app/payments.cjs', 'app/emails.cjs', 'app/public/app.js',
   'lib/bridge.mjs', 'lib/storage.mjs'];
 for (const file of files) {
   await access(file);
