@@ -23,7 +23,7 @@ CREATE INDEX IF NOT EXISTS users_pt ON users(pt_id);
 `);
 // Additive v5 migration preserves existing public-v4 accounts and bookings.
 const columns=new Set(db.prepare('PRAGMA table_info(bookings)').all().map(c=>c.name));
-for(const [name,type] of Object.entries({stripe_account_id:'TEXT',payment_intent:'TEXT',payment_error:'TEXT',refund_status:"TEXT NOT NULL DEFAULT 'none'",refunded_pence:'INTEGER NOT NULL DEFAULT 0',charge_refunded_pence:'INTEGER NOT NULL DEFAULT 0',refund_error:'TEXT',stripe_routing:"TEXT NOT NULL DEFAULT 'connected'"}))if(!columns.has(name))db.exec(`ALTER TABLE bookings ADD COLUMN ${name} ${type}`);
+for(const [name,type] of Object.entries({stripe_credential_id:'TEXT',stripe_account_id:'TEXT',payment_intent:'TEXT',payment_error:'TEXT',refund_status:"TEXT NOT NULL DEFAULT 'none'",refunded_pence:'INTEGER NOT NULL DEFAULT 0',charge_refunded_pence:'INTEGER NOT NULL DEFAULT 0',refund_error:'TEXT',stripe_routing:"TEXT NOT NULL DEFAULT 'connected'"}))if(!columns.has(name))db.exec(`ALTER TABLE bookings ADD COLUMN ${name} ${type}`);
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS booking_payment_intent ON bookings(payment_intent) WHERE payment_intent IS NOT NULL;
 CREATE TABLE IF NOT EXISTS stripe_jobs(id TEXT PRIMARY KEY,kind TEXT NOT NULL,target_id TEXT NOT NULL,actor_id TEXT NOT NULL,payload TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',result TEXT,last_error TEXT,created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS stripe_refunds(id TEXT PRIMARY KEY,booking_id TEXT NOT NULL REFERENCES bookings(id),amount_pence INTEGER NOT NULL,status TEXT NOT NULL,event_time INTEGER NOT NULL DEFAULT 0);
@@ -42,6 +42,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS password_resets(id TEXT PRIMARY KEY,user_id 
 CREATE TABLE IF NOT EXISTS password_reset_limits(id TEXT PRIMARY KEY,email_hash TEXT NOT NULL,created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS reset_limits_email ON password_reset_limits(email_hash,created_at);
 CREATE TABLE IF NOT EXISTS auth_mail_jobs(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),reset_id TEXT,kind TEXT NOT NULL CHECK(kind IN ('link','changed')),recipient TEXT NOT NULL,sender TEXT NOT NULL,origin TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',last_error TEXT,created_at INTEGER NOT NULL);`);
+db.exec(`CREATE TABLE IF NOT EXISTS pt_stripe_credentials(id TEXT PRIMARY KEY,pt_id TEXT NOT NULL REFERENCES pts(id),mode TEXT NOT NULL CHECK(mode IN ('stripe_test','stripe_live')),account_id TEXT NOT NULL,api_cipher TEXT,webhook_cipher TEXT,enabled INTEGER NOT NULL DEFAULT 0,charges_ready INTEGER NOT NULL DEFAULT 0,payouts_ready INTEGER NOT NULL DEFAULT 0,verified_at INTEGER,webhook_seen_at INTEGER,created_at INTEGER NOT NULL,UNIQUE(pt_id,mode),UNIQUE(mode,account_id));`);
 return db;}
 function tx(db,fn){db.exec('BEGIN IMMEDIATE');try{const result=fn();db.exec('COMMIT');return result;}catch(e){db.exec('ROLLBACK');throw e;}}
 function localNow(){const parts=new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/London',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date());return parts.replace(' ','T');}

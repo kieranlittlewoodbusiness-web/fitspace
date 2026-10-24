@@ -1,7 +1,5 @@
-# FITSPACE Netlify v7
+# FITSPACE Netlify v8
 
-Start with **START_HERE.md**, then **STRIPE_SETUP.md**. Each PT connects their own Stripe account securely, sets class/block prices, receives direct payments and sees bookings/refunds. Separate sandbox/live connections and verified paid webhooks protect booking confirmation. No credentials or live activation are included.
+Start with **START_HERE.md** and **STRIPE_SETUP.md**. No owner Stripe account is needed. Each PT securely configures their own restricted Stripe key and webhook; credentials are encrypted, sandbox/live are separate and payments use the server-owned class price. Signed, account-owned events confirm bookings; refunds, expiry, failures and participant limits remain integrated.
 
-Build and deploy the complete repository on Netlify using Node 24. See QA_V7.md for verification and limits.
-
-Customer and PT password recovery: **PASSWORD_RESET_SETUP.md**. Configure reset email delivery before relying on it. Class forms independently set weeks/session dates and maximum participants; occupied places cannot exceed the saved limit.
+Use **PASSWORD_RESET_SETUP.md** for customer/PT recovery. Deploy all source files through Netlify Git/CLI using Node 24. New server setting: CREDENTIAL_ENCRYPTION_KEY, 64 random hexadecimal characters; keep it stable and private. No credentials, deployment, live activation or provider transactions are included. See **QA_V8.md** for tests and limitations.

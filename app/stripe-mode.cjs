@@ -1,15 +1,18 @@
 'use strict';
+const PT=require('./pt-stripe.cjs');
 const fail=message=>Object.assign(new Error(message),{status:503});
 function mode(){return process.env.PAYMENT_MODE||'stripe_test';}
 function isStripe(value){return ['stripe_test','stripe_live'].includes(value);}
 function live(value=mode()){return value==='stripe_live';}
 function validate(value=mode()){
  if(!['demo','stripe_test','stripe_live'].includes(value))throw fail('Use PAYMENT_MODE=demo, stripe_test or stripe_live.');
+ if(PT.direct()){if(isStripe(value))PT.master();return;}
  const key=process.env.STRIPE_SECRET_KEY||'';
  if(value==='demo'){if(/^(sk|rk)_live_/.test(key))throw fail('A live key cannot be used in demo mode.');return;}
  if(!new RegExp('^(sk|rk)_'+(live(value)?'live':'test')+'_').test(key))throw fail('The Stripe secret key does not match the selected payment mode.');
 }
 function connection(db,ptId,value=mode()){
+ if(PT.direct()){const c=PT.get(db,ptId,value);return c?.api_cipher?{account_id:c.account_id,routing:'platform',credential_id:c.id,ready:c.enabled&&c.charges_ready&&Boolean(c.webhook_cipher)}:null;}
  const saved=db.prepare('SELECT account_id,routing,ready FROM stripe_connections WHERE pt_id=? AND mode=?').get(ptId,value);
  if(saved)return saved;
  if(value==='stripe_test'){const old=db.prepare('SELECT stripe_account,stripe_ready FROM pts WHERE id=?').get(ptId);if(old?.stripe_account)return {account_id:old.stripe_account,routing:'connected',ready:old.stripe_ready};}

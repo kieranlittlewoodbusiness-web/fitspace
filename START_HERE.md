@@ -1,6 +1,6 @@
-# FITSPACE — Netlify v7
+# FITSPACE — Netlify v8
 
-Public, responsive customer pages; protected customer, PT and admin accounts. Black/white/yellow default branding, custom trainer pages, flexible class blocks, limited places, upfront payment and attendance. Stripe Connect lets each PT provide their details securely at Stripe and receive their own payments at the class price they set.
+Public, responsive customer pages; protected customer, PT and admin accounts. Black/white/yellow default branding, custom trainer pages, flexible class blocks, limited places, upfront payment and attendance. Each PT configures their own Stripe restricted key and signed webhook; the owner does not need a Stripe account. Payments use the class price set by that PT.
 
 ## Deploy the complete source
 
@@ -16,13 +16,16 @@ Public, responsive customer pages; protected customer, PT and admin accounts. Bl
 | ADMIN_NAME | Optional owner display name |
 | DATA_NAMESPACE | Keep existing public namespace, default `fitspace-public-v4` |
 | AWS_LAMBDA_JS_RUNTIME | `nodejs24.x` |
+| STRIPE_INTEGRATION | `pt_direct` |
+| APP_URL | Your canonical HTTPS website origin |
+| CREDENTIAL_ENCRYPTION_KEY | 64 random hexadecimal characters; keep stable and private |
 | PAYMENT_MODE | `demo` initially, then `stripe_test` for sandbox |
 
 4. Deploy/redeploy and visit the Netlify URL. There is no site-wide password. Sign in using your owner credentials. In **PT accounts**, create each trainer’s account, branding and named page. Save the temporary PT password and share it privately yourself; no invitation is sent.
 5. PT signs in, changes their temporary password and creates classes with dates, capacity and a total upfront price. The first published PT becomes the homepage; each has `/pt/<slug>`. Customers sign up to book. Customer signup cannot grant staff access.
-6. Follow **STRIPE_SETUP.md** to configure Connect, webhooks and sandbox checkout. Each PT opens **Payments** to connect their account and check readiness. Admin’s **Stripe setup** page checks server configuration. Do not send secret keys in chat.
+6. Follow **STRIPE_SETUP.md** to configure independent PT keys, webhooks and sandbox checkout. Each PT opens **Payments** to save their restricted key, configure their webhook and enable payments. Admin’s **Stripe setup** page checks server configuration. Do not send secret keys in chat.
 
-No Stripe details or credentials are bundled. No deployment or provider transaction has been performed for you. Demo payments need no card; Stripe sandbox uses hosted Checkout. Live capability is available through explicit stripe_live configuration, matching live keys, webhooks and separate PT live onboarding. Use sandbox for tests and live only for genuine purchases. Email confirmations and no-show messages remain previews.
+No Stripe details or credentials are bundled. No deployment or provider transaction has been performed for you. Demo payments need no card; Stripe sandbox uses hosted Checkout. Live capability is available through explicit stripe_live configuration, matching live keys, webhooks and separate PT live credentials and enablement. Use sandbox for tests and live only for genuine purchases. Email confirmations and no-show messages remain previews.
 
 ## Password resets and participant limits
 
@@ -32,7 +35,7 @@ In Classes & blocks, set **Number of weeks / sessions** (1–52 dates) and **Max
 
 ## Upgrade and data
 
-Keep DATABASE_URL and DATA_NAMESPACE unchanged when upgrading public v4/v5. v7 preserves users, class dates, bookings, attendance and refunds, adds separate live/test connections and migrates the booking mode constraint. Back up your database first. Existing test accounts remain test-only. Changing bootstrap ADMIN_PASSWORD does not reset an existing account; change it in My account.
+Keep DATABASE_URL and DATA_NAMESPACE unchanged when upgrading public v4/v5. v8 preserves users, class dates, bookings, attendance and refunds, adds independent encrypted PT credentials and retains existing live/test data. Back up your database first. Existing test accounts remain test-only. Changing bootstrap ADMIN_PASSWORD does not reset an existing account; change it in My account.
 
 Upgrading from the old password-protected demo requires a fresh public namespace such as fitspace-public-v4, your own owner variables and recreating trainers/classes. The public app refuses stores containing shared demo accounts. Remove PREVIEW_PASSWORD; it is unused. Never expose the old demo namespace.
 
@@ -49,6 +52,8 @@ npm test
 npm run test:bundle
 ```
 
-The tests exercise the actual bundled Netlify Function and a local PostgreSQL-compatible engine, with mocked Stripe responses and signed webhook fixtures. See QA_V6.md. They do not replace the deployed Stripe sandbox checklist. No remote Netlify/database/Stripe account has been configured here.
+The tests exercise the actual bundled Netlify Function and a local PostgreSQL-compatible engine, with mocked Stripe responses and signed webhook fixtures. See QA_V8.md. They do not replace the deployed Stripe sandbox checklist. No remote Netlify/database/Stripe account has been configured here.
 
 Troubleshooting: missing package.json means the repository/base folder is wrong; database errors usually mean DATABASE_URL, reachability, TLS or permissions; missing trainers means Admin has not created/published a PT; failed payments require matching mode/key, a ready PT and a correctly signed webhook destination. Check provider delivery logs. No-show emails are previews by design.
+
+For the v8 Stripe change, read STRIPE_SETUP.md before upgrading: old Connect payment records retain their original account/routing and must be reconciled through that original setup or Stripe. No owner Stripe account is needed for new pt_direct payments. Back up the credential encryption key as well as the database.

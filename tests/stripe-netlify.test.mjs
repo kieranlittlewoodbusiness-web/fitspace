@@ -14,6 +14,7 @@ const realFetch=globalThis.fetch;
 function reply(body,status=200){return new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json'}});}
 function count(path){return calls.filter(c=>c.path===path&&c.created).length;}
 before(async()=>{
+ process.env.STRIPE_INTEGRATION='connect';
  process.env.ADMIN_EMAIL='owner@example.com';process.env.ADMIN_PASSWORD='AdminSandboxFixture123!';process.env.DATA_NAMESPACE='stripe-sandbox-test';process.env.PAYMENT_MODE='stripe_test';process.env.STRIPE_SECRET_KEY='sk_test_fixture_only';process.env.STRIPE_WEBHOOK_SECRET=secret;process.env.APP_URL=origin;
  db=await PGlite.create();server=new PGLiteSocketServer({db,port:0,maxConnections:1});await server.start();pool=databasePool('postgresql://postgres:postgres@'+server.getServerConn()+'/postgres?sslmode=disable');await ensureSchema(pool);
  const getStorage=()=>({pool:{query:pool.query.bind(pool),connect:async()=>{const c=await pool.connect();return {query:async(sql,args)=>{if(injectCommitFailure&&String(sql).startsWith('UPDATE fitspace_preview_state SET snapshot')){injectCommitFailure=false;throw new Error('Fixture commit failure after Stripe response');}return c.query(sql,args);},release:()=>c.release()};}},ready:Promise.resolve()});

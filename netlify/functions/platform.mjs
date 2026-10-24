@@ -42,16 +42,18 @@ export function createHandler({ getStorage = storage } = {}) {
       }
       const paymentMode=process.env.PAYMENT_MODE||'demo';
       if(!['demo','stripe_test','stripe_live'].includes(paymentMode))return failure('Use PAYMENT_MODE=demo, stripe_test or stripe_live.',503,true);
-      if(process.env.STRIPE_SECRET_KEY&&!url.pathname.startsWith('/api/auth/'))require(`${runtimeRoot}/app/stripe-mode.cjs`).validate(paymentMode);
-      const diagnostic=/^\/api\/(me|auth\/.*|dashboard|admin\/.*|public\/.*)$/.test(url.pathname);
+      const direct=require(`${runtimeRoot}/app/pt-stripe.cjs`).direct();
+      const ptWebhook=/^\/api\/stripe\/pt\/[a-f0-9-]{36}\/webhook$/.test(url.pathname);
+      if(!direct&&process.env.STRIPE_SECRET_KEY&&!url.pathname.startsWith('/api/auth/'))require(`${runtimeRoot}/app/stripe-mode.cjs`).validate(paymentMode);
+      const diagnostic=ptWebhook||url.pathname.startsWith('/api/pt/stripe/')||/^\/api\/(me|auth\/.*|dashboard|admin\/.*|public\/.*)$/.test(url.pathname);
       if(!diagnostic){
         require(`${runtimeRoot}/app/stripe-mode.cjs`).validate(paymentMode);
-        if(paymentMode!=='demo'&&(!process.env.STRIPE_WEBHOOK_SECRET||!/^https:\/\/[^/]+(?:\/)?$/.test(process.env.APP_URL||'')))return failure('Set STRIPE_WEBHOOK_SECRET and an HTTPS APP_URL before accepting Stripe payments.',503,true);
+        if(paymentMode!=='demo'&&((!direct&&!process.env.STRIPE_WEBHOOK_SECRET)||!/^https:\/\/[^/]+(?:\/)?$/.test(process.env.APP_URL||'')))return failure('Set STRIPE_WEBHOOK_SECRET and an HTTPS APP_URL before accepting Stripe payments.',503,true);
       }
-      const body = await boundedBody(request,url.pathname==='/api/stripe/webhook'?1048576:65536);
+      const body = await boundedBody(request,(url.pathname==='/api/stripe/webhook'||ptWebhook)?1048576:65536);
       const { pool, ready } = getStorage();
       await ready;
-      if (request.method === 'POST' && ['/api/auth/login', '/api/auth/signup', '/api/auth/forgot-password', '/api/auth/reset-password'].includes(url.pathname)) {
+      if (request.method === 'POST' && (['/api/auth/login', '/api/auth/signup', '/api/auth/forgot-password', '/api/auth/reset-password'].includes(url.pathname)||/^\/api\/pt\/stripe\/(credentials|check)$/.test(url.pathname))) {
         await checkLimit(pool, namespace + ':' + url.pathname + ':' + crypto.createHash('sha256').update(context.ip || 'unknown').digest('hex'), 15);
       }
       const response=await withSnapshot(pool, namespace, async dbPath => {
