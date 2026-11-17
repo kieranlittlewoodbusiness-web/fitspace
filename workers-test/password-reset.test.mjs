@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { env, exports } from 'cloudflare:workers';
 import crypto from 'node:crypto';
 import { write } from '../src/writer.mjs';
-import { requestReset, resetPassword, resetToken } from '../src/ops/password-reset.mjs';
+import { requestReset, resetPassword, resetToken, configured, resetSigningSecret, PREVIEW_RESET_SALT, PREVIEW_RESET_INFO } from '../src/ops/password-reset.mjs';
 import { db, seedUser, jsonRequest, tally } from './helpers.mjs';
+import { digest } from '../src/util.mjs';
 
 async function userWithEmail() {
   const u = await seedUser({ role: 'customer' });
@@ -73,5 +74,63 @@ describe('password reset (Writer)', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('set-cookie')).toMatch(/fit_session=;.*Max-Age=0/);
     expect((await exports.default.fetch(new Request('http://example.test/api/bookings/x', { headers: { cookie: 'fit_session=' + u.token } }))).status).toBe(401);
+  });
+});
+
+
+function previewResetEnv(extra = {}) {
+  return {
+    PREVIEW_GATE: 'on',
+    PT_INVITE_SECRET: 'p'.repeat(32),
+    AUTH_RESET_SECRET: '',
+    RESET_EMAIL_MODE: 'preview',
+    APP_URL: 'https://preview.example.com',
+    ...extra
+  };
+}
+
+async function issueOutOfBand(env, userId, { hours = 24, now = Date.now() } = {}) {
+  const d = db();
+  const user = await d.get('SELECT id,password_hash FROM users WHERE id=?', userId);
+  const resetId = crypto.randomUUID();
+  const token = resetToken(env, resetId);
+  await d.run(
+    'INSERT INTO password_resets(id,user_id,token_hash,password_hash,expires_at,created_at) VALUES(?,?,?,?,?,?)',
+    resetId, user.id, digest(token), user.password_hash, now + hours * 3600000, now
+  );
+  return { resetId, token };
+}
+
+describe('preview out-of-band set-password link', () => {
+  it('the derived signing key differs from the raw PT_INVITE_SECRET and from AUTH_RESET_SECRET; a raw-secret signature is rejected', async () => {
+    const e = previewResetEnv();
+    const derived = resetSigningSecret(e);
+    expect(Buffer.from(derived).byteLength).toBe(32);
+    expect(Buffer.from(derived).equals(Buffer.from(e.PT_INVITE_SECRET))).toBe(false);
+    const viaHkdf = crypto.hkdfSync('sha256', e.PT_INVITE_SECRET, PREVIEW_RESET_SALT, PREVIEW_RESET_INFO, 32);
+    expect(Buffer.from(derived).equals(Buffer.from(viaHkdf))).toBe(true);
+    const u = await seedUser({ role: 'pt' });
+    const { token, resetId } = await issueOutOfBand(e, u.id);
+    const rawSigned = resetToken({ AUTH_RESET_SECRET: e.PT_INVITE_SECRET }, resetId);
+    expect(rawSigned).not.toBe(token);
+    await expect(resetPassword(db(), { token: rawSigned, newPassword: 'A long enough password' }, e)).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('a preview PT can consume a 24h one-time link without email being configured, and the link cannot be reused', async () => {
+    const e = previewResetEnv();
+    expect(configured(e)).toBe(false);
+    const u = await seedUser({ role: 'pt' });
+    const { token, resetId } = await issueOutOfBand(e, u.id);
+    expect(token).toMatch(/^[-a-f0-9]{36}\.[A-Za-z0-9_-]{43}$/);
+    const mailId = await resetPassword(db(), { token, newPassword: 'Preview trainer password' }, e);
+    expect(mailId).toBeNull();
+    expect((await db().get('SELECT must_change_password FROM users WHERE id=?', u.id)).must_change_password).toBe(0);
+    expect((await db().get("SELECT count(*) n FROM auth_mail_jobs WHERE user_id=?", u.id)).n).toBe(0);
+    expect((await db().get('SELECT used_at FROM password_resets WHERE id=?', resetId)).used_at).toBeGreaterThan(0);
+    await expect(resetPassword(db(), { token, newPassword: 'Another long password' }, e)).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('resetPassword fails closed (503) when neither AUTH_RESET_SECRET nor the preview derived key is available', async () => {
+    await expect(resetPassword(db(), { token: crypto.randomUUID() + '.' + 'A'.repeat(43), newPassword: 'Whatever long password' }, { PREVIEW_GATE: 'off', PT_INVITE_SECRET: 'p'.repeat(32), AUTH_RESET_SECRET: '' })).rejects.toMatchObject({ status: 503 });
   });
 });
