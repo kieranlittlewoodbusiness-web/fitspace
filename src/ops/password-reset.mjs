@@ -45,7 +45,7 @@ export async function requestReset(db, { email, now = Date.now() }, env) {
 
 /** Consumes a reset link once. Returns the 'changed' auth_mail_jobs id. */
 export async function resetPassword(db, { token, newPassword, now = Date.now() }, env) {
-  if (!configured(env)) throw httpError(503, 'Password reset email is not configured. Contact your trainer or platform owner.');
+  if (!configured(env)) throw httpError(503, 'Password reset email is not configured. Contact your coach or the platform owner for help.');
   if (typeof token !== 'string' || !/^[-a-f0-9]{36}\.[A-Za-z0-9_-]{43}$/.test(token)) throw httpError(400, INVALID);
   const pass = validPassword(newPassword);
   const row = await db.get('SELECT r.*,u.email,u.role,u.active,u.demo,u.password_hash current_hash FROM password_resets r JOIN users u ON u.id=r.user_id WHERE r.token_hash=?', digest(token));

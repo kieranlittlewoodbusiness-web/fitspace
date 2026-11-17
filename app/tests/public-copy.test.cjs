@@ -28,14 +28,29 @@ const present=[
   'Your coach\u2019s classes, schedule and training space are shown below.',
   'Visit the site ↗',
   'Classes are coming soon.',
-  'Sign in to your account.',
+  'Sign in to book and see your classes.',
   'YOUR ACCOUNT',
   'Contact your coach or the platform owner for help.',
   'Contact your coach to arrange a refund.',
   'your coach can retry it safely using its existing payment-operation key.',
   'Your coach',
   'Find your coach',
-  'Bring water, trainers and comfortable workout clothes'
+  'Bring water, trainers and comfortable workout clothes',
+  'Book a class',
+  'Show up. Keep going.',
+  'Show up for yourself. Book a class and take the next step.',
+  'How it works',
+  'Create an account.',
+  'Choose a class.',
+  'Pay upfront, then come to the session.',
+  'Booking is not open yet. Please check back soon.',
+  'See classes and book',
+  'One account. Book a class, then show up.',
+  'CLASSES YOU CAN BOOK',
+  'YOUR TRAINING SPACE',
+  'Ready to book your next class?',
+  'Class full',
+  "placeholder=\"${customer?'Search class or reference':'Search customer, class or reference'}\"",
 ];
 
 const absent=[
@@ -50,7 +65,12 @@ const absent=[
   'the trainer can retry it safely using its existing payment-operation key.',
   'This trainer page is not available.',
   'Find a trainer',
-  'Discover another trainer'
+  'Discover another trainer',
+  'Your training, connected',
+  'Sign in to your account.',
+  'Choose your class or block',
+  'Block full',
+  'Trainer / class'
 ];
 
 test('public app.js keeps the approved single-coach and Resilience Coaching copy',()=>{
@@ -58,23 +78,39 @@ test('public app.js keeps the approved single-coach and Resilience Coaching copy
   for(const s of absent)assert.equal(appJs.includes(s),false,'should not contain '+JSON.stringify(s));
   assert.match(appJs,/\beyebrow='Resilience Coaching'/);
   assert.match(appJs,/pt\?\.brand_name\|\|'Resilience Coaching'/);
-  assert.ok(appJs.includes('<span class="brand-icon">R</span>Resilience Coaching'));
+  assert.ok(appJs.includes('<span class="brand-icon">R</span><span class="wordmark">Resilience Coaching</span>'));
   assert.ok(appJs.includes("Stripe fees reduce your payout; Resilience Coaching adds no application fee."));
   // Previously approved customer labels stay; admin/PT labels stay
   assert.ok(appJs.includes("['trainers','people','Your coach']"));
   assert.ok(appJs.includes("['trainers','people','PT accounts']"));
   assert.ok(appJs.includes("role==='pt'?'TRAINER WORKSPACE'"));
   assert.ok(appJs.includes("me.role==='pt'?'Trainer workspace'"));
-  // Exact surfaces that a loose "Your coach" / header check would miss
-  assert.ok(appJs.includes('<a href="/trainers" class="optional" data-route>Your coach</a>'));
+  // Your coach remains, but now targets bookingPath() rather than /trainers
+  assert.ok(appJs.includes('data-route>Your coach</a>'));
+  assert.equal(appJs.includes('<a href="/trainers" class="optional" data-route>Your coach</a>'),false);
   assert.ok(appJs.includes("document.title='Choose a new password — Resilience Coaching'"));
   assert.ok(appJs.includes("document.title=(me.role==='admin'?'Platform admin':me.role==='pt'?'Trainer workspace':'My bookings')+' — Resilience Coaching'"));
+  assert.ok(appJs.includes("document.title='Resilience Coaching — Show up. Keep going.'"));
 });
 
 test('blockForm and brandForm remain the class and brand form functions',()=>{
   // Anchor by function name so this passes before and after rc-4-d1 adds create_key.
   assert.match(appJs,/^function blockForm\(/m);
   assert.match(appJs,/^function brandForm\(/m);
+});
+
+test('landing and site helpers are anchored by function name',()=>{
+  assert.match(appJs,/^function bookingPath\(/m);
+  assert.match(appJs,/^function isMultiPt\(/m);
+  assert.match(appJs,/^async function loadSite\(/m);
+  assert.match(appJs,/^function emptyState\(/m);
+  assert.match(appJs,/^function heroImage\(/m);
+  assert.match(appJs,/^async function renderLanding\(/m);
+  assert.match(appJs,/^function brandHeader\(/m);
+  assert.match(appJs,/^function classCard\(/m);
+  assert.match(appJs,/^function bookingTable\(/m);
+  assert.match(appJs,/^async function renderHome\(/m);
+  assert.match(appJs,/^async function renderRoute\(/m);
 });
 
 test('the public PT 404 uses the approved page copy',()=>{
@@ -90,7 +126,9 @@ test('site/index.html and password-reset emails keep the approved Resilience Coa
   assert.ok(resetSrc.includes(String.raw`text='A password reset was requested for your Resilience Coaching account.\n\nOpen this link to choose a new password:\n'+job.origin+'/reset-password#'+token(reset.id)+'\n\nThis link expires 30 minutes after the request and can be used once. If you did not request this, ignore this email. Your password has not changed.'`));
   assert.ok(resetSrc.includes("subject='Your Resilience Coaching password has changed'"));
   assert.ok(resetSrc.includes(String.raw`text='Your Resilience Coaching password was reset. All previous sign-in sessions have been closed.\n\nIf you did not make this change, request a fresh password reset from '+job.origin+'/forgot-password and contact your coach or platform owner.'`));
+  assert.ok(resetSrc.includes('Password reset email is not configured. Contact your coach or the platform owner for help.'));
   assert.equal(resetSrc.includes('and contact your trainer or platform owner.'),false);
+  assert.equal(resetSrc.includes('Contact your trainer or platform owner.'),false);
   assertNoVisibleFitspace(resetSrc,'password-reset email source');
 });
 
@@ -120,15 +158,31 @@ test('the served /app.js and / includes the approved public wording',async()=>{
   assert.ok(js.includes('Your coach\u2019s classes, schedule and training space are shown below.'));
   assert.ok(js.includes('Visit the site ↗'));
   assert.ok(js.includes('Find your coach'));
-  assert.ok(js.includes('<a href="/trainers" class="optional" data-route>Your coach</a>'));
+  assert.ok(js.includes('data-route>Your coach</a>'));
+  assert.ok(js.includes('Book a class'));
+  assert.ok(js.includes('Show up. Keep going.'));
+  assert.equal(js.includes('<a href="/trainers" class="optional" data-route>Your coach</a>'),false);
   assert.ok(js.includes("document.title='Choose a new password — Resilience Coaching'"));
   assert.ok(js.includes("document.title=(me.role==='admin'?'Platform admin':me.role==='pt'?'Trainer workspace':'My bookings')+' — Resilience Coaching'"));
   assert.equal(js.includes('Discover another trainer'),false);
   assertNoVisibleFitspace(js,'served /app.js');
   const html=await (await fetch(base+'/')).text();
-  assert.ok(html.includes('<title>Resilience Coaching — Your training, connected</title>'));
+  assert.ok(html.includes('<title>Resilience Coaching — Show up. Keep going.</title>'));
   assert.ok(html.includes('<span id="modalEyebrow">Resilience Coaching</span>'));
+  assert.ok(html.includes('rel="preload" href="/fonts/sora-latin-wght.woff2"'));
+  assert.ok(html.includes('rel="preload" href="/images/hero.webp"'));
   assertNoVisibleFitspace(html,'served /');
+});
+
+test('brand fonts and images are served from /fonts and /images',async()=>{
+  const font=await fetch(base+'/fonts/sora-latin-wght.woff2');
+  assert.equal(font.status,200);
+  assert.match(font.headers.get('content-type')||'',/woff2/);
+  const hero=await fetch(base+'/images/hero.webp');
+  assert.equal(hero.status,200);
+  assert.match(hero.headers.get('content-type')||'',/image\/webp/);
+  const missing=await fetch(base+'/images/not-a-real-image.webp');
+  assert.equal(missing.status,404);
 });
 
 // RC-4: the sign-in modal rendered a literal "}" after </form> (typo in the uploaded app.js,
