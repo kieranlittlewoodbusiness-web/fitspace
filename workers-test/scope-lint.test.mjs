@@ -191,7 +191,7 @@ export const ALLOWED = {
   '../src/cutover.mjs::RANKED': {
     why: "cutover tool ranking subquery, CLI only",
     queries: [
-      '5e66c3fc', // SELECT id, ROW_NUMBER() OVER (PARTITION BY block_id, customer_id ORDER
+      'a9f8c51f', // SELECT id, ROW_NUMBER() OVER (PARTITION BY block_id, customer_id ${}) A
     ]
   },
   '../src/emails.mjs::confirmationInsert': {
@@ -521,12 +521,19 @@ export const NONLITERAL = {
   '../src/scope.mjs::scopeFor>outbox::dynamic::f2773b8b': 'scopeFor: role scope predicate',
   '../src/scope.mjs::scopeFor>updateBlockStmt::dynamic::46ab8046': 'scopeFor: whitelisted column list; admin form',
   '../src/scope.mjs::scopeFor>updateBlockStmt::dynamic::a709c197': 'scopeFor: whitelisted column list; PT form with pt_id',
+  '../scripts/snapshot-import.mjs::columns::dynamic::6c71ef31': 'local import CLI (node:sqlite scratch copy): table name from the fixed TABLE_ORDER list',
+  '../scripts/snapshot-import.mjs::insertStatements::dynamic::a5a8a63d': 'local import CLI: column list and table name from the fixed schema/TABLE_ORDER',
+  '../scripts/snapshot-import.mjs::prepareImport::ident:DUPLICATE_REPORT_SQL': 'local import CLI: same duplicate report as the cutover gate',
+  '../scripts/snapshot-import.mjs::prepareImport::ident:sql': 'local import CLI: runs MARK_SQL() statements on the scratch copy (opt-in phrase)',
+  '../scripts/snapshot-import.mjs::rowCounts::dynamic::fac7f363': 'local import CLI: table name from the fixed TABLE_ORDER list',
   '../src/views.mjs::inChunks::expr::4eef12a7': 'expands (?*) to ? placeholders for chunked IN lists; callers pass literals (fingerprinted)'
 };
 // Uses of a module-level SQL constant outside the file that defines it.
 export const CONST_USES = {
   '../scripts/cutover-import.mjs::uses:DUPLICATE_REPORT_SQL': 'cutover CLI (local scratch DB): same report as the gate',
-  '../scripts/cutover-import.mjs::uses:MARK_SQL': 'cutover CLI: writes the opt-in mark SQL to a 0600 file'
+  '../scripts/cutover-import.mjs::uses:MARK_SQL': 'cutover CLI: writes the opt-in mark SQL to a 0600 file',
+  '../scripts/snapshot-import.mjs::uses:DUPLICATE_REPORT_SQL': 'local snapshot import: duplicate gate on the scratch copy',
+  '../scripts/snapshot-import.mjs::uses:MARK_SQL': 'local snapshot import: opt-in duplicate marking on the scratch copy'
 };
 
 /** Everything the lint reports for a source map (empty = clean). */

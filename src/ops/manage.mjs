@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { scopeFor } from '../scope.mjs';
 import { isGuardFailure, isUniqueViolation } from '../db.mjs';
 import { httpError, uid } from '../util.mjs';
+import { viewBlocks } from '../views.mjs';
 import { blockData, branding, email as validEmail, text, MOTIVATIONS } from '../validate.mjs';
 import { noShowInsert } from '../emails.mjs';
 
@@ -77,7 +78,7 @@ export async function createBlock(db, { userId, body, now = Date.now() }) {
     const existing = await scope.blockByCreateKey(key);
     if (existing === undefined) throw httpError(409, 'This request key was already used. Refresh the page and try again.', { code: 'CREATE_KEY_REUSED' });
     if (existing && existing.create_hash && existing.create_hash !== hash) throw reused();
-    return existing && { block: existing, replay: true };
+    return existing && { block: (await viewBlocks(db, [existing], now))[0], replay: true };
   };
   const prior = await replay();
   if (prior) return prior;
@@ -92,7 +93,8 @@ export async function createBlock(db, { userId, body, now = Date.now() }) {
     if (isUniqueViolation(error, 'blocks.create_key')) { const again = await replay(); if (again) return again; }
     throw error;
   }
-  return { block: await scope.block(id), replay: false };
+  // Same shape as app/server.cjs viewBlock(): sessions, availability (legacy test ported).
+  return { block: (await viewBlocks(db, [await scope.block(id)], now))[0], replay: false };
 }
 
 /** PM ruling (capacity cut): a 409 is acceptable if it is clear and retryable. Stable codes

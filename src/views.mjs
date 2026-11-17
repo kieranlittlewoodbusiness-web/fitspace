@@ -5,6 +5,7 @@ import { scopeFor } from './scope.mjs';
 import { stripeConnection } from './ops/bookings.mjs';
 import { isStripe } from './util.mjs';
 import { MOTIVATIONS } from './validate.mjs';
+import { parseReviewReason } from './cutover.mjs';
 
 // D1 allows at most 100 bound parameters per statement: IN-lists are chunked.
 async function inChunks(db, sql, ids, ...before) {
@@ -33,14 +34,18 @@ export async function viewBlocks(db, blocks, now = Date.now()) {
 }
 
 /** Bookings (already scoped) with sessions + attendance, in 2 extra queries. */
-export async function withSessions(db, bookings) {
+export async function withSessions(db, bookings, { reasons = false } = {}) {
   if (!bookings.length) return [];
   const blockIds = [...new Set(bookings.map(b => b.block_id))], bookingIds = bookings.map(b => b.id);
   const sessions = (await inChunks(db, 'SELECT * FROM class_sessions WHERE block_id IN (?*)', blockIds)).sort((a, b) => a.starts_epoch - b.starts_epoch);
   const attendance = await inChunks(db, 'SELECT booking_id,session_id,status FROM attendance WHERE booking_id IN (?*)', bookingIds);
+  // PT/admin only: why a booking is in 'review' (cutover duplicate import; see src/cutover.mjs).
+  const reviewIds = reasons ? bookings.filter(b => b.status === 'review').map(b => b.id) : [];
+  const reviewRows = reviewIds.length ? await inChunks(db, "SELECT target_id,action FROM audit_log WHERE action LIKE 'duplicate_import:kept=%' AND target_id IN (?*)", reviewIds) : [];
+  const reasonOf = Object.fromEntries(reviewRows.map(r => [r.target_id, parseReviewReason(r.action)]));
   return bookings.map(b => {
     const { checkout_token, checkout_url, ...safe } = b;
-    return { ...safe, sessions: sessions.filter(s => s.block_id === b.block_id).map(s => ({ ...s, attendance_status: attendance.find(a => a.booking_id === b.id && a.session_id === s.id)?.status || 'unmarked' })) };
+    return { ...safe, ...(reasons ? { review_reason: b.status === 'review' ? reasonOf[b.id] || { code: 'payment_review' } : null } : {}), sessions: sessions.filter(s => s.block_id === b.block_id).map(s => ({ ...s, attendance_status: attendance.find(a => a.booking_id === b.id && a.session_id === s.id)?.status || 'unmarked' })) };
   });
 }
 
@@ -50,7 +55,7 @@ export async function dashboard(db, user, { paymentMode, integration, now = Date
   if (user.role === 'pt') {
     const pt = await db.get('SELECT * FROM pts WHERE id=?', user.pt_id);
     const blocks = await viewBlocks(db, await scope.blocks(), now);
-    const bookings = await withSessions(db, await scope.bookings());
+    const bookings = await withSessions(db, await scope.bookings(), { reasons: true });
     const outbox = await scope.outbox(100);
     const c = await stripeConnection(db, pt.id, paymentMode, integration);
     const noShows = (await db.get("SELECT count(*) n FROM attendance a JOIN bookings b ON b.id=a.booking_id JOIN blocks c ON c.id=b.block_id WHERE c.pt_id=? AND a.status='no_show'", user.pt_id)).n;
@@ -71,7 +76,7 @@ export async function dashboard(db, user, { paymentMode, integration, now = Date
   const allBlocks = await viewBlocks(db, await scope.blocks(), now);
   const pts = [];
   for (const p of ptRows) pts.push({ ...publicPt(p), owner_name: p.owner_name, owner_email: p.owner_email, owner_active: Boolean(p.owner_active), stripe_connected: Boolean(await stripeConnection(db, p.id, paymentMode, integration)), blocks: allBlocks.filter(b => b.pt_id === p.id) });
-  const bookings = await withSessions(db, await scope.bookings());
+  const bookings = await withSessions(db, await scope.bookings(), { reasons: true });
   return {
     pts, bookings, outbox: await scope.outbox(100),
     stats: { pts: pts.length, customers: (await db.get("SELECT count(*) n FROM users WHERE role='customer'")).n, confirmed: bookings.filter(b => b.status === 'paid').length },

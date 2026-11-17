@@ -4,7 +4,8 @@
 import { describe, it, expect } from 'vitest';
 import precheckSql from '../scripts/cutover-precheck.sql?raw';
 import { DUPLICATE_REPORT_SQL, CONFIRM_PHRASE, importGate, markDuplicatesForReview } from '../src/cutover.mjs';
-import { db, seedBlock, insertBooking } from './helpers.mjs';
+import { exports } from 'cloudflare:workers';
+import { db, seedBlock, seedUser, insertBooking, getRequest } from './helpers.mjs';
 
 const firstQuery = sql => sql.split('\n').filter(l => !l.trim().startsWith('--')).join('\n').split(';').map(s => s.trim()).filter(Boolean)[0];
 const norm = s => s.replace(/\s+/g, ' ').trim();
@@ -53,8 +54,26 @@ describe('cutover import gate', () => {
     expect(status[c1first].status).toBe('pending');
     expect(status[c2].status).toBe('paid');
     for (const id of marked) expect(status[id]).toMatchObject({ status: 'review', refund_status: 'none', refunded_pence: 0 });
-    const audits = await d.all("SELECT target_id FROM audit_log WHERE action='cutover_duplicate_review' ORDER BY target_id");
+    // PM ruling: the reason is recorded (bookings has no notes/metadata column, so audit_log).
+    const audits = await d.all("SELECT target_id,action FROM audit_log WHERE action LIKE 'duplicate_import:kept=%' ORDER BY target_id");
     expect(audits.map(a => a.target_id)).toEqual([...marked].sort());
+    const keptFor = { [c0pending]: c0paidEarly, [c0paidLate]: c0paidEarly, [c1second]: c1first };
+    for (const a of audits) expect(a.action).toBe('duplicate_import:kept=' + keptFor[a.target_id]);
+    // Admins and the owning PT can tell these apart from ordinary payment reviews.
+    const late = await insertBooking({ blockId, customerId: (await seedUser({ role: 'customer' })).id, status: 'review' });
+    const admin = await seedUser({ role: 'admin' }), pt = await seedUser({ role: 'pt', ptId: (await d.get('SELECT pt_id FROM blocks WHERE id=?', blockId)).pt_id });
+    for (const viewer of [admin, pt]) {
+      const dash = await (await exports.default.fetch(getRequest(viewer, '/api/dashboard'))).json();
+      const byId = Object.fromEntries(dash.bookings.map(b => [b.id, b.review_reason]));
+      expect(byId[c0paidLate]).toEqual({ code: 'duplicate_import', kept_booking_id: c0paidEarly });
+      expect(byId[c1second]).toEqual({ code: 'duplicate_import', kept_booking_id: c1first });
+      expect(byId[late]).toEqual({ code: 'payment_review' });
+      expect(byId[c0paidEarly]).toBeNull();
+    }
+    console.log('review reasons (admin dashboard):', JSON.stringify({ duplicate: { code: 'duplicate_import' }, late: 'payment_review' }));
+    const customerDash = await (await exports.default.fetch(getRequest(users[0], '/api/dashboard'))).json();
+    expect(customerDash.bookings.every(b => !('review_reason' in b))).toBe(true);
+    await d.run('DELETE FROM bookings WHERE id=?', late);
     // Nothing deleted, gate passes, the index can now be created.
     expect((await d.get('SELECT count(*) n FROM bookings WHERE block_id=?', blockId)).n).toBe(6);
     expect((await importGate(d)).halted).toBe(false);

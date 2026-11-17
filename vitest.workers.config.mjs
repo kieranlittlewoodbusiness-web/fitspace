@@ -5,6 +5,22 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-plugin';
 import { defineConfig } from 'vitest/config';
+import fs from 'node:fs';
+import os from 'node:os';
+import { makeDemoSnapshot } from './scripts/demo-snapshot.mjs';
+import { prepareImport } from './scripts/snapshot-import.mjs';
+
+// Phase 4: the app's own demo seed, in the live snapshot format, run through the real
+// snapshot -> D1 import. workers-test/legacy-platform.test.mjs loads these statements and
+// runs the ported app/tests/platform.test.cjs against them. Demo data only.
+async function demoSnapshotStatements() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc4-vitest-snapshot-'));
+  try {
+    const r = await prepareImport(makeDemoSnapshot(path.join(dir, 'demo.sqlite')));
+    if (r.status !== 'ok') throw new Error('demo snapshot import failed: ' + r.status);
+    return JSON.stringify(r.statements);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
 
 export default defineConfig({
   plugins: [
@@ -14,6 +30,7 @@ export default defineConfig({
       miniflare: {
         bindings: {
           TEST_MIGRATIONS: await readD1Migrations(path.join(import.meta.dirname, 'migrations')),
+          DEMO_SNAPSHOT_SQL: await demoSnapshotStatements(),
           PAYMENT_MODE: 'demo',
           // Throwaway per-run value so tests can sign webhook payloads. Never a real secret,
           // never written to disk or printed.
