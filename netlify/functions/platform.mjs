@@ -36,9 +36,22 @@ export function createHandler({ getStorage = storage } = {}) {
     try {
       if (!json) {
         if (!['GET', 'HEAD'].includes(request.method)) return failure('Method not allowed.', 405);
-        const asset = url.pathname === '/app.js' ? ['app.js', 'text/javascript'] : url.pathname === '/styles.css' ? ['styles.css', 'text/css'] : ['index.html', 'text/html'];
-        const bytes = await readFile(`${runtimeRoot}/app/public/${asset[0]}`);
-        return new Response(request.method === 'HEAD' ? null : bytes, { headers: { ...securityHeaders, 'Content-Type': asset[1] + '; charset=utf-8' } });
+        const pathName = url.pathname;
+        const font = pathName.match(/^\/fonts\/([a-z0-9.-]+\.woff2)$/i);
+        const image = pathName.match(/^\/images\/([a-z0-9.-]+\.webp)$/i);
+        const asset = pathName === '/app.js' ? ['app.js', 'text/javascript; charset=utf-8']
+          : pathName === '/styles.css' ? ['styles.css', 'text/css; charset=utf-8']
+          : font ? ['fonts/' + font[1], 'font/woff2']
+          : image ? ['images/' + image[1], 'image/webp']
+          : ['index.html', 'text/html; charset=utf-8'];
+        const filePath = `${runtimeRoot}/app/public/${asset[0]}`;
+        try {
+          const bytes = await readFile(filePath);
+          return new Response(request.method === 'HEAD' ? null : bytes, { headers: { ...securityHeaders, 'Content-Type': asset[1] } });
+        } catch (error) {
+          if (font || image) return failure('Not found.', 404);
+          throw error;
+        }
       }
       const paymentMode=process.env.PAYMENT_MODE||'demo';
       if(!['demo','stripe_test','stripe_live'].includes(paymentMode))return failure('Use PAYMENT_MODE=demo, stripe_test or stripe_live.',503,true);
