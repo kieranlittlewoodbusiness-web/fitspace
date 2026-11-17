@@ -49,13 +49,14 @@
   "triggers": { "crons": ["* * * * *"] },
   "observability": { "enabled": false },
   // Preview (approved 17 Nov 2026, item 6). Uploaded through the Cloudflare API, not
-  // `wrangler deploy`. workers.dev is enabled only behind Cloudflare Access (docs §13).
+  // `wrangler deploy`. workers.dev is enabled only behind the preview password gate
+  // (PREVIEW_GATE=on here, off in the default env; docs §13).
   // PAYMENT_MODE "stripe_test" is the app's test mode (PAYMENT_MODE=test is not a valid value).
   // No Stripe key or webhook secret is set, so every non-diagnostic API route answers 503
   // before any Stripe call or write (worker/index.mjs paymentReadiness, CR 5941600057 M6).
   // No Resend key: mail stays in preview. Static assets: the API upload ships app/public as
   // text modules behind docs/rc-4/preview/entry.mjs (connector cannot run the assets upload).
-  // Secrets (set through the API, never committed): PT_INVITE_SECRET.
+  // Secrets (set through the API, never committed): PT_INVITE_SECRET, PREVIEW_PASSWORD, PREVIEW_GATE_SECRET.
   "env": {
     "preview": {
       "name": "resiliencecoaching-preview",
@@ -66,7 +67,9 @@
         "PAYMENT_MODE": "stripe_test",
         "STRIPE_INTEGRATION": "connect",
         "APP_URL": "https://resiliencecoaching-preview.littlk.workers.dev",
-        "CRON_ENABLED": "true"
+        "CRON_ENABLED": "true",
+        // Preview password gate (Kieran, 16:49 UK 17 Nov 2026). Must not be set on the default env.
+        "PREVIEW_GATE": "on"
       },
       "d1_databases": [
         {

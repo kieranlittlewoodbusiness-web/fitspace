@@ -17,3 +17,7 @@ MAIL_FROM=
 PT_INVITE_SECRET=
 # Optional: Writer queue-slot timeout in ms (default 2000).
 # WRITER_SLOT_MS=2000
+# Preview Worker only (env.preview). Leave unset so local/default env never gates.
+# PREVIEW_GATE=on
+# PREVIEW_PASSWORD=
+# PREVIEW_GATE_SECRET=

@@ -25,6 +25,7 @@ import { stripeConnection } from '../src/ops/bookings.mjs';
 import { password as validPassword } from '../src/validate.mjs';
 import { rateLimit } from '../src/ratelimit.mjs';
 import { errorExtras, hashPassword, httpError, isStripe, live, verifyPassword } from '../src/util.mjs';
+import { previewFetch, withPreviewHeaders } from '../src/preview-gate.mjs';
 
 export { Writer } from '../src/writer.mjs';
 
@@ -342,17 +343,19 @@ export default {
   },
   async fetch(request, env) {
     try {
+      const gated = await previewFetch(request, env);
+      if (gated) return gated;
       const response = await handle(request, env);
-      if (response) return response;
-      if (!['GET', 'HEAD'].includes(request.method)) return new Response('Method not allowed.', { status: 405, headers: securityHeaders });
+      if (response) return withPreviewHeaders(env, response);
+      if (!['GET', 'HEAD'].includes(request.method)) return withPreviewHeaders(env, new Response('Method not allowed.', { status: 405, headers: securityHeaders }));
       const asset = await env.ASSETS.fetch(request);
       const out = new Response(asset.body, asset);
       for (const [name, value] of Object.entries(securityHeaders)) out.headers.set(name, value);
-      return out;
+      return withPreviewHeaders(env, out);
     } catch (error) {
-      if (error.status) return json(error.status, { error: error.message, ...errorExtras(error) });
+      if (error.status) return withPreviewHeaders(env, json(error.status, { error: error.message, ...errorExtras(error) }));
       console.error('RC-4 request failed:', error.code || error.name || 'Error');
-      return json(503, { error: 'The service could not complete this request. Please try again.' });
+      return withPreviewHeaders(env, json(503, { error: 'The service could not complete this request. Please try again.' }));
     }
   }
 };

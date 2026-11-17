@@ -1,0 +1,217 @@
+import { describe, it, expect } from 'vitest';
+import { env } from 'cloudflare:workers';
+import worker, { cronTick } from '../worker/index.mjs';
+import { db, seedBlock, insertBooking } from './helpers.mjs';
+import { GATE_PATH, COOKIE_NAME, ROBOTS_BODY, signPreviewCookie, TTL_MS } from '../src/preview-gate.mjs';
+
+const PASSWORD = 'correct-horse-preview';
+const SECRET = 'a'.repeat(64);
+const gated = (extra = {}) => Object.assign(Object.create(null), env, {
+  PREVIEW_GATE: 'on',
+  PREVIEW_PASSWORD: PASSWORD,
+  PREVIEW_GATE_SECRET: SECRET,
+  ...extra
+});
+const ORIGIN = 'http://example.test';
+
+function req(path, { method = 'GET', cookie, password, json, ip, headers } = {}) {
+  const h = { ...(headers || {}) };
+  if (ip) h['CF-Connecting-IP'] = ip;
+  if (cookie) h.cookie = `${COOKIE_NAME}=${cookie}`;
+  let body;
+  if (password !== undefined && json) {
+    h['content-type'] = 'application/json';
+    body = JSON.stringify({ password });
+    method = method === 'GET' ? 'POST' : method;
+  } else if (password !== undefined) {
+    h['content-type'] = 'application/x-www-form-urlencoded';
+    body = new URLSearchParams({ password }).toString();
+    method = method === 'GET' ? 'POST' : method;
+  }
+  return new Request(ORIGIN + path, { method, headers: h, body });
+}
+const cookieOf = r => {
+  const raw = r.headers.get('set-cookie') || '';
+  const m = raw.match(new RegExp(`${COOKIE_NAME}=([^;]+)`));
+  return m ? m[1] : '';
+};
+
+describe('preview gate: off by default', () => {
+  it('the default env does not gate, even if PREVIEW_PASSWORD were set', async () => {
+    expect(env.PREVIEW_GATE).toBeUndefined();
+    const e = Object.assign(Object.create(null), env, {
+      PREVIEW_PASSWORD: PASSWORD,
+      PREVIEW_GATE_SECRET: SECRET
+    });
+    const health = await worker.fetch(req('/health'), e);
+    expect(health.status).toBe(200);
+    expect(await health.json()).toEqual({ ok: true });
+    expect(health.headers.get('X-Robots-Tag')).toBeNull();
+    const api = await worker.fetch(req('/api/me'), e);
+    expect(api.status).toBe(200);
+    expect((await api.json()).code).toBeUndefined();
+    const page = await worker.fetch(req('/'), e);
+    expect(page.status).toBe(200);
+    expect(await page.text()).not.toMatch(/This preview is locked/);
+  });
+
+  it('PREVIEW_GATE values other than "on" do not enable the gate', async () => {
+    for (const value of ['', 'true', 'ON', 'yes', '1']) {
+      const r = await worker.fetch(req('/health'), gated({ PREVIEW_GATE: value }));
+      expect(r.status, value).toBe(200);
+    }
+  });
+});
+
+describe('preview gate: on', () => {
+  it('HTML requests without a cookie get a 401 form and the robots header', async () => {
+    const r = await worker.fetch(req('/'), gated());
+    expect(r.status).toBe(401);
+    expect(r.headers.get('content-type')).toMatch(/text\/html/);
+    expect(r.headers.get('X-Robots-Tag')).toBe('noindex, nofollow');
+    const html = await r.text();
+    expect(html).toMatch(/Resilience Coaching/);
+    expect(html).toMatch(/This preview is locked/);
+    expect(html).toMatch(new RegExp(`action="${GATE_PATH}"`));
+  });
+
+  it('API requests without a cookie get 401 JSON {error, code:PREVIEW_LOCKED}', async () => {
+    for (const path of ['/api/me', '/api/public/site', '/api/health']) {
+      const r = await worker.fetch(req(path), gated());
+      expect(r.status, path).toBe(401);
+      expect(r.headers.get('content-type')).toMatch(/application\/json/);
+      expect(r.headers.get('X-Robots-Tag')).toBe('noindex, nofollow');
+      const body = await r.json();
+      expect(body.code).toBe('PREVIEW_LOCKED');
+      expect(body.error).toBeTruthy();
+    }
+  });
+
+  it('gates /health and static files, but not /robots.txt', async () => {
+    expect((await worker.fetch(req('/health'), gated())).status).toBe(401);
+    expect((await worker.fetch(req('/styles.css'), gated())).status).toBe(401);
+    const robots = await worker.fetch(req('/robots.txt'), gated());
+    expect(robots.status).toBe(200);
+    expect(robots.headers.get('X-Robots-Tag')).toBe('noindex, nofollow');
+    expect(await robots.text()).toBe(ROBOTS_BODY);
+  });
+
+  it('fails closed with 503 if either secret is missing', async () => {
+    const noPass = await worker.fetch(req('/'), gated({ PREVIEW_PASSWORD: '' }));
+    expect(noPass.status).toBe(503);
+    expect(noPass.headers.get('X-Robots-Tag')).toBe('noindex, nofollow');
+    const noSecret = await worker.fetch(req('/api/me'), gated({ PREVIEW_GATE_SECRET: '' }));
+    expect(noSecret.status).toBe(503);
+    expect(await noSecret.json()).toMatchObject({ error: expect.any(String) });
+    const neither = await worker.fetch(req('/'), { ...Object.assign(Object.create(null), env, { PREVIEW_GATE: 'on' }) });
+    expect(neither.status).toBe(503);
+  });
+
+  it('accepts the right password and sets a signed HttpOnly Secure SameSite=Lax cookie', async () => {
+    const r = await worker.fetch(req(GATE_PATH, { method: 'POST', password: PASSWORD }), gated());
+    expect(r.status).toBe(303);
+    expect(r.headers.get('location')).toBe('/');
+    const set = r.headers.get('set-cookie') || '';
+    expect(set).toMatch(new RegExp(`^${COOKIE_NAME}=`));
+    expect(set).toMatch(/HttpOnly/i);
+    expect(set).toMatch(/Secure/);
+    expect(set).toMatch(/SameSite=Lax/i);
+    expect(set).toMatch(/Path=\//);
+    expect(set).toMatch(/Max-Age=86400/);
+    const token = cookieOf(r);
+    expect(token).toMatch(/^\d+\.[A-Za-z0-9_-]+$/);
+
+    const page = await worker.fetch(req('/', { cookie: token }), gated());
+    expect(page.status).toBe(200);
+    expect(page.headers.get('X-Robots-Tag')).toBe('noindex, nofollow');
+    const html = await page.text();
+    expect(html).toMatch(/Resilience Coaching/);
+    expect(html).not.toMatch(/This preview is locked/);
+
+    const api = await worker.fetch(req('/api/me', { cookie: token }), gated());
+    expect(api.status).toBe(200);
+    const body = await api.json();
+    expect(body.code).not.toBe('PREVIEW_LOCKED');
+    expect(body).toHaveProperty('user');
+  });
+
+  it('accepts a JSON unlock and then serves /health', async () => {
+    const r = await worker.fetch(req(GATE_PATH, { method: 'POST', password: PASSWORD, json: true }), gated());
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ ok: true });
+    const token = cookieOf(r);
+    const health = await worker.fetch(req('/health', { cookie: token }), gated());
+    expect(health.status).toBe(200);
+    expect(await health.json()).toEqual({ ok: true });
+  });
+
+  it('rejects the wrong password with 401 and no cookie', async () => {
+    const r = await worker.fetch(req(GATE_PATH, { method: 'POST', password: 'nope', ip: '203.0.113.10' }), gated());
+    expect(r.status).toBe(401);
+    expect(r.headers.get('set-cookie')).toBeNull();
+    expect(await r.text()).toMatch(/incorrect/i);
+  });
+
+  it('rejects a JSON wrong password with 401 PREVIEW_LOCKED and no cookie', async () => {
+    const r = await worker.fetch(req(GATE_PATH, { method: 'POST', password: 'nope', json: true, ip: '203.0.113.11' }), gated());
+    expect(r.status).toBe(401);
+    expect(r.headers.get('set-cookie')).toBeNull();
+    const body = await r.json();
+    expect(body.code).toBe('PREVIEW_LOCKED');
+  });
+
+  it('rejects an expired cookie', async () => {
+    const token = signPreviewCookie(SECRET, Date.now() - TTL_MS - 1000);
+    const r = await worker.fetch(req('/', { cookie: token }), gated());
+    expect(r.status).toBe(401);
+    const api = await worker.fetch(req('/api/me', { cookie: token }), gated());
+    expect(api.status).toBe(401);
+    expect((await api.json()).code).toBe('PREVIEW_LOCKED');
+  });
+
+  it('rejects a tampered cookie', async () => {
+    const token = signPreviewCookie(SECRET);
+    const [ts, mac] = token.split('.');
+    const flipped = mac[0] === 'A' ? 'B' + mac.slice(1) : 'A' + mac.slice(1);
+    const r = await worker.fetch(req('/', { cookie: `${ts}.${flipped}` }), gated());
+    expect(r.status).toBe(401);
+    const cut = await worker.fetch(req('/api/public/site', { cookie: ts }), gated());
+    expect(cut.status).toBe(401);
+    const foreign = signPreviewCookie('b'.repeat(64));
+    const other = await worker.fetch(req('/', { cookie: foreign }), gated());
+    expect(other.status).toBe(401);
+  });
+
+  it('rate-limits wrong attempts: 5 per 15 minutes per IP, then 429', async () => {
+    const ip = '198.51.100.44';
+    const e = gated();
+    for (let i = 0; i < 5; i++) {
+      const r = await worker.fetch(req(GATE_PATH, { method: 'POST', password: 'wrong', ip }), e);
+      expect(r.status, `attempt ${i + 1}`).toBe(401);
+    }
+    const blocked = await worker.fetch(req(GATE_PATH, { method: 'POST', password: 'wrong', ip }), e);
+    expect(blocked.status).toBe(429);
+    // A different IP is still allowed to try
+    const other = await worker.fetch(req(GATE_PATH, { method: 'POST', password: 'wrong', ip: '198.51.100.45' }), e);
+    expect(other.status).toBe(401);
+  });
+});
+
+describe('preview gate: cron is unaffected', () => {
+  it('scheduled() still runs with the gate on and no cookie', async () => {
+    const s = await seedBlock({ customers: 1 });
+    const id = await insertBooking({ blockId: s.blockId, customerId: s.users[0].id, status: 'pending', expiresAt: Date.now() - 60000 });
+    const waits = [];
+    await worker.scheduled(
+      { cron: '* * * * *', scheduledTime: Date.now() },
+      gated({ CRON_ENABLED: 'true' }),
+      { waitUntil: p => waits.push(p) }
+    );
+    await Promise.all(waits);
+    expect((await db().get('SELECT status FROM bookings WHERE id=?', id)).status).toBe('expired');
+  });
+
+  it('cronTick itself is not wrapped by the gate', async () => {
+    expect(await cronTick(gated({ CRON_ENABLED: undefined }))).toEqual({ skipped: 'CRON_ENABLED is not "true"' });
+  });
+});
