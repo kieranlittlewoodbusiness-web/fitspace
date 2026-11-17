@@ -1,0 +1,1044 @@
+{
+ "attendance": [
+  {
+   "name": "booking_id",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "session_id",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 2
+  },
+  {
+   "name": "status",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "marked_by",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "marked_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  }
+ ],
+ "audit_log": [
+  {
+   "name": "id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "user_id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "action",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "target_id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "created_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  }
+ ],
+ "auth_mail_jobs": [
+  {
+   "name": "id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "user_id",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "reset_id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "kind",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "recipient",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "sender",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "origin",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "status",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": "'pending'",
+   "pk": 0
+  },
+  {
+   "name": "last_error",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "created_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  }
+ ],
+ "blocks": [
+  {
+   "name": "id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "pt_id",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "title",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "description",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "venue",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "price_pence",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "capacity",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "published",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": "1",
+   "pk": 0
+  },
+  {
+   "name": "closed",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": "0",
+   "pk": 0
+  },
+  {
+   "name": "created_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  }
+ ],
+ "bookings": [
+  {
+   "name": "id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "block_id",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "customer_id",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "reference",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "status",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "amount_pence",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "mode",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "checkout_token",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "checkout_session",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "checkout_url",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "expires_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "paid_at",
+   "type": "INTEGER",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "created_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "stripe_credential_id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "stripe_account_id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "payment_intent",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "payment_error",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "refund_status",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": "'none'",
+   "pk": 0
+  },
+  {
+   "name": "refunded_pence",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": "0",
+   "pk": 0
+  },
+  {
+   "name": "charge_refunded_pence",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": "0",
+   "pk": 0
+  },
+  {
+   "name": "refund_error",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "stripe_routing",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": "'connected'",
+   "pk": 0
+  }
+ ],
+ "class_sessions": [
+  {
+   "name": "id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "block_id",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "starts_at",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "starts_epoch",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "duration_minutes",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  }
+ ],
+ "email_outbox": [
+  {
+   "name": "id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "pt_id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "customer_id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "dedupe_key",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "recipient",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "subject",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "body",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "kind",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "quote_index",
+   "type": "INTEGER",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "status",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "attempts",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": "0",
+   "pk": 0
+  },
+  {
+   "name": "provider_id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "last_error",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "next_attempt_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": "0",
+   "pk": 0
+  },
+  {
+   "name": "created_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "sent_at",
+   "type": "INTEGER",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  }
+ ],
+ "password_reset_limits": [
+  {
+   "name": "id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "email_hash",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "created_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  }
+ ],
+ "password_resets": [
+  {
+   "name": "id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "user_id",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "token_hash",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "password_hash",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "expires_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "used_at",
+   "type": "INTEGER",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "created_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  }
+ ],
+ "pt_stripe_credentials": [
+  {
+   "name": "id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "pt_id",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "mode",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "account_id",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "api_cipher",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "webhook_cipher",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "enabled",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": "0",
+   "pk": 0
+  },
+  {
+   "name": "charges_ready",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": "0",
+   "pk": 0
+  },
+  {
+   "name": "payouts_ready",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": "0",
+   "pk": 0
+  },
+  {
+   "name": "verified_at",
+   "type": "INTEGER",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "webhook_seen_at",
+   "type": "INTEGER",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "created_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  }
+ ],
+ "pts": [
+  {
+   "name": "id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "slug",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "brand_name",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "tagline",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "description",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "about",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "accent",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": "'#ffd43b'",
+   "pk": 0
+  },
+  {
+   "name": "background",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": "'#ffffff'",
+   "pk": 0
+  },
+  {
+   "name": "foreground",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": "'#111111'",
+   "pk": 0
+  },
+  {
+   "name": "features",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": "'[]'",
+   "pk": 0
+  },
+  {
+   "name": "published",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": "1",
+   "pk": 0
+  },
+  {
+   "name": "stripe_account",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "stripe_ready",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": "0",
+   "pk": 0
+  },
+  {
+   "name": "created_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  }
+ ],
+ "sessions": [
+  {
+   "name": "token_hash",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "user_id",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "csrf",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "expires_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  }
+ ],
+ "stripe_connections": [
+  {
+   "name": "pt_id",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "mode",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 2
+  },
+  {
+   "name": "account_id",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "routing",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "ready",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": "0",
+   "pk": 0
+  }
+ ],
+ "stripe_jobs": [
+  {
+   "name": "id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "kind",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "target_id",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "actor_id",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "payload",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "status",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": "'pending'",
+   "pk": 0
+  },
+  {
+   "name": "result",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "last_error",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "created_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  }
+ ],
+ "stripe_refunds": [
+  {
+   "name": "id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "booking_id",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "amount_pence",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "status",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "event_time",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": "0",
+   "pk": 0
+  }
+ ],
+ "users": [
+  {
+   "name": "id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "name",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "email",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "password_hash",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "role",
+   "type": "TEXT",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "pt_id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 0
+  },
+  {
+   "name": "active",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": "1",
+   "pk": 0
+  },
+  {
+   "name": "must_change_password",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": "0",
+   "pk": 0
+  },
+  {
+   "name": "demo",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": "0",
+   "pk": 0
+  },
+  {
+   "name": "created_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  }
+ ],
+ "webhook_events": [
+  {
+   "name": "id",
+   "type": "TEXT",
+   "notnull": 0,
+   "dflt_value": null,
+   "pk": 1
+  },
+  {
+   "name": "created_at",
+   "type": "INTEGER",
+   "notnull": 1,
+   "dflt_value": null,
+   "pk": 0
+  }
+ ]
+}

@@ -1,0 +1,13 @@
+node_modules/
+.wrangler/
+.dev.vars
+.netlify/
+cutover-reports/
+
+# RC-4 preview: generated secrets (0600), never committed
+/.secrets/
+
+# RC-4 snapshot import: local target D1 and generated SQL (customer data), never committed
+/.rc4-import/
+import.sql
+*.import.sql

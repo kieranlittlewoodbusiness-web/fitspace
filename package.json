@@ -9,15 +9,21 @@
     "build": "node scripts/check-build.mjs",
     "test": "node --test app/tests/*.test.cjs tests/*.test.mjs",
     "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
-    "test:bundle": "node scripts/test-bundle.mjs"
+    "test:bundle": "node scripts/test-bundle.mjs",
+    "test:workers": "vitest run --config vitest.workers.config.mjs",
+    "dev:workers": "wrangler dev --local",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local"
   },
   "dependencies": {
     "pg": "8.16.3"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.8.4",
     "@electric-sql/pglite": "^0.5.11",
     "@electric-sql/pglite-socket": "^0.2.14",
-    "@netlify/zip-it-and-ship-it": "^16.6.0"
+    "@netlify/zip-it-and-ship-it": "^16.6.0",
+    "vitest": "^4.1.12",
+    "wrangler": "^4.164.0"
   },
   "overrides": {
     "minimatch": "^11.0.1",
