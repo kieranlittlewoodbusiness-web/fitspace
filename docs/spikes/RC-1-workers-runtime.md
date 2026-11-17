@@ -9,6 +9,8 @@
 
 `node:sqlite` is only a **stub** in the Workers runtime: `import 'node:sqlite'` succeeds, but `new DatabaseSync(...)` throws `TypeError: Illegal constructor`. The app creates a `DatabaseSync` on every API request (`app/db.cjs:9` via `app/server.cjs:27`), so every `/api/*` request fails with the app's 503. Everything around SQLite does work: the Worker boots via a thin adapter, `/tmp` files round-trip, `pg` connects from workerd to Postgres, and the Postgres snapshot read/write (row lock + bytea) round-trips correctly, including under concurrency. The blocker is SQLite itself, so the recommendation is to **port state to real Postgres tables via Hyperdrive** (plan and estimate below).
 
+> **Update, 17 Nov 2026 13:54 GMT (PM):** the storage target is now **open: Cloudflare D1 or Postgres via Hyperdrive**, and Kieran will decide. The RC-1 finding stands either way: the `node:sqlite` snapshot cannot run on Workers, so state must move to real tables. The Hyperdrive plan below is one of the two options. The [RC-5 to RC-8 addendum](#addendum-how-rc-5-to-rc-8-fit-the-storage-verdict) is written to hold for both.
+
 Cloudflare's own docs agree: the Node.js compatibility page lists `node:sqlite` in the **stub modules** table (enabled by default from compatibility date `2026-01-29`, flag `enable_nodejs_sqlite_module`). Source: https://developers.cloudflare.com/workers/runtime-apis/nodejs/ (page last updated 12 Aug 2026, read 17 Nov 2026).
 
 ## Results at a glance
@@ -239,6 +241,128 @@ Do **not** run `wrangler deploy` without `--dry-run`, `wrangler login`, or any r
 - **RC-2 (lockfile):** did not block. Worked around with `npm install --no-package-lock`; `package.json` and `package-lock.json` are unchanged.
 - **RC-3 (nested v4 `fitspace/` tree):** did not block, but it **was pulled into the Worker upload** by wrangler's default module rules until they were overridden (`9729.71 KiB` → `299.72 KiB`). Removing the tree in RC-3 removes that foot-gun.
 - `/__spike/*` routes are spike-only and must not ship; they answer only on `127.0.0.1`/`localhost`.
+
+## Addendum: how RC-5 to RC-8 fit the storage verdict
+
+*Added 17 Nov 2026, about 14:00 GMT, at the PM's request. Sources are `TICKETS.md` (Kieran's decisions, 13:47 UK), the repo code at `7cebef2`, and the public Stripe and Cloudflare docs. **Test mode only.** No Stripe account access, no Stripe API calls and no keys were used. The storage target (D1 or Postgres via Hyperdrive) is open, so everything below holds for both, and differences are called out inline.*
+
+**Model (Kieran):**
+- Stripe Connect **direct charges**: the PT is the merchant of record and has the full Dashboard. Stripe collects its fees from the PT and is liable for losses.
+- **Stripe-hosted onboarding** (account links).
+- **No application fee.**
+- Platform revenue is only a **monthly PT subscription** on the platform account (Billing + Customer Portal), with the price configurable.
+- Discount codes.
+- The paste-your-own-keys `pt_direct` flow is retired for new PTs, and existing records are migrated.
+
+**What already exists in the repo:** the legacy `STRIPE_INTEGRATION=connect` path already matches most of this model, so RC-5 and RC-6 are a revive-and-harden job, not a rewrite.
+- `payments.cjs` `prepareConnect` creates a **v2 Account** with `dashboard:'full'`, `fees_collector:'stripe'`, `losses_collector:'stripe'`, GBP and `en-GB`, then `/v2/core/account_links` with return/refresh URLs.
+- Checkout already routes with the `Stripe-Account` header.
+- Stripe calls use plain `fetch` with `Idempotency-Key`, through a durable `stripe_jobs` queue.
+- `verifyWebhook` does HMAC-SHA256 with a 300 s tolerance.
+- `webhook_events` dedupes by event id.
+- There is **no** application fee anywhere today.
+
+### Tables and columns (both storage options)
+
+Types are written for Postgres. On D1 use `TEXT` / `INTEGER` (epoch seconds, 0/1 flags) and `TEXT` JSON, since D1 is SQLite. Every Stripe-facing row carries `mode` (`stripe_test`/`stripe_live`) so test and live data never mix.
+
+| Table | Key columns | Notes / ticket |
+|---|---|---|
+| `stripe_accounts` (replaces `stripe_connections` + `pt_stripe_credentials` for new PTs) | `pt_id`, `mode`, `account_id` (UNIQUE per mode), `charges_enabled`, `payouts_enabled`, `details_submitted`, `requirements_currently_due` (json), `requirements_past_due` (json), `disabled_reason`, `status_source_ts`, `updated_at`; PK `(pt_id, mode)` | RC-5. `status_source_ts` guards against out-of-order status updates. Keep `pt_stripe_credentials` read-only for historical `pt_direct` bookings and refunds until migrated. |
+| `stripe_webhook_events` (replaces `webhook_events`) | PK `(endpoint, event_id)`, `type`, `account_id` (null for platform), `object_id`, `received_at`, `processed_at`, `status` (`processing`/`done`/`failed`), `attempts`, `last_error` | All tickets. Idempotency is `INSERT … ON CONFLICT DO NOTHING` (both Postgres and D1/SQLite support it), and "inserted 0 rows" means a duplicate. Also store `(type, object_id)` to catch the rare "two Event objects for one change" case Stripe documents. |
+| `stripe_jobs` (existing) | as today | Kept: outbound calls stay idempotent and retryable. |
+| `bookings` (existing, extended) | add `list_price_pence`, `discount_code_id`, `discount_pence`. `amount_pence` = the final charged amount. Keep `checkout_session` UNIQUE, `stripe_account_id`, `refund_status`, `refunded_pence` | RC-6, RC-8. Capacity holds stay as today (`status='pending'` + `expires_at`). |
+| `platform_customers` | PK `(pt_id, mode)`, `customer_id` UNIQUE | RC-7. Stripe Customer on the **platform** account for each PT. |
+| `pt_subscriptions` | PK `(pt_id, mode)`, `subscription_id` UNIQUE, `customer_id`, `price_id`, `status`, `current_period_end`, `cancel_at_period_end`, `grace_until`, `status_source_ts`, `updated_at` | RC-7. `grace_until` = first unpaid time + grace days. A scheduled job unpublishes `blocks`/`pts` once `now > grace_until`. |
+| `billing_settings` | `mode`, `price_id`, `grace_days` (default 7), `updated_by`, `updated_at` | RC-7. The amount lives in Stripe (Product/Price), so Kieran's price change means a new Price id here and no code change. |
+| `discount_codes` | `id`, `code` (normalised upper-case, UNIQUE per `mode`), `owner` (`pt`/`admin`), `pt_id` (null = admin, any PT), `kind` (`percent`/`fixed`), `value`, `currency`='gbp', `applies_to` (`all`/`classes`), `starts_at`, `expires_at`, `max_uses`, `uses`, `active`, `created_by` | RC-8 (a)(b). These are **local** codes, not Stripe coupons, because with direct charges the price is set by us and passed to Checkout as the final `unit_amount`. |
+| `discount_code_classes` | PK `(code_id, block_id)` | RC-8 per-class scope. |
+| `discount_redemptions` | `code_id`, `booking_id` UNIQUE, `customer_id`, `amount_off_pence`, `status` (`held`/`redeemed`/`released`) | RC-8. Held with the capacity hold, redeemed on `checkout.session.completed`, and released on expiry/failure. `max_uses` is enforced with a conditional `UPDATE discount_codes SET uses = uses + 1 WHERE id = ? AND (max_uses IS NULL OR uses < max_uses)` that must affect 1 row. |
+| `subscription_promotion_codes` | `promotion_code_id` UNIQUE, `coupon_id`, `code`, `mode`, `active`, `created_by`, `created_at` | RC-8 (c). This **mirrors/references** Stripe Coupons + Promotion Codes on the platform account. Stripe is the source of truth, and Checkout (subscription mode) gets `discounts:[{promotion_code}]` or `allow_promotion_codes`. |
+| `pts` / `blocks` (existing) | add `pts.bookings_paused_reason` | RC-7 lapse handling. `published` already exists. |
+
+### Webhook handling on Workers
+
+- **Endpoints and secrets:**
+  - **Platform endpoint** (scope "Your account"), signed with `STRIPE_WEBHOOK_SECRET`. It carries `customer.subscription.created/updated/deleted`, `invoice.paid`, `invoice.payment_failed` and subscription-mode `checkout.session.completed`. It also gets `v2.core.account.*` events, which for v2 Accounts arrive on the **platform** scope as v2 events.
+  - **Connect endpoint** (scope "Connected accounts"), signed with `STRIPE_CONNECT_WEBHOOK_SECRET`. It carries direct-charge `checkout.session.completed/expired/async_payment_*`, `charge.refunded`/`refund.updated`, and v1 `account.updated`. Stripe's Connect docs say v2 Accounts emit **both** v1 and v2 events with different scopes, so RC-5 should handle `account.updated` on the Connect endpoint and treat v2 account events as a trigger to re-read the account.
+  - Both env names already exist in the repo.
+  - The per-PT webhook endpoint (`/api/stripe/pt/:id/webhook`) is retired with `pt_direct`.
+- **Raw body and signature:**
+  - Read the body **once** as raw bytes before any parsing. `lib/bridge.mjs`'s `boundedBody` already does this, with a 1 MiB cap on webhook routes.
+  - Then verify with `stripe.webhooks.constructEventAsync(raw, sigHeader, secret, undefined, Stripe.createSubtleCryptoProvider())`.
+  - The synchronous `constructEvent` **does not work** on Workers (see the probe below).
+  - The repo's own `verifyWebhook` (Node `crypto.createHmac` + `timingSafeEqual`) also runs under `nodejs_compat` (RC-1 node probe: `createHmac` and `timingSafeEqual` ok), so either is viable. I recommend the SDK, for one maintained implementation.
+  - Keep the 300 s tolerance and the `livemode` vs `mode` check the code already has.
+- **Per-request DB:**
+  - **Postgres via Hyperdrive:** open a `pg` client from `env.HYPERDRIVE.connectionString` **inside** the request and close it in `ctx.waitUntil`. RC-1 showed a module-level pool hangs on the 2nd request.
+  - **D1:** use the `env.DB` binding directly; there is no pool to manage.
+- **Duplicates:**
+  - Insert into `stripe_webhook_events` first (`ON CONFLICT DO NOTHING`). If 0 rows were inserted, the event has already been processed, so return 200.
+  - If the row exists with `status='failed'`, reprocess it; Stripe retries.
+  - Effects must be idempotent anyway, for example `UPDATE bookings SET status='paid' … WHERE id=? AND status='pending'`.
+- **Out-of-order events:**
+  - Stripe documents that it doesn't guarantee order, and that `created` must not be used for ordering.
+  - For **state mirrors** (account status, subscription status), treat the event as a trigger and **re-retrieve the object** from Stripe, then upsert, guarded by `status_source_ts`. Stripe's Billing docs recommend retrieving the subscription after `invoice.paid` to confirm `active`.
+  - For **booking transitions**, only allow forward moves (`pending → paid|expired|failed`, `paid → refunded`). Late `expired` events after `paid` are ignored.
+- **Concurrency:**
+  - **Postgres:** one transaction per event: `INSERT event … ON CONFLICT DO NOTHING RETURNING`, then `SELECT … FOR UPDATE` on the booking/subscription row, apply the effects, `COMMIT`. This gives the same serialisation the snapshot used, but per row.
+  - **D1:** there are **no interactive transactions**; the only atomic unit is `env.DB.batch([...])`, which the D1 docs say runs as one SQL transaction. So express each event's effects as one batch of conditional statements (`WHERE status='pending'`, `uses < max_uses`, `INSERT … ON CONFLICT DO NOTHING`), read affected-row counts from the batch results, and avoid read-then-write across `await`s.
+  - Capacity holds and discount `max_uses` are the two places where D1 needs the most care. Allow +0.5–1 day across RC-6 and RC-8 if D1 is chosen.
+- **Response time and CPU:** verify, write and return 2xx quickly. Anything slow, such as a Stripe re-retrieve or email, can run through the existing `stripe_jobs` queue, `ctx.waitUntil`, or later a Queue/Cron (RC-10). Signature verification uses async Web Crypto, which is cheap.
+
+### Does the `stripe` npm SDK run on Workers?
+
+**Yes, per the package and docs, and verified offline.**
+- `stripe@23.1.0` (latest on npm, 17 Nov 2026) declares a **`workerd`** export condition that maps to `stripe.esm.worker.js`, which initialises `WebPlatformFunctions` (fetch HTTP client + SubtleCrypto).
+- Its source explicitly throws for Node-only helpers ("Please use `createFetchHttpClient()`" / "`createSubtleCryptoProvider()`").
+- Offline probe in workerd: no API key used, no network to Stripe, dummy local webhook secret. It ran from a scratch folder outside the repo, and the SDK isn't added to `package.json` (RC-2):
+
+```
+$ wrangler deploy --dry-run --outdir dist      # probe worker importing stripe@23.1.0
+Total Upload: 736.29 KiB / gzip: 86.57 KiB
+$ curl -s http://127.0.0.1:8795/
+{"valid":{"ok":true,"id":"evt_probe_1","account":"acct_probe"},
+ "tampered":{"ok":false,"type":"StripeSignatureVerificationError"},
+ "syncConstructEvent":{"ok":false,"msg":"SubtleCryptoProvider cannot be used in a synchronous context.\nUse `await constructEventAsync(...)` instead of `constructEvent(...)`"}}
+```
+
+- Bundle impact is about +440 KiB raw, far under the 64 MiB limit.
+- The repo's current `fetch`-based client already works without the SDK. Adopting the SDK is optional; I recommend it for webhook verification and typed v2 Accounts calls.
+- **Not verified:** live API calls through the SDK. There are no keys yet, so this is RC-40 (test-mode E2E).
+
+### Dependencies and ordering
+
+1. **RC-2** (lockfile), then **RC-3** (remove nested v4): small, unblock clean installs and bundles.
+2. **RC-4** storage port (**D1 or Hyperdrive**, Kieran to decide). It's a prerequisite for everything below, because every ticket adds tables and needs real transactions/batches. **Not started**, per the PM.
+3. **RC-5** Connect onboarding. It also builds the shared webhook framework: the event log, both endpoints, and signature verification.
+4. **RC-9** class model. Can run alongside RC-5. It's needed before RC-6 pricing/policies and RC-8 per-class scope.
+5. **RC-6** class checkout (direct charges). Needs RC-5 (`charges_enabled` account) and RC-9.
+6. **RC-7** PT subscription. Needs RC-4 and the webhook framework from RC-5. It's independent of RC-6, so it can run in parallel.
+7. **RC-8**: (a) and (b) after RC-6; (c) after RC-7.
+8. **RC-12** (workers.dev preview + secrets, Kieran's OK) is needed before any Stripe-sent webhook can reach us. The alternative, `stripe listen` forwarding, needs a Stripe CLI login. Until then, tests use signed fixture events, as the repo's tests already do. **RC-40** runs the test-mode E2E after keys are arranged.
+9. **`pt_direct` migration:** new PTs get Connect only. Existing `pt_direct` rows keep their stored key **only** to refund historical bookings, then they're archived. This needs Kieran's sign-off on the cut-off, and it sits inside RC-5/RC-6.
+
+### Estimates (Backend dev-days, after RC-4; tests included)
+
+| Ticket | Estimate | Main work |
+|---|---|---|
+| RC-5 Connect onboarding + webhook framework + `pt_direct` retirement plan | **3** | Revive the v2 Account + account-link flow, status mirror and dashboard state API, both webhook endpoints + event log, SDK verification, migration plan for existing records. |
+| RC-6 Class checkout (direct charges, no fee), refunds, holds | **3** | Checkout on `Stripe-Account` with final `unit_amount`, no `application_fee_amount`, forward-only state machine, refunds from the PT's balance, hold expiry, Connect-scope events. |
+| RC-7 PT subscription + Customer Portal + grace/unpublish | **3.5** | Platform Product/Price from `billing_settings`, subscription-mode Checkout, Portal session, invoice/subscription events with re-retrieve, grace job (Cron Trigger) that pauses bookings and unpublishes after N days. |
+| RC-8 Discount codes (a) PT, (b) admin, (c) subscription promo codes | **3** | Local code CRUD + server-side validation and price calculation, holds/redemptions with `max_uses`, admin Coupon/Promotion Code create + mirror, Checkout `discounts`. |
+| **Total RC-5 to RC-8** | **12.5** (range 11–15) | Add **+0.5–1 d** if D1 is chosen (batch-only atomicity for holds and `max_uses`). Excludes RC-4 itself and RC-9/10/12, and about 3 QA days in RC-40. |
+
+### Key risks
+
+- **D1 vs Postgres concurrency:** with D1 the oversell and `max_uses` guarantees rest on single conditional statements/batches, not row locks. They need targeted concurrency tests whichever option is picked.
+- **Out-of-order or duplicate events** on subscriptions and accounts: mitigated by the event log + re-retrieve + `status_source_ts`.
+- **v1/v2 event duality for v2 Accounts:** the same account change can arrive as both v1 and v2 events on different endpoints. Both are handled idempotently by re-reading the account.
+- **No webhook delivery until a public URL exists** (RC-12 needs Kieran's OK). Until then everything is fixture-tested only.
+- **Customer Portal and Product/Price setup** need someone with test-mode Dashboard/API access. No keys are arranged yet.
+- **Discounts on direct charges** are applied by lowering the Checkout amount. The PT's Stripe Dashboard shows only the final amount, so our `bookings` row is the record of list price vs discount.
+- **Refunds on direct charges** come out of the PT's Stripe balance. With `losses_collector:'stripe'`, negative balances are Stripe's risk per Kieran's model, but the refund UX must say the PT pays it.
+- **`pt_direct` historical data:** encrypted PT keys must be kept and readable until historical refunds are no longer possible, then deleted. This needs a sign-off date.
 
 ## Rollback
 
