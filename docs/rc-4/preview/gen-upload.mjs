@@ -12,7 +12,9 @@ const b64 = p => readFileSync(p).toString('base64');
 const modules = [
   { name: 'entry.mjs', type: 'application/javascript+module', b64: b64('docs/rc-4/preview/entry.mjs') },
   { name: 'index.js', type: 'application/javascript+module', b64: b64('/tmp/rc4-prev/index.js') },
-  ...['index.html', 'app.js', 'styles.css'].map(f => ({ name: `public/${f}.txt`, type: 'text/plain', b64: b64(`app/public/${f}`) }))
+  ...['index.html', 'app.js', 'styles.css'].map(f => ({ name: `public/${f}.txt`, type: 'text/plain', b64: b64(`app/public/${f}`) })),
+  // RC-28: binaries as ASCII base64 text modules (same Text-module channel as the HTML/JS/CSS).
+  ...['fonts/sora-latin-wght.woff2','images/hero.webp','images/booking-hero.webp','images/class-strength.webp','images/class-conditioning.webp','images/empty-classes.webp','images/empty-bookings.webp'].map(f => ({ name: `public/${f}.b64.txt`, type: 'text/plain', b64: Buffer.from(readFileSync(`app/public/${f}`).toString('base64'), 'utf8').toString('base64') }))
 ];
 const metadata = {
   main_module: 'entry.mjs', compatibility_date: '2026-11-01', compatibility_flags: ['nodejs_compat'],
