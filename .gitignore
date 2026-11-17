@@ -3,3 +3,6 @@ node_modules/
 .dev.vars
 .netlify/
 cutover-reports/
+
+# RC-4 preview: generated secrets (0600), never committed
+/.secrets/

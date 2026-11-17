@@ -236,3 +236,29 @@ Done through the Cloudflare connector's API (wrangler is not logged in). Scope w
    - Restored to the bookmark (previous_bookmark `00000000-ffffffff-00005126-b3a489e1808605e8d65e87bfa054ae7c`). After the restore, brand_name is `REHEARSAL PT`, there are 2 users, the drill user is gone and d1_migrations still has 5 rows.
    - The rehearsal database was then **deleted**. The account list now shows only `resiliencecoaching`, and GET by id returns 404.
 
+
+## 13. workers.dev preview (17 Nov 2026, item 6 approved 15:27/15:36 UK; Access approved 15:37 UK)
+
+Everything was done through the Cloudflare connector's API (no wrangler login, no API tokens). Only the `preview` env was uploaded. The top-level/default env, which is bound to the production database `fd8a613f-…`, has **not** been deployed, and no Worker or cron is bound to the production database.
+
+- **Plan check: NOT RUN through the API.** `GET /accounts/{id}/subscriptions`, `GET /user/subscriptions` and `GET /accounts/{id}/billing/profile` all return HTTP 403: the connector's OAuth scopes don't cover billing. Per the PM ruling (15:38 UK), Kieran's word that Workers Paid ($5/month) is active stands in for the check.
+- **Preview D1:** `resiliencecoaching-preview`, uuid `81379d2e-c718-48b7-870d-1d189feea966`, WEUR.
+  - 0001–0005 are applied and recorded in `d1_migrations` (23 tables).
+  - The seed is synthetic only: one published PT `preview-trainer`, its trainer login at `example.com` (the password is in the git-ignored 0600 file `.secrets/preview.json`), one block and one session.
+  - There's no admin user; the admin bootstrap stays owner-only.
+  - Script: `docs/rc-4/d1-rehearsal/preview-apply.mjs`.
+- **Worker:** `resiliencecoaching-preview` (`env.preview` in `wrangler.jsonc`).
+  - Bindings: `DB` → `81379d2e-…` (preview only), `WRITER` → Durable Object namespace `cf8aedd7f82b4337bfbe8921daf0b2be` (SQLite class `Writer`, migration tag v1).
+  - Vars: `EMAIL_MODE=preview`, `PAYMENT_MODE=stripe_test` (the app's test-mode value; there's no Stripe key, so Stripe calls fail closed before any request), `STRIPE_INTEGRATION=connect`, `APP_URL`.
+  - Cron `* * * * *`. Observability is on.
+  - Secret: `PT_INVITE_SECRET`. There's no Stripe or Resend secret.
+- **Assets:** the connector can't run the static-assets direct-upload step (it needs the upload-session JWT as bearer, and the connector always sends its own credentials, so the call returned 401).
+  - Instead, the upload ships `app/public` as Text modules, with `docs/rc-4/preview/entry.mjs` giving the unchanged Worker an `env.ASSETS` that serves the exact file, `/` → index.html, and index.html otherwise (SPA).
+  - This was checked locally with `wrangler dev`: assets, the SPA fallback, security headers and the API all work.
+  - Production keeps the real assets binding via `wrangler deploy`.
+  - Generator: `docs/rc-4/preview/gen-upload.mjs`. It refuses to run if the production database id appears in the upload.
+- **workers.dev:** `enabled:false`, `previews_enabled:false` (it was disabled on an inert 404 stub before the real upload). The would-be URL is `https://resiliencecoaching-preview.littlk.workers.dev`.
+- **Access: BLOCKED.** The account has no Zero Trust organisation: `GET /access/organizations` returns 403 `access.api.error.not_enabled`. Per the brief, no organisation, Access app or policy was created, and **the workers.dev route stays OFF**.
+  - Planned policy once the owner enables Zero Trust: a self-hosted app on the workers.dev hostname, Allow, include owner email (1 address), login method One-time PIN only, session 24h.
+- **CPU check (scrypt, about 27 ms): NOT RUN.** There's no way to invoke the deployed Worker without the public route, other than an edge-preview session, which needs a preview token and so isn't used.
+  - It will run after Access is in place and the route is on: the owner signs in once, then the Worker's telemetry is read for `exceededCpu` / 1102.

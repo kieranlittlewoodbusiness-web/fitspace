@@ -45,5 +45,37 @@
   // housekeeping (expire holds, prune rate limits) every minute. Local: wrangler dev
   // --test-scheduled, then GET /__scheduled. Nothing is deployed from this branch.
   "triggers": { "crons": ["* * * * *"] },
-  "observability": { "enabled": false }
+  "observability": { "enabled": false },
+  // Preview (approved 17 Nov 2026, item 6). Uploaded through the Cloudflare API, not
+  // `wrangler deploy`. workers.dev is enabled only behind Cloudflare Access (docs §13).
+  // PAYMENT_MODE "stripe_test" is the app's test mode; no Stripe key is set, so every Stripe
+  // call fails closed before any network request. No Resend key: mail stays in preview.
+  // Secrets (set through the API, never committed): PT_INVITE_SECRET.
+  "env": {
+    "preview": {
+      "name": "resiliencecoaching-preview",
+      "workers_dev": false,
+      "preview_urls": false,
+      "vars": {
+        "EMAIL_MODE": "preview",
+        "PAYMENT_MODE": "stripe_test",
+        "STRIPE_INTEGRATION": "connect",
+        "APP_URL": "https://resiliencecoaching-preview.littlk.workers.dev"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "resiliencecoaching-preview",
+          "database_id": "81379d2e-c718-48b7-870d-1d189feea966",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [{ "name": "WRITER", "class_name": "Writer" }]
+      },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Writer"] }],
+      "triggers": { "crons": ["* * * * *"] },
+      "observability": { "enabled": true }
+    }
+  }
 }
