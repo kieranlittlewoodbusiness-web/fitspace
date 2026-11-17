@@ -14,7 +14,7 @@ const base='https://public.example',adminPass='OwnedAdminFixturePassword123!',cu
 const provider=()=>({pool,ready:Promise.resolve()});
 before(async()=>{
  process.env.ADMIN_EMAIL='owner@example.com';process.env.ADMIN_PASSWORD=adminPass;
- process.env.DATA_NAMESPACE='reset-test-v7';process.env.PAYMENT_MODE='demo';process.env.RESET_EMAIL_MODE='send';process.env.RESEND_API_KEY='re_fixture_only';process.env.MAIL_FROM='FITSPACE <help@example.com>';process.env.AUTH_RESET_SECRET='fixture_only_not_a_real_reset_secret_123456789';process.env.APP_URL=base;delete process.env.PREVIEW_PASSWORD;
+ process.env.DATA_NAMESPACE='reset-test-v7';process.env.PAYMENT_MODE='demo';process.env.RESET_EMAIL_MODE='send';process.env.RESEND_API_KEY='re_fixture_only';process.env.MAIL_FROM='Resilience Coaching <help@example.com>';process.env.AUTH_RESET_SECRET='fixture_only_not_a_real_reset_secret_123456789';process.env.APP_URL=base;delete process.env.PREVIEW_PASSWORD;
  db=await PGlite.create();server=new PGLiteSocketServer({db,port:0,host:'127.0.0.1',maxConnections:1});await server.start();
  pool=databasePool('postgresql://postgres:postgres@'+server.getServerConn()+'/postgres?sslmode=disable');await ensureSchema(pool);
  handler=createHandler({getStorage:provider});
@@ -33,7 +33,7 @@ const classData=(extra={})=>({title:'Six-week strength block',description:'Suppo
 
 
 async function inspect(fn){let out;await withSnapshot(pool,process.env.DATA_NAMESPACE,async filename=>{const d=connect(filename);try{out=fn(d);}finally{d.exec('PRAGMA wal_checkpoint(TRUNCATE)');d.close();}return new Response('fixture');});return out;}
-function latestToken(address){const email=sent.filter(x=>x.to.includes(address)&&x.subject==='Reset your FITSPACE password').at(-1);assert.ok(email);const link=email.text.match(/https:\/\/[^\s]+\/reset-password#[^\s]+/)[0];assert.ok(link.startsWith(base+'/reset-password#'));return new URL(link).hash.slice(1);}
+function latestToken(address){const email=sent.filter(x=>x.to.includes(address)&&x.subject==='Reset your Resilience Coaching password').at(-1);assert.ok(email);const link=email.text.match(/https:\/\/[^\s]+\/reset-password#[^\s]+/)[0];assert.ok(link.startsWith(base+'/reset-password#'));return new URL(link).hash.slice(1);}
 async function ask(address,c=client()){return c.request('/api/auth/forgot-password','POST',{email:address});}
 async function reset(token,password='NewPasswordFixture123!',c=client()){return c.request('/api/auth/reset-password','POST',{token,new_password:password});}
 
@@ -50,7 +50,7 @@ test('customer reset is single-use, revokes all sessions and keeps the role; old
  assert.equal((await reset(token)).status,200);assert.equal((await customer.request('/api/dashboard')).status,401);assert.equal((await second.request('/api/dashboard')).status,401);
  assert.equal((await client().request('/api/auth/login','POST',{email:'client@example.com',password:customerPass})).status,401);
  const next=client();const login=await next.login('client@example.com','NewPasswordFixture123!');assert.equal(login.data.user.role,'customer');assert.equal((await next.request('/api/admin/pts','POST',{})).status,403);
- assert.equal((await reset(token)).status,400);assert.ok(sent.some(m=>m.to.includes('client@example.com')&&m.subject==='Your FITSPACE password has changed'));
+ assert.equal((await reset(token)).status,400);assert.ok(sent.some(m=>m.to.includes('client@example.com')&&m.subject==='Your Resilience Coaching password has changed'));
 });
 
 test('PT can reset a temporary password without changing role, trainer ownership, prices or bookings',async()=>{
