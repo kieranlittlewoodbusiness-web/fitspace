@@ -316,7 +316,9 @@ export function importSpecifiers(src) {
   return out;
 }
 /** Walk the import graph. `aliases` maps generated specifiers (file::spec) to a real file. */
-export function importGraph(entries, files, { aliases = {}, legacyEdges = [], workerEntries = [] } = {}) {
+// CR 5943169048 C1: a relative import that resolves outside src/, worker/ and scripts/ is also
+// reported on its own (the file is still scanned), unless the edge is listed in outsideEdges.
+export function importGraph(entries, files, { aliases = {}, legacyEdges = [], workerEntries = [], outsideEdges = [] } = {}) {
   const reached = new Set(), problems = [], legacy = [];
   const workerReach = new Set();
   const walk = (start, marks) => {
@@ -340,6 +342,7 @@ export function importGraph(entries, files, { aliases = {}, legacyEdges = [], wo
           problems.push(`${f}::unresolved import ${spec}`); continue;
         }
         if (LEGACY.test(target)) { legacy.push(`${f} -> ${target}`); continue; } // legacy Netlify app: not walked
+        if (!BACKSTOP.test(target) && !outsideEdges.includes(`${f} -> ${target}`)) problems.push(`${f} -> ${target}::import outside the scanned roots (src/, worker/, scripts/)`);
         queue.push(target);
       }
     }

@@ -80,6 +80,8 @@ const FILE_CASES = {
   ts_in_src: { target: 'views', file: 'src/qa-leak-hidden.ts', spec: './qa-leak-hidden.ts', code: `type Db = { all(sql: string, ...a: unknown[]): Promise<unknown[]> };\nexport const hidden = (db: Db): Promise<unknown[]> => db.all(${LEAK_SQL});\n` },
   outside_ts: { target: 'views', file: 'lib/qa-leak.ts', spec: '../lib/qa-leak.ts', code: `export const hidden = (db: { all(q: string): Promise<unknown[]> }) => db.all(${LEAK_SQL});\n` },
   // QA's exact miss 1: src/*.js reading env.DB, imported from the Worker entry.
+  // CR 5943169048 C1, verbatim: the helper takes the SQL; the call site builds it in views.
+  cr_zzhelper: { target: 'views', file: 'lib/zzhelper.mjs', code: 'export const q=(db,s)=>db.all(s)\n', importLine: "import { q } from '../lib/zzhelper.mjs';\n", call: "q(db,'SELECT * FROM '+'bookings')" },
   js_env_db_from_worker: { target: 'index', file: 'src/qa-leak-env.js', spec: '../src/qa-leak-env.js', code: `export const hidden = async (env) => (await env.DB.prepare(${LEAK_SQL}).all()).results;\n`, arg: 'env' }
 };
 for (const [name, c] of Object.entries(FILE_CASES)) {
@@ -90,7 +92,7 @@ for (const [name, c] of Object.entries(FILE_CASES)) {
   mkdirSync(dirname(c.file), { recursive: true });
   created = [c.file]; writeFileSync(c.file, c.code);
   pending = [file, original];
-  writeFileSync(file, `import { hidden as qaHidden } from '${c.spec}';\n` + original.replace(from, to(`qaHidden(${c.arg || 'db'})`)));
+  writeFileSync(file, (c.importLine ?? `import { hidden as qaHidden } from '${c.spec}';\n`) + original.replace(from, to(c.call ?? `qaHidden(${c.arg || 'db'})`)));
   try {
     const lint = summary(vitest('workers-test/scope-lint.test.mjs'));
     const rt = summary(vitest('workers-test/scope-runtime.test.mjs'));

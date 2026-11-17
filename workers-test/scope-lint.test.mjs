@@ -22,6 +22,8 @@ export const GRAPH = {
   aliases: { '../docs/rc-4/preview/entry.mjs::./index.js': WORKER_MAIN },
   // Node CLI scripts that read the legacy Netlify app's SQLite/Postgres code (never D1). Each edge
   // into app/ or netlify/ is listed; a new one, or any from Worker code, fails.
+  // CR 5943169048 C1: relative imports out of src/worker/scripts must be listed here (none today).
+  outsideEdges: [],
   legacyEdges: [
     '../scripts/demo-snapshot.mjs -> ../app/db.cjs',
     '../scripts/dev.mjs -> ../netlify/functions/platform.mjs',
@@ -724,7 +726,7 @@ describe('scope lint file discovery (import graph + backstop)', () => {
 
   it('.ts cases: TS-style "./x.js" import resolves to x.ts; type-annotated env.DB access is caught', () => {
     const r = lint({ '../lib/qa-ts.ts': 'export async function tsLeak(env: { DB: D1Database }): Promise<unknown> {\n  return env.DB.prepare(`SELECT * FROM bookings`).all();\n}\n' }, importInto('../src/views.mjs', '../lib/qa-ts.js'));
-    expect(r.problems).toEqual([]);
+    expect(r.problems).toEqual(['../src/views.mjs -> ../lib/qa-ts.ts::import outside the scanned roots (src/, worker/, scripts/)']); // resolved (not 'unresolved')
     expect(r.v).toEqual(expect.arrayContaining([expect.stringMatching(/^query \.\.\/lib\/qa-ts\.ts::tsLeak::/), expect.stringMatching(/^raw \.\.\/lib\/qa-ts\.ts::tsLeak::raw DB binding/)]));
   });
 
@@ -743,4 +745,24 @@ describe('scope lint file discovery (import graph + backstop)', () => {
       expect(r.v.some(x => x.startsWith('graph ') && re.test(x)), name + ': ' + JSON.stringify(r.problems)).toBe(true);
     }
   });
+  it('CR 5943169048 C1 exact repro: lib/zzhelper.mjs `q=(db,s)=>db.all(s)` imported into src/views.mjs is caught twice', () => {
+    const r = lint({ '../lib/zzhelper.mjs': 'export const q=(db,s)=>db.all(s)\n' }, {
+      '../src/views.mjs': src => "import { q } from '../lib/zzhelper.mjs';\n" + src.replace('await scope.bookings()', "await q(db,'SELECT * FROM '+'bookings')")
+    });
+    expect(r.linted).toContain('../lib/zzhelper.mjs');
+    expect(r.v).toEqual(expect.arrayContaining([
+      'graph ../src/views.mjs -> ../lib/zzhelper.mjs::import outside the scanned roots (src/, worker/, scripts/)',
+      expect.stringMatching(/^nonliteral \.\.\/lib\/zzhelper\.mjs::/)
+    ]));
+  });
+
+  it('CR 5943169048 C1: any relative import resolving outside src/worker/scripts fails, even with harmless content, unless listed', () => {
+    const harmless = lint({ '../lib/qa-pure.mjs': 'export const add = (a, b) => a + b;\n' }, importInto('../src/util.mjs', '../lib/qa-pure.mjs'));
+    expect(harmless.v).toEqual(['graph ../src/util.mjs -> ../lib/qa-pure.mjs::import outside the scanned roots (src/, worker/, scripts/)']);
+    const listed = lintSet({ ...REPO, '../lib/qa-pure.mjs': 'export const add = (a, b) => a + b;\n', '../src/util.mjs': "import '../lib/qa-pure.mjs';\n" + REPO['../src/util.mjs'] },
+      { ...GRAPH, outsideEdges: ['../src/util.mjs -> ../lib/qa-pure.mjs'], entries: Object.keys(REPO).filter(f => f.startsWith('../scripts/')) });
+    expect(violations(listed.sources, listed.problems)).toEqual([]);
+    expect(Object.keys(listed.sources)).toContain('../lib/qa-pure.mjs'); // listed, but still scanned
+  });
 });
+
