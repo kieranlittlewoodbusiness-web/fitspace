@@ -39,3 +39,25 @@ test('wrangler.jsonc: the default env does not enable the cron; only env.preview
   assert.match(preview, /"database_id": "81379d2e-c718-48b7-870d-1d189feea966"/);
   assert.doesNotMatch(preview, new RegExp(PRODUCTION));
 });
+
+// QA D3 (f978692): the production/default env has neither a cron trigger nor CRON_ENABLED;
+// env.preview has both. Resolved through wrangler's own config reader (the one `wrangler
+// deploy` uses), so top-level -> env inheritance is applied exactly as a deploy would.
+test('wrangler.jsonc resolved by wrangler: no cron trigger on the default (production) env; preview has it', async () => {
+  const { unstable_readConfig: readConfig } = await import('wrangler');
+  const resolve = (env) => readConfig({ config: 'wrangler.jsonc', env });
+  const prod = resolve(undefined), preview = resolve('preview');
+  const PRODUCTION_DB = 'fd8a613f-4dd4-462b-83e0-d7673031a6fc';
+  assert.equal(prod.d1_databases[0].database_id, PRODUCTION_DB);
+  assert.deepEqual(prod.triggers?.crons ?? [], [], 'default env must not register a cron trigger');
+  assert.equal(prod.vars?.CRON_ENABLED, undefined);
+  assert.deepEqual(preview.triggers?.crons, ['* * * * *']);
+  assert.equal(preview.vars?.CRON_ENABLED, 'true');
+  assert.notEqual(preview.d1_databases[0].database_id, PRODUCTION_DB);
+  // Any other env that ever gets a schedule must not be bound to the production database.
+  const raw = (await import('wrangler')).experimental_readRawConfig({ config: 'wrangler.jsonc' }).rawConfig;
+  for (const name of Object.keys(raw.env || {})) {
+    const c = resolve(name);
+    if ((c.triggers?.crons ?? []).length) assert.notEqual(c.d1_databases?.[0]?.database_id, PRODUCTION_DB, name);
+  }
+});

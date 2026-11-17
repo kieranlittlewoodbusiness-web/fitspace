@@ -42,11 +42,12 @@
   // storage of its own; all data lives in D1.
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Writer"] }],
   // Cron Trigger (src/mail.mjs): email delivery (booking + password-reset mail) and
-  // housekeeping (expire holds, prune rate limits) every minute. OFF unless CRON_ENABLED is
-  // "true" (CR 5941600057): not set here, so a deploy of this default env (real D1 id) runs
-  // nothing on a schedule until the go-live step sets it; env.preview sets it. Local: wrangler dev
-  // --test-scheduled, then GET /__scheduled. Nothing is deployed from this branch.
-  "triggers": { "crons": ["* * * * *"] },
+  // housekeeping (expire holds, prune rate limits). QA D1-D3 (f978692): this default env (real
+  // D1 id) has NO cron trigger and no CRON_ENABLED; only env.preview has both. The go-live step
+  // adds both here, with approval. Two layers: no schedule here, and cronTick is a no-op unless
+  // CRON_ENABLED is "true" (CR 5941600057). Test: tests/remote-guards.test.mjs reads this file
+  // through wrangler's own config resolver. Local: wrangler dev --test-scheduled, then
+  // GET /__scheduled. Nothing is deployed from this branch.
   "observability": { "enabled": false },
   // Preview (approved 17 Nov 2026, item 6). Uploaded through the Cloudflare API, not
   // `wrangler deploy`. workers.dev is enabled only behind Cloudflare Access (docs §13).
