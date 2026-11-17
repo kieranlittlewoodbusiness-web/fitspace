@@ -12,7 +12,7 @@
 //   4. the cutover gate (PM ruling): duplicate live bookings -> STOP with a report (exit 2),
 //      unless the opt-in --mark-duplicates-for-review --confirm <phrase> is given;
 //   5. generate INSERT statements (explicit columns, FK order) -> a 0600 SQL file;
-//   6. --persist-to: apply ALL migrations (0001-0004) to that LOCAL D1, refuse if it already
+//   6. --persist-to: apply ALL migrations in migrations/ to that LOCAL D1, refuse if it already
 //      holds data, execute the file, and verify row counts table by table.
 //
 //   node scripts/snapshot-import.mjs --snapshot fitspace.sqlite --persist-to .rc4-import [--out import.sql]

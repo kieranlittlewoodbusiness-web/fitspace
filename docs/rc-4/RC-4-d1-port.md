@@ -148,7 +148,7 @@ ADMIN_EMAIL=you@example.com ADMIN_NAME="Site Admin" node scripts/bootstrap-admin
 Inserts an admin **only if none exists** (`INSERT … SELECT … WHERE NOT EXISTS(admin)`), rejects the old demo password and passwords under 12 characters, hashes with scrypt, writes the SQL to a 0600 temp file, runs `wrangler d1 execute DB --local --file`, and deletes the file. **`--remote --confirm-remote` is OWNER-ONLY: the owner runs it, and only with Kieran's explicit yes for that run. Agents and CI never run it** (also in the script header and `--help`). **Not run.** Tested locally: two runs → 1 admin; `--remote` without confirm and the demo password are refused; no temp file left.
 
 ## 9. Phase plan and ETA
-See the PR description for the live checklist. Phase 3 is done (this section and §10). Phase 4 (≈2 working days after phase 3 review): cutover rehearsal on a real D1 **with approval** (Time Travel drill, `wrangler d1 migrations apply --remote`, owner-run bootstrap), CPU check of scrypt on the chosen plan (RC-12 decision), Stripe test-mode end-to-end with real test keys (approval), the Netlify decommission plan, and main merge after #2 and #5 land. Code-complete estimate unchanged: **Wed 25 – Fri 27 Nov 2026**, assuming the real-D1/Workers Paid decisions arrive by then.
+See the PR description for the live checklist. Phase 3 is done (§10). Phase 4 local work is done (§11). Remaining phase 4 work needs approval (see the approvals list in the PR): cutover rehearsal on a real D1 **with approval** (Time Travel drill, `wrangler d1 migrations apply --remote`, owner-run bootstrap), CPU check of scrypt on the chosen plan (RC-12 decision), Stripe test-mode end-to-end with real test keys (approval), the Netlify decommission plan, and main merge after #2 and #5 land. Code-complete estimate unchanged: **Wed 25 – Fri 27 Nov 2026**, assuming the real-D1/Workers Paid decisions arrive by then.
 
 ## 10. Phase 3 (routes, Stripe jobs, pt_direct read path, PT webhook, Cron Trigger)
 **Routes.** Every `app/server.cjs` route is now in `worker/index.mjs`, which holds no SQL. Reads go through `scopeFor()` (`src/views.mjs`, `src/scope.mjs`), public reads through `src/public.mjs` (published PTs and blocks only), and multi-step writes through `write()` (Writer DO). Unknown `/api/*` → 404 (the phase 1–2 501 stubs are gone). Login (rate limit 15 per 15 min per IP) and signup (10) run in the Worker: each is one batch, the unique email gives 409, and scrypt stays out of the Writer queue. Unknown emails verify against a fixed dummy hash (same CPU, no enumeration). Password change goes through the Writer with guard `password_unchanged` (409 `PASSWORD_CHANGED_ELSEWHERE`). Cross-tenant tests: `workers-test/phase3-routes.test.mjs` and `phase3-stripe.test.mjs` (dashboard per role, public pages hide unpublished, admin routes 403 for PT/customer, booking GET/pay/cancel/checkout/refund 404 across customers and PTs, attendance 404 across PTs, PT payments setup shows own PT only).
@@ -171,3 +171,50 @@ See the PR description for the live checklist. Phase 3 is done (this section and
 **Retry-safe creates (CR condition 3).** Migration 0004 adds `pts.create_key` and `blocks.create_key` (partial UNIQUE indexes, NULL for old rows). Clients send a fresh `create_key` per create form. A retry or concurrent duplicate returns the same row (`replay:true`). For PTs, the temporary password is `HMAC(PT_INVITE_SECRET, create_key)`. It is never stored, so a retry after a lost response returns the same password while `must_change_password` is still set (afterwards `temporary_password: null`). scrypt runs in the Worker, not the Writer.
 
 **Create-key reuse (CR 5940914487 minor 1).** Migration 0005 adds `pts.create_hash` and `blocks.create_hash` (sha256 of the normalised create payload). The same `create_key` with the same details replays the original record; with different details it returns **409 `CREATE_KEY_REUSED`** and changes nothing. Rows from before 0005 have NULL and are not checked.
+
+## 11. Phase 4 (local only): snapshot import, ported tests, duplicate-import reason
+
+### Snapshot → D1 import (`scripts/snapshot-import.mjs`)
+The live app stores the whole SQLite database as one `bytea` row (`fitspace_preview_state.snapshot`, `lib/storage.mjs`). The import copies the snapshot to a private temp dir (the source is never modified), upgrades the copy with `app/db.cjs connect()` (the app's own migrations, so older snapshots are upgraded exactly as the live app would), checks tables and columns against `migrations/0001`, runs the cutover duplicate gate, and writes explicit-column `INSERT`s in FK order to a 0600 file. With `--persist-to <dir>` it applies every migration in `migrations/` to that **local** D1, refuses a non-empty target, executes the file and verifies row counts for all 17 tables. `--remote` is refused; the script uses `node_modules/.bin/wrangler` (no npx download).
+
+| Step | Who | Command |
+|---|---|---|
+| 1. Export snapshot (reads production data) | **Owner only, needs Kieran's approval** | `psql "$DATABASE_URL" -At -c "SELECT encode(snapshot,'base64') FROM fitspace_preview_state WHERE namespace='<DATA_NAMESPACE>'" > fitspace.b64` |
+| 2. Rehearse locally | anyone with the file (keep it off shared drives) | `node scripts/snapshot-import.mjs --snapshot fitspace.b64 --base64 --persist-to .rc4-import --out import.sql --report-dir cutover-reports` |
+| 3. Duplicates found (exit 2) | PM decision | Re-run with `--mark-duplicates-for-review --confirm "<phrase>"` (see §10) |
+| 4. Load the real D1 | **Owner only, after approval** | `wrangler d1 migrations apply DB --remote`, then `wrangler d1 execute DB --remote --file import.sql` |
+
+Demo rehearsal (no production data): `scripts/demo-snapshot.mjs` builds a snapshot from `app/db.cjs` connect + seed. Locally verified: "row counts verified for 17 tables", source sha256 unchanged, output mode 600, second run refused ("Target D1 is not empty"), `--remote` refused.
+
+### Duplicate imports (PM ruling)
+Duplicates keep the existing `review` status (CHECK unchanged). `bookings` has no notes or metadata column (checked 0001–0005), so the reason is an `audit_log` row: `action='duplicate_import:kept=<kept booking id>'`, `target_id=<review booking>`, id `cutover-review-<booking>`. PT and admin dashboards show `review_reason` per booking: `{code:'duplicate_import', kept_booking_id}` or `{code:'payment_review'}` for other reviews; the customer view has no such key. Tested in `workers-test/cutover.test.mjs` and `tests/snapshot-import.test.mjs`.
+
+### Fail closed on a mismatched platform key
+Like `netlify/functions/platform.mjs:47`, with the Connect integration a configured `STRIPE_SECRET_KEY` that does not match `PAYMENT_MODE` now answers 503 on every `/api/` route except `/api/auth/*`, before any write (previously only the Stripe call failed, after the hold was written).
+
+### Old test → Workers test mapping
+The old suites still run in `npm test` (they test the Netlify path, which stays live until cutover). "Ported" = same scenario re-written against the Worker + D1.
+
+| Old test | Workers coverage |
+|---|---|
+| `app/tests/platform.test.cjs` (10) | Ported 1:1: `workers-test/legacy-platform.test.mjs` on the imported demo snapshot, + demo login refused without `DEMO_MODE` |
+| `tests/postgres.test.mjs` (5) | Ported: `legacy-postgres.test.mjs` (owner-setup 503 → bootstrap is outside the request path, §8; "storage failure" → failing D1 batch returns 503, nothing committed) |
+| `tests/password-reset.test.mjs` (6) | 2 in `password-reset.test.mjs` (phase 2) + 4 gaps ported in `legacy-postgres.test.mjs` (rotated secret checked on the op: the Writer reads deployment secrets) |
+| `tests/stripe-netlify.test.mjs` 1 sandbox onboarding | `phase3-stripe` "PT connect: account job then onboarding link"; `refunds-accounts` account.updated |
+| 2 server price, pending until signed success | Ported: `legacy-stripe.test.mjs` |
+| 3 lost responses / failed persistence → one session | `phase3-stripe` "concurrent runJob" + "Stripe 500 → retry"; `guards-direct` job_not_done |
+| 4 expired / failed checkout release, decline keeps place | Ported: `legacy-stripe.test.mjs` |
+| 5 refunds: who, pending/failed keep place, success releases, net revenue | Ported: `legacy-stripe.test.mjs`; `phase3-stripe` "another PT gets 404" |
+| 6 late success → review; external partial/full refunds | `webhooks` "late success → review"; `refunds-accounts` (6 tests) |
+| 7 competing reservations, other trainer cannot refund | `capacity.test` (reserve is mode-independent) + `phase3-stripe` "another PT gets 404" |
+| 8 invalid modes, mismatched keys, setup without webhook secrets | Ported: `legacy-stripe.test.mjs` (+ fail-closed change above) |
+| 9 live connected payments | Ported: `legacy-stripe.test.mjs` (dummy live key, fetch mocked) |
+| 10 admin platform link, no connected header, routing match | `phase3-stripe` admin link; ported header/routing: `legacy-stripe.test.mjs` |
+| `tests/pt-direct.test.mjs` 1, 2, 7, 8 (credential save/check/enable/disconnect, live enablement) | **Not ported by design**: pt_direct WRITE routes answer 410 (Kieran chose Connect, §10); `phase3-routes` asserts 410 |
+| pt-direct 3 webhooks: PT secret, account-owned lookup, binding, duplicates | `phase3-stripe` PT webhook test; `guards-direct` event-match |
+| pt-direct 4 refunds in the original PT account | `phase3-stripe` "refund uses the decrypted PT key"; "credential owned by another PT → 403" |
+| pt-direct 5 replay without storing keys in operations | `phase3-stripe` (new assertion: job payloads hold `credential_id`, never a key) |
+| pt-direct 6 cancellation/failure/expiry/late payment with PT keys | Mode-independent paths: `legacy-stripe`, `webhooks`, `capacity`; PT-key checkout itself is a retired write path |
+| `tests/migration-v6.test.mjs` (1) | Not ported: D1 starts at the current schema (0001 = `app/db.cjs` at 7cebef2, parity in `migrations-rollback`). Older snapshots are upgraded by `app/db.cjs connect()` inside the import, and this test keeps running in `npm test` |
+
+Also new: `route-parity.test.mjs` (every `app/server.cjs` route reaches a Worker handler while signed in; no 501 in `src/` or `worker/`).

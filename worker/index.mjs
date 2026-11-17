@@ -70,6 +70,9 @@ export async function handle(request, env) {
   const integration = env.STRIPE_INTEGRATION || 'pt_direct';
   if (!['pt_direct', 'connect'].includes(integration)) throw httpError(503, 'Set STRIPE_INTEGRATION=pt_direct or connect.');
   if (!['demo', 'stripe_test', 'stripe_live'].includes(paymentMode)) throw httpError(503, 'Use PAYMENT_MODE=demo, stripe_test or stripe_live.');
+  // netlify/functions/platform.mjs:47: with the owner (Connect) integration a configured key that
+  // does not match the payment mode fails closed for every API route except sign-in, before any write.
+  if (integration !== 'pt_direct' && env.STRIPE_SECRET_KEY && route.startsWith('/api/') && !route.startsWith('/api/auth/')) validatePlatformKey(env, paymentMode);
   const db = createDb(env.DB);
   const stripeOpts = { mode: paymentMode, integration };
   const paymentOrigin = env.APP_URL ? new URL(env.APP_URL).origin : url.origin;

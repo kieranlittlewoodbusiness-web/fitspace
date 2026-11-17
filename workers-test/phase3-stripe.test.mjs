@@ -57,8 +57,14 @@ describe('checkout (mocked Stripe)', () => {
   it('concurrent runJob for one job: same Idempotency-Key, effect applied once', async () => {
     const s = await connectedPt();
     const bk = await insertBooking({ blockId: s.blockId, customerId: s.users[0].id, status: 'pending', mode: 'stripe_test', extra: { stripe_account_id: s.account, stripe_routing: 'connected' } });
-    const r0 = await call(s.users[0], 'POST', `/api/bookings/${bk}/checkout`, {}, stripeEnv({ STRIPE_SECRET_KEY: 'not-a-key' }));
-    expect(r0.status).toBe(503); // key check fails before any HTTP; the job is kept for retry
+    // A key for the wrong mode fails closed before any write (netlify/functions/platform.mjs:47).
+    expect((await call(s.users[0], 'POST', `/api/bookings/${bk}/checkout`, {}, stripeEnv({ STRIPE_SECRET_KEY: 'not-a-key' }))).status).toBe(503);
+    expect(await db().get('SELECT status FROM stripe_jobs WHERE id=?', 'checkout:' + bk)).toBeNull();
+    // A Stripe 500 keeps the job for retry.
+    mockStripe([['POST', /^\/v1\/checkout\/sessions$/, () => json(500, { error: { message: 'fixture outage' } })]]);
+    const r0 = await call(s.users[0], 'POST', `/api/bookings/${bk}/checkout`, {});
+    expect(r0.status).toBeGreaterThanOrEqual(500);
+    vi.restoreAllMocks();
     expect((await db().get('SELECT status FROM stripe_jobs WHERE id=?', 'checkout:' + bk)).status).toBe('retry');
     expect((await db().get('SELECT status FROM bookings WHERE id=?', bk)).status).toBe('pending');
     const sessionId = 'cs_test_' + nodeCrypto.randomBytes(6).toString('hex');
@@ -196,6 +202,11 @@ describe('legacy pt_direct read path', () => {
     const after = await db().get('SELECT status,refund_status,refunded_pence FROM bookings WHERE id=?', bk);
     expect(after).toMatchObject({ refund_status: 'succeeded', refunded_pence: 1500, status: 'cancelled' });
     expect((await db().get('SELECT webhook_seen_at FROM pt_stripe_credentials WHERE id=?', c.id)).webhook_seen_at).toBeGreaterThan(0);
+    // Ported from tests/pt-direct.test.mjs: operations never store keys (credential id only).
+    const payloads = (await db().all('SELECT payload,result FROM stripe_jobs WHERE target_id=?', bk)).map(r => r.payload + (r.result || ''));
+    expect(payloads.length).toBeGreaterThan(0);
+    expect(payloads.some(p => p.includes(c.key) || p.includes(c.whsec) || /\b(sk|rk)_(test|live)_|whsec_/.test(p))).toBe(false);
+    expect(JSON.parse((await db().get('SELECT payload FROM stripe_jobs WHERE target_id=?', bk)).payload).credential_id).toBe(c.id);
     const authCalls = calls.filter(x => x.path.startsWith('/v1/events/'));
     expect(authCalls.every(x => x.auth === 'Bearer ' + c.key)).toBe(true);
     console.log('pt_direct: refund via PT key ok; webhook bad-sig 400, event.account 400, authoritative mismatch 400, wrong master key 503, applied once then duplicate');
