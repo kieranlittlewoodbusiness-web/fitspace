@@ -1,0 +1,43 @@
+// RC-4 (Cloudflare D1 port): LOCAL ONLY. Used by `wrangler dev` (local mode) and the
+// Vitest Workers integration. Not approved for deploy: no account_id, routes, workers.dev
+// or preview URLs, and the D1 database_id below is a PLACEHOLDER that matches no real
+// database. Creating the real D1 database (and swapping in its id) needs Kieran's approval.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "resiliencecoaching",
+  "main": "worker/index.mjs",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "app/public",
+    "binding": "ASSETS",
+    // The Worker runs first so /api/* reaches the handler and the app's security headers
+    // are applied to static responses too (as netlify.toml's forced rewrite did).
+    "run_worker_first": true,
+    "not_found_handling": "single-page-application"
+  },
+  "vars": {
+    "EMAIL_MODE": "preview",
+    "PAYMENT_MODE": "demo",
+    "STRIPE_INTEGRATION": "connect"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "resiliencecoaching-local",
+      // PLACEHOLDER for local development only (wrangler dev / vitest). Not a real database.
+      "database_id": "00000000-0000-4000-8000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Serialised writer for multi-step read-then-write flows (see src/writer.mjs).
+  "durable_objects": {
+    "bindings": [{ "name": "WRITER", "class_name": "Writer" }]
+  },
+  // SQLite-backed class so it is also valid on the Workers Free plan. The writer keeps no
+  // storage of its own; all data lives in D1.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Writer"] }],
+  "observability": { "enabled": false }
+}

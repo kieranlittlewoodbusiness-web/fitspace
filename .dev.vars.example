@@ -1,0 +1,15 @@
+# Local-only values for `wrangler dev`. Copy to .dev.vars (gitignored) and fill in TEST values.
+# Names only here. Never commit real values. See docs/rc-4/RC-4-d1-port.md "Secrets inventory".
+APP_URL=http://127.0.0.1:8787
+PAYMENT_MODE=demo
+STRIPE_INTEGRATION=connect
+EMAIL_MODE=preview
+RESET_EMAIL_MODE=preview
+# Secrets (test-mode values only in dev):
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+STRIPE_CONNECT_WEBHOOK_SECRET=
+CREDENTIAL_ENCRYPTION_KEY=
+AUTH_RESET_SECRET=
+RESEND_API_KEY=
+MAIL_FROM=
