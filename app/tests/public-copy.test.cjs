@@ -130,3 +130,43 @@ test('the served /app.js and / includes the approved public wording',async()=>{
   assert.ok(html.includes('<span id="modalEyebrow">Resilience Coaching</span>'));
   assertNoVisibleFitspace(html,'served /');
 });
+
+// RC-4: the sign-in modal rendered a literal "}" after </form> (typo in the uploaded app.js,
+// 06c9a72, kept by RC-20). Render the real login, signup, forgot and reset views from app.js
+// with minimal stand-ins and check none has a stray "}" or an uninterpolated "${".
+function assertCleanAuthHtml(html,label){
+  assert.equal(typeof html,'string',label+' did not render');
+  assert.ok(html.length>100,label+' rendered almost nothing');
+  assert.equal(html.includes('${'),false,label+' contains uninterpolated ${');
+  assert.equal(/>\s*}/.test(html),false,label+' has a stray } after a tag');
+  assert.equal(/}\s*</.test(html),false,label+' has a stray } before a tag');
+}
+function renderAuthViews(src,{config={},resetToken='tok'}={}){
+  const start=src.indexOf('function authModal');
+  const resetAt=src.indexOf('function resetPasswordView');
+  const end=src.indexOf('\nfunction ',resetAt+1);
+  assert.ok(start>=0&&resetAt>start,'auth view functions not found in app.js');
+  const fnSrc=src.slice(start,end===-1?src.length:end);
+  let captured=null;
+  const views=new Function('sandbox',
+    'const {config,esc,brandHeader,modal}=sandbox;\nlet resetToken=sandbox.resetToken,authIntent=null;\n'+fnSrc+
+    '\nreturn {authModal,forgotPasswordView,resetPasswordView};')({
+    config,resetToken,
+    esc(value){return String(value).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));},
+    brandHeader(){return '<header></header>';},
+    modal(_title,html){captured=html;}
+  });
+  views.authModal('login');const login=captured;
+  views.authModal('signup');const signup=captured;
+  return {login,signup,forgot:views.forgotPasswordView(),reset:views.resetPasswordView()};
+}
+test('rendered login, signup, forgot and reset views have no stray } or ${',()=>{
+  for(const config of [{},{password_reset_available:true},{password_reset_available:false}]){
+    const views=renderAuthViews(appJs,{config});
+    for(const [name,html] of Object.entries(views))assertCleanAuthHtml(html,name+' '+JSON.stringify(config));
+    assert.equal(views.login.includes('}</form>'),false);
+    assert.ok(views.login.includes('</form>'));
+  }
+  assert.ok(renderAuthViews(appJs).login.includes('Forgot your password?'));
+});
+
