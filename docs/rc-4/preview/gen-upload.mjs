@@ -27,7 +27,9 @@ const metadata = {
     { type: 'plain_text', name: 'CRON_ENABLED', text: 'true' },
     { type: 'plain_text', name: 'PREVIEW_GATE', text: 'on' }
   ],
-  migrations: { new_tag: 'v1', new_sqlite_classes: ['Writer'] },
+  // v1 / Writer already exists on this Worker (first preview upload). Re-sending
+  // new_sqlite_classes: ['Writer'] as new_tag v1 is a 412 on later uploads.
+  // migrations omitted on purpose.
   keep_bindings: ['secret_text', 'secret_key'],
   observability: { enabled: true }
 };
