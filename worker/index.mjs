@@ -304,8 +304,16 @@ const DIAGNOSTIC = /^\/api\/(me|auth\/.*|dashboard|admin\/.*|public\/.*)$/;
 const PT_WEBHOOK = /^\/api\/stripe\/pt\/[a-f0-9-]{36}\/webhook$/;
 /** Legacy platform.mjs:47-49 (`diagnostic` routes stay reachable so the owner can see and fix
  *  the configuration). Throws 503 before anything else runs. */
+// QA D1 (f978692): legacy treats all of /api/pt/stripe/* and /api/admin/* as diagnostic, so
+// these Stripe ACTIONS skipped the check and wrote a stripe_jobs row (or a connection row)
+// before failing. They now need the same readiness as checkout. Still exempt, on purpose:
+// read-only setup pages (GET /api/pt/stripe/setup, GET /api/admin/stripe/setup), the retired
+// pt_direct writes (410, no write), POST /api/admin/stripe/check (one GET /v1/account, no
+// write; stripe() refuses a missing or mismatched key before fetch) and the PT webhook (the
+// PT's own signing secret is verified before any Stripe call or write).
+export const STRIPE_ACTIONS = /^\/api\/(pt\/stripe\/(connect|status)|admin\/stripe\/link)$/;
 export function paymentReadiness(env, route, paymentMode, integration) {
-  if (PT_WEBHOOK.test(route) || route.startsWith('/api/pt/stripe/') || DIAGNOSTIC.test(route)) return;
+  if (!STRIPE_ACTIONS.test(route) && (PT_WEBHOOK.test(route) || route.startsWith('/api/pt/stripe/') || DIAGNOSTIC.test(route))) return;
   if (integration === 'pt_direct') {
     if (isStripe(paymentMode) && !encryptionConfigured(env)) throw httpError(503, 'The owner must configure CREDENTIAL_ENCRYPTION_KEY as 64 random hexadecimal characters.');
   } else validatePlatformKey(env, paymentMode);

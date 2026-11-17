@@ -36,6 +36,10 @@ const MUTATIONS = {
   payment_readiness: ['worker/index.mjs', "if (route.startsWith('/api/')) paymentReadiness(", "if (false) paymentReadiness("],
   readiness_webhook_and_https: ['worker/index.mjs', "if (paymentMode !== 'demo' && ((integration", "if (false && ((integration"],
   reset_off_writes_nothing: ['worker/index.mjs', "if (resetConfigured(env)) await write(env, 'requestReset'", "if (true) await write(env, 'requestReset'"],
+  // QA D1: Stripe actions under the legacy diagnostic prefixes need readiness too.
+  stripe_actions_gate: ['worker/index.mjs', "if (!STRIPE_ACTIONS.test(route) && (", "if (true && ("],
+  stripe_actions_status: ['worker/index.mjs', 'stripe\\/(connect|status)|admin', 'stripe\\/(connect)|admin'],
+  stripe_actions_admin_link: ['worker/index.mjs', '|admin\\/stripe\\/link)$/', ')$/'],
   cron_enabled_gate: ['worker/index.mjs', "if (env.CRON_ENABLED !== 'true') return", "if (false) return"],
   // route_env_without_db is an equivalent mutant on its own (no current code reads env.DB
   // downstream); workers-test/scope-bypass-mutations.mjs pairs it with CR's injected
