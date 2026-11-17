@@ -5,13 +5,33 @@
 // stale entry. Everything else must go through scopeFor(). Regenerate fingerprints with:
 //   node workers-test/scope-lint-core.mjs   (prints the current keys)
 import { describe, it, expect } from 'vitest';
-import { ptOwnedQueries, nonLiteralSqlCalls, rawAccess, sqlConstantUses, sqlCallCount, foreignReceiverCalls } from './scope-lint-core.mjs';
+import { ptOwnedQueries, nonLiteralSqlCalls, rawAccess, sqlConstantUses, sqlCallCount, foreignReceiverCalls, lintSet } from './scope-lint-core.mjs';
+import wranglerConfig from '../wrangler.jsonc?raw';
 
-const sources = {
-  ...import.meta.glob('../src/**/*.mjs', { query: '?raw', import: 'default', eager: true }),
-  ...import.meta.glob('../worker/**/*.mjs', { query: '?raw', import: 'default', eager: true }),
-  ...import.meta.glob('../scripts/**/*.mjs', { query: '?raw', import: 'default', eager: true })
+// QA D2 (f978692): every JS/TS file in the repo (not node_modules or dot folders) is loaded so
+// the import graph can be resolved; the lint reads the graph from the Worker entries and the
+// scripts plus the src/worker/scripts backstop (lintSet in scope-lint-core.mjs).
+// Vite keys files next to this one as './x'; normalise every key to '../<repo path>'.
+export const REPO = Object.fromEntries(Object.entries(import.meta.glob(['../**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}', './**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}', '!../node_modules/**', '!../.*/**', '!../**/.*/**'], { query: '?raw', import: 'default', eager: true }))
+  .map(([k, v]) => [k.startsWith('./') ? '../workers-test/' + k.slice(2) : k, v]));
+export const WORKER_MAIN = '../' + /"main"\s*:\s*"([^"]+)"/.exec(wranglerConfig)[1];
+export const GRAPH = {
+  // The Worker as wrangler deploys it, and the preview upload entry (docs §13), whose ./index.js
+  // is the wrangler bundle of WORKER_MAIN.
+  workerEntries: [WORKER_MAIN, '../docs/rc-4/preview/entry.mjs'],
+  aliases: { '../docs/rc-4/preview/entry.mjs::./index.js': WORKER_MAIN },
+  // Node CLI scripts that read the legacy Netlify app's SQLite/Postgres code (never D1). Each edge
+  // into app/ or netlify/ is listed; a new one, or any from Worker code, fails.
+  legacyEdges: [
+    '../scripts/demo-snapshot.mjs -> ../app/db.cjs',
+    '../scripts/dev.mjs -> ../netlify/functions/platform.mjs',
+    '../scripts/dump-app-schema.cjs -> ../app/db.cjs',
+    '../scripts/snapshot-import.mjs -> ../app/db.cjs'
+  ]
 };
+export const lintFiles = (files = REPO) => lintSet(files, { ...GRAPH, entries: Object.keys(files).filter(f => f.startsWith('../scripts/')) });
+const LINT = lintFiles();
+const sources = LINT.sources;
 
 export const ALLOWED = {
   '../src/sessions.mjs::signup': {
@@ -544,8 +564,9 @@ export const CONST_USES = {
 };
 
 /** Everything the lint reports for a source map (empty = clean). */
-export function violations(src) {
+export function violations(src, problems = []) {
   return [
+    ...problems.map(p => 'graph ' + p),
     ...ptOwnedQueries(src).filter(q => !allowedKeys().includes(q.key)).map(q => 'query ' + q.key),
     ...nonLiteralSqlCalls(src).filter(q => !(q.key in NONLITERAL)).map(q => 'nonliteral ' + q.key),
     ...rawAccess(src).map(r => 'raw ' + r),
@@ -643,4 +664,83 @@ describe('scope lint (per query)', () => {
       expect(v.length, name).toBeGreaterThan(0);
     });
   }
+});
+
+// QA D2 (f978692): file discovery. QA's two misses (unscoped SQL in src/*.js imported by the
+// Worker; a file outside src/worker/scripts imported into them) plus every JS/TS extension,
+// index files, TS-style './x.js' -> x.ts, and the graph's own fail-closed rules.
+describe('scope lint file discovery (import graph + backstop)', () => {
+  const LEAK = "export async function hiddenLeak(db) {\n  return db.all('SELECT * FROM bookings');\n}\n";
+  const ENV_LEAK = "export async function envLeak(env) {\n  return env.DB.prepare('SELECT * FROM bookings').all();\n}\n";
+  const lint = (extra = {}, edit = {}) => {
+    const files = { ...REPO, ...extra };
+    for (const [f, fn] of Object.entries(edit)) files[f] = fn(files[f]);
+    const r = lintFiles(files);
+    return { v: violations(r.sources, r.problems), linted: Object.keys(r.sources), problems: r.problems };
+  };
+  const importInto = (target, spec) => ({ [target]: src => `import * as qaLeak from '${spec}';\n` + src });
+
+  it('the real tree: graph resolves with no problems; Worker, preview entry and scripts are covered', () => {
+    expect(LINT.problems).toEqual([]);
+    for (const f of [WORKER_MAIN, '../docs/rc-4/preview/entry.mjs', '../src/writer.mjs', '../src/ops/index.mjs', '../scripts/dump-app-schema.cjs']) expect(LINT.graph.concat(Object.keys(sources))).toContain(f);
+    expect(Object.keys(sources).some(f => /^\.\.\/(app|netlify)\//.test(f))).toBe(false);
+    expect(Object.keys(REPO).filter(f => !f.startsWith('../'))).toEqual([]);
+    expect(Object.keys(REPO)).toEqual(expect.arrayContaining(['../workers-test/helpers.mjs', '../workers-test/scope-lint-core.mjs', '../app/server.cjs', '../lib/storage.mjs']));
+    console.log('scope lint files:', Object.keys(sources).length, 'of', Object.keys(REPO).length, 'JS/TS files; legacy edges', LINT.legacy.length);
+  });
+
+  it('(a) unscoped SQL in src/*.js imported from the Worker entry is caught (QA miss 1), and also when not imported', () => {
+    const imported = lint({ '../src/qa-leak-hidden.js': LEAK + ENV_LEAK }, importInto(WORKER_MAIN, '../src/qa-leak-hidden.js'));
+    expect(imported.linted).toContain('../src/qa-leak-hidden.js');
+    expect(imported.v.filter(x => x.includes('qa-leak-hidden.js'))).toEqual(expect.arrayContaining([expect.stringMatching(/^query \.\.\/src\/qa-leak-hidden\.js::hiddenLeak::/), expect.stringMatching(/raw \.\.\/src\/qa-leak-hidden\.js::envLeak::raw DB binding/)]));
+    expect(lint({ '../src/qa-leak-hidden.js': LEAK }).v.some(x => x.startsWith('query ../src/qa-leak-hidden.js'))).toBe(true); // backstop
+  });
+
+  it('(b) a file outside src/worker/scripts imported into them is caught (QA miss 2), extensionless and index imports too', () => {
+    for (const [file, spec, into] of [
+      ['../lib/qa-leak.mjs', '../lib/qa-leak.mjs', '../src/views.mjs'],
+      ['../outside/leak.mjs', '../outside/leak', WORKER_MAIN],
+      ['../lib/qa/index.js', '../../lib/qa', '../src/ops/bookings.mjs'],
+      ['../docs/qa-deep.cjs', '../docs/qa-deep.cjs', '../scripts/bootstrap-admin.mjs'],
+      ['../workers-test/qa-helper.mjs', '../workers-test/qa-helper.mjs', WORKER_MAIN]
+    ]) {
+      const r = lint({ [file]: LEAK }, importInto(into, spec));
+      expect(r.linted, file).toContain(file);
+      expect(r.v.some(x => x.startsWith('query ' + file + '::hiddenLeak::')), file).toBe(true);
+    }
+    // Transitive: worker -> src/a.js -> lib/b.ts
+    const t = lint({ '../src/qa-a.js': "export { hiddenLeak } from '../lib/qa-b.js';\n", '../lib/qa-b.ts': LEAK.replace('(db)', '(db: any)') }, importInto(WORKER_MAIN, '../src/qa-a.js'));
+    expect(t.v.some(x => x.startsWith('query ../lib/qa-b.ts::'))).toBe(true);
+  });
+
+  it('every JS/TS extension is linted, in the backstop and through the graph', () => {
+    for (const ext of ['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.jsx', '.tsx']) {
+      expect(lint({ ['../src/qa-ext' + ext]: LEAK }).v.some(x => x.startsWith(`query ../src/qa-ext${ext}::`)), 'backstop ' + ext).toBe(true);
+      expect(lint({ ['../worker/qa-ext' + ext]: LEAK }).v.some(x => x.startsWith(`query ../worker/qa-ext${ext}::`)), 'worker ' + ext).toBe(true);
+      const g = lint({ ['../lib/qa-ext' + ext]: LEAK }, importInto('../src/views.mjs', '../lib/qa-ext' + ext));
+      expect(g.v.some(x => x.startsWith(`query ../lib/qa-ext${ext}::`)), 'graph ' + ext).toBe(true);
+    }
+  });
+
+  it('.ts cases: TS-style "./x.js" import resolves to x.ts; type-annotated env.DB access is caught', () => {
+    const r = lint({ '../lib/qa-ts.ts': 'export async function tsLeak(env: { DB: D1Database }): Promise<unknown> {\n  return env.DB.prepare(`SELECT * FROM bookings`).all();\n}\n' }, importInto('../src/views.mjs', '../lib/qa-ts.js'));
+    expect(r.problems).toEqual([]);
+    expect(r.v).toEqual(expect.arrayContaining([expect.stringMatching(/^query \.\.\/lib\/qa-ts\.ts::tsLeak::/), expect.stringMatching(/^raw \.\.\/lib\/qa-ts\.ts::tsLeak::raw DB binding/)]));
+  });
+
+  it('fails closed on what the graph cannot follow', () => {
+    const cases = {
+      unresolved: [{}, importInto(WORKER_MAIN, '../nowhere/leak.mjs'), /unresolved import \.\.\/nowhere\/leak\.mjs/],
+      dynamic: [{}, { [WORKER_MAIN]: s => s + "\nexport const qaLoad = (p) => import(p);\n" }, /non-literal import\(p\)/],
+      require_dynamic: [{}, { '../src/views.mjs': s => s + "\nexport const qaReq = (p) => require('../' + p);\n" }, /non-literal require/],
+      absolute: [{}, importInto(WORKER_MAIN, '/tmp/leak.mjs'), /absolute specifier/],
+      subpath: [{}, importInto(WORKER_MAIN, '#leak'), /unsupported specifier #leak/],
+      worker_imports_legacy: [{}, importInto('../src/views.mjs', '../app/db.cjs'), /Worker code imports legacy code/],
+      new_legacy_edge: [{}, importInto('../scripts/bootstrap-admin.mjs', '../app/db.cjs'), /unlisted import of legacy code/]
+    };
+    for (const [name, [extra, edit, re]] of Object.entries(cases)) {
+      const r = lint(extra, edit);
+      expect(r.v.some(x => x.startsWith('graph ') && re.test(x)), name + ': ' + JSON.stringify(r.problems)).toBe(true);
+    }
+  });
 });

@@ -311,3 +311,33 @@ Everything was done through the Cloudflare connector's API (no wrangler login, n
   - Minors 2–4 (mail backoff and attempt cap, the Resend key after an error, a refund-validation failure after the Stripe refund).
   - `bootstrap-admin --remote --confirm-remote` can reach the real id (owner-only by design).
   - A browser test of `app.js` `create_key`.
+
+## 15. QA fixes (QA FAIL at f978692, 17 Nov 2026)
+
+- **D1 (M6), Stripe actions under the legacy "diagnostic" prefixes.**
+  - Legacy `platform.mjs:46` treats all of `/api/pt/stripe/*` and `/api/admin/*` as diagnostic. The port copied that, so `POST /api/pt/stripe/connect` wrote a `stripe_jobs` row (`kind=account`, `status=retry`) before `stripe()` answered 503.
+  - Audit of every Stripe-touching route:
+    - `POST /api/admin/stripe/link` had the same gap (a job row, then Stripe).
+    - `POST /api/pt/stripe/status` called Stripe, then wrote `stripe_connections`.
+  - These three are now `STRIPE_ACTIONS` in `worker/index.mjs` and run `paymentReadiness` (the checkout check) first, so they answer 503 before any write or Stripe call.
+  - Still diagnostic, on purpose:
+    - `GET /api/pt/stripe/setup` and `GET /api/admin/stripe/setup` (read-only).
+    - `POST /api/admin/stripe/check` (one `GET /v1/account`, no write; `stripe()` refuses a missing or mismatched key before fetch).
+    - The retired pt_direct writes (410, no write).
+    - The PT webhook (the PT's own signing secret is verified before any Stripe call or write).
+  - Test: `workers-test/stripe-actions-readiness.test.mjs`. For 7 misconfigurations × 3 routes: 503, 0 fetch calls, 0 `stripe_jobs`, and no `stripe_connections` or `audit_log` change. The diagnostics stay reachable, and a configured control does reach Stripe.
+  - Guard mutations: +3.
+- **D2 (M4), lint file discovery.**
+  - The lint read only `*.mjs` under `src/`, `worker/` and `scripts/`.
+  - It now reads:
+    1. Every file reachable through the import graph from the Worker entry (`main` in `wrangler.jsonc`), the preview upload entry (`docs/rc-4/preview/entry.mjs`, whose `./index.js` is the Worker bundle) and every script. Relative imports resolve for `.js/.mjs/.cjs/.ts/.mts/.cts/.jsx/.tsx`, extensionless, `index.*`, and TS-style `./x.js` → `x.ts`.
+    2. A backstop of every JS/TS file under `src/`, `worker/` and `scripts/`, excluding tests.
+  - The graph fails closed on anything it cannot follow:
+    - a relative import that does not resolve;
+    - a non-literal `import()`/`require()`;
+    - an absolute, `#`, `file:` or URL specifier;
+    - Worker code importing the legacy app (`app/`, `netlify/`);
+    - a script importing legacy code through an edge that isn't listed (4 are listed, all Node CLIs on legacy SQLite/Postgres, never D1).
+  - Tests (`workers-test/scope-lint.test.mjs`, "file discovery"): QA's two misses, every extension (backstop and graph), a transitive `.js` → `.ts` chain, the `.ts` cases, and each fail-closed rule.
+  - Runtime: `workers-test/scope-bypass-mutations.mjs` adds 6 file cases (`src/*.js`, `lib/*.mjs`, `lib/*/index.js`, `src/*.ts`, `lib/*.ts`, and QA's `src/*.js` reading `env.DB` imported from the Worker), each killed by the lint **and** the runtime cross-PT test.
+- **D3, cron on the production config.** The top-level `triggers.crons` is removed: the default env (real D1 id) has no cron trigger and no `CRON_ENABLED`, and only `env.preview` has both. `wrangler deploy --dry-run` does not print schedules, so the check and `tests/remote-guards.test.mjs` read the config through wrangler's own resolver (`unstable_readConfig`, inheritance applied as a deploy would): default `crons=[]`, preview `["* * * * *"]`. The go-live step adds both to production, with approval.

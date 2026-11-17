@@ -272,10 +272,103 @@ export function sqlCallCount(src) {
   return [...text.matchAll(SQL_CALL)].length + [...text.matchAll(/\.\s*(batch|prepare|exec)\s*\(/g)].length;
 }
 
+// ---- QA D2 (f978692): which files the lint covers -------------------------------------------
+// Before: only src/**/*.mjs, worker/**/*.mjs and scripts/**/*.mjs were globbed, so unscoped SQL in
+// src/x.js, or in any file outside those folders that the Worker imports, was never read. Now the
+// lint set is (1) every file reachable through the import graph from the Worker entries and the
+// scripts, resolving relative imports for every JS/TS extension and index files, plus (2) a
+// backstop of every JS/TS file under src/, worker/ and scripts/. Anything the graph cannot
+// account for (a relative import that does not resolve, a non-literal import()/require(), an
+// absolute/#/file: specifier, a Worker import of legacy code) is itself a violation.
+export const JS_EXTENSIONS = ['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.jsx', '.tsx'];
+const isJs = f => JS_EXTENSIONS.some(e => f.endsWith(e));
+const LEGACY = /^\.\.\/(?:app|netlify)\//;
+const BACKSTOP = /^\.\.\/(?:src|worker|scripts)\//;
+const EXCLUDED = /(?:^|\/)(?:node_modules|tests?|workers-test|__tests__)\/|\.(?:test|spec)\.[cm]?[jt]sx?$/;
+
+function normalise(path) {
+  const out = [];
+  for (const part of path.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..' && out.length && out.at(-1) !== '..') out.pop(); else out.push(part);
+  }
+  return out.join('/');
+}
+/** Resolve a relative specifier from a file key ('../src/a.mjs') against the known files. */
+export function resolveImport(from, spec, files) {
+  const base = normalise(from.slice(0, from.lastIndexOf('/') + 1) + spec);
+  const swapped = /\.(?:js|mjs|cjs|jsx)$/.test(base) ? ['.ts', '.mts', '.cts', '.tsx'].map(e => base.replace(/\.[^./]+$/, e)) : []; // TS: './x.js' -> x.ts
+  const candidates = [base, ...swapped, ...JS_EXTENSIONS.map(e => base + e), ...JS_EXTENSIONS.map(e => base + '/index' + e)];
+  return candidates.find(c => c in files) ?? null;
+}
+/** Module specifiers in one source: static import/export-from, import(), require(). */
+export function importSpecifiers(src) {
+  const comments = [];
+  literals(src, comments);
+  let code = src;
+  for (const [a, b] of comments) code = code.slice(0, a) + ' '.repeat(b - a) + code.slice(b);
+  const out = [];
+  for (const m of code.matchAll(/(?:^|[^\w$.])(?:import|export)\s*(?:type\s+)?(?:[\w$*{}\s,]+?\s*from\s*)?(['"])([^'"\n]+)\1/g)) out.push({ spec: m[2], kind: 'static' });
+  for (const m of code.matchAll(/(?:^|[^\w$.])(import|require)\s*\(\s*([^)]*?)\s*\)/g)) {
+    const lit = /^(['"`])([^'"`$\n]+)\1$/.exec(m[2]);
+    out.push(lit ? { spec: lit[2], kind: m[1] } : { spec: null, kind: m[1], expr: m[2].slice(0, 60) });
+  }
+  return out;
+}
+/** Walk the import graph. `aliases` maps generated specifiers (file::spec) to a real file. */
+export function importGraph(entries, files, { aliases = {}, legacyEdges = [], workerEntries = [] } = {}) {
+  const reached = new Set(), problems = [], legacy = [];
+  const workerReach = new Set();
+  const walk = (start, marks) => {
+    const queue = [start];
+    while (queue.length) {
+      const f = queue.shift();
+      if (marks.has(f)) continue;
+      marks.add(f);
+      for (const { spec, kind, expr } of importSpecifiers(files[f] ?? '')) {
+        if (spec === null) { problems.push(`${f}::non-literal ${kind}(${expr})`); continue; }
+        if (!spec.startsWith('.') && !spec.startsWith('/')) {
+          if (/^(?:#|file:|data:|https?:)/.test(spec)) problems.push(`${f}::unsupported specifier ${spec}`);
+          continue; // packages and node:/cloudflare: built-ins (not repo code)
+        }
+        if (spec.startsWith('/')) { problems.push(`${f}::absolute specifier ${spec}`); continue; }
+        const aliased = aliases[`${f}::${spec}`];
+        if (aliased === null) continue; // generated data module (listed)
+        const target = aliased ?? resolveImport(f, spec, files);
+        if (!target) {
+          if (!isJs(spec) && /\.[a-z0-9]+$/i.test(spec)) continue; // data import (.txt/.html/.sql/.json): its use is linted at the call site
+          problems.push(`${f}::unresolved import ${spec}`); continue;
+        }
+        if (LEGACY.test(target)) { legacy.push(`${f} -> ${target}`); continue; } // legacy Netlify app: not walked
+        queue.push(target);
+      }
+    }
+  };
+  for (const e of workerEntries) walk(e, workerReach);
+  for (const e of entries) walk(e, reached);
+  for (const f of workerReach) reached.add(f);
+  const uniq = [...new Set(legacy)];
+  for (const edge of uniq) {
+    const from = edge.split(' -> ')[0];
+    if (workerReach.has(from)) problems.push(`${edge}::Worker code imports legacy code`);
+    else if (!legacyEdges.includes(edge)) problems.push(`${edge}::unlisted import of legacy code`);
+  }
+  for (const edge of legacyEdges) if (!uniq.includes(edge)) problems.push(`${edge}::stale legacy edge`);
+  return { reached, problems: [...new Set(problems)].sort(), legacy: uniq.sort() };
+}
+/** The files the scope lint reads: graph ∪ backstop (all JS/TS under src/, worker/, scripts/). */
+export function lintSet(files, opts) {
+  const g = importGraph([...(opts.entries || []), ...(opts.workerEntries || [])], files, opts);
+  const set = new Set(g.reached);
+  for (const f of Object.keys(files)) if (BACKSTOP.test(f) && isJs(f) && !EXCLUDED.test(f)) set.add(f);
+  const sources = Object.fromEntries([...set].filter(f => f in files && !LEGACY.test(f)).sort().map(f => [f, files[f]]));
+  return { sources, problems: g.problems, legacy: g.legacy, graph: [...g.reached].sort() };
+}
+
 // `node workers-test/scope-lint-core.mjs` prints the current keys (to update the allowlist).
 if (typeof process !== 'undefined' && process.argv?.[1]?.endsWith('scope-lint-core.mjs')) {
   const fs = await import('node:fs');
-  const files = ['src', 'worker', 'scripts'].flatMap(d => fs.readdirSync(d, { recursive: true }).filter(f => f.endsWith('.mjs')).map(f => `${d}/${f}`));
+  const files = ['src', 'worker', 'scripts'].flatMap(d => fs.readdirSync(d, { recursive: true }).filter(f => isJs(f)).map(f => `${d}/${f}`)); // backstop set; the test adds the import graph
   const sources = Object.fromEntries(files.map(f => ['../' + f, fs.readFileSync(f, 'utf8')]));
   for (const q of ptOwnedQueries(sources)) console.log(q.key, '|', q.sql);
   for (const q of nonLiteralSqlCalls(sources)) console.log('NONLITERAL', q.key, '|', q.sql.slice(0, 100));
