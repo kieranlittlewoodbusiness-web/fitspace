@@ -99,8 +99,39 @@ function setCookie(value) {
   return `${COOKIE_NAME}=${value}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${Math.floor(TTL_MS / 1000)}`;
 }
 
-function formPage(message = '') {
+export const TOKEN_FRAGMENT = /^[-a-f0-9]{36}\.[A-Za-z0-9_-]{43}$/;
+
+/** Same-origin path + query only. Rejects schemes, protocol-relative URLs and backslashes. */
+export function safeNext(value) {
+  if (typeof value !== 'string' || value.length > 2048) return '/';
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('/') || trimmed.startsWith('//') || trimmed.includes('\\') || /[\s\r\n]/.test(trimmed)) return '/';
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) return '/';
+  try {
+    const u = new URL(trimmed, 'https://preview.invalid');
+    if (u.origin !== 'https://preview.invalid') return '/';
+    if (!u.pathname.startsWith('/') || u.pathname.startsWith('//')) return '/';
+    return u.pathname + u.search;
+  } catch {
+    return '/';
+  }
+}
+
+/** Hash fragment, validated to the reset-token charset (uuid.hmac). */
+export function safeFragment(value) {
+  let f = typeof value === 'string' ? value : '';
+  if (f.startsWith('#')) f = f.slice(1);
+  return TOKEN_FRAGMENT.test(f) ? '#' + f : '';
+}
+
+function newNonce() {
+  return crypto.randomBytes(16).toString('base64url');
+}
+
+function formPage(message = '', { next = '/', fragment = '', nonce = newNonce() } = {}) {
   const error = message ? `<p class="err" role="alert">${escapeHtml(message)}</p>` : '';
+  const safeNextValue = escapeHtml(safeNext(next));
+  const safeFragValue = escapeHtml((safeFragment(fragment) || '').replace(/^#/, ''));
   return `<!doctype html>
 <html lang="en-GB">
 <head>
@@ -131,12 +162,23 @@ function formPage(message = '') {
     <p>This preview is locked. Enter the preview password to continue.</p>
     ${error}
     <form method="post" action="${GATE_PATH}">
+      <input type="hidden" name="next" value="${safeNextValue}">
+      <input type="hidden" name="fragment" id="preview-gate-fragment" value="${safeFragValue}">
       <label>Password
         <input type="password" name="password" required autocomplete="current-password" autofocus>
       </label>
       <button type="submit">Continue</button>
     </form>
   </main>
+  <script nonce="${nonce}">
+(function(){
+  var el=document.getElementById('preview-gate-fragment');
+  if(!el)return;
+  var h=location.hash||'';
+  if(h.charAt(0)==='#')h=h.slice(1);
+  if(h)el.value=h;
+})();
+  </script>
 </body>
 </html>`;
 }
@@ -146,7 +188,10 @@ function escapeHtml(value) {
 }
 
 function htmlResponse(status, body, extra = {}) {
-  return new Response(body, { status, headers: { ...securityHeaders, 'Content-Type': 'text/html; charset=utf-8', ...extra } });
+  const nonce = extra.nonce || newNonce();
+  const { nonce: _ignored, ...rest } = extra;
+  const csp = securityHeaders['Content-Security-Policy'].replace("script-src 'self'", "script-src 'self' 'nonce-" + nonce + "'");
+  return new Response(body, { status, headers: { ...securityHeaders, 'Content-Security-Policy': csp, 'Content-Type': 'text/html; charset=utf-8', ...rest } });
 }
 
 function jsonResponse(status, data, extra = {}) {
@@ -161,11 +206,15 @@ function wantsJson(request) {
   return type.includes('application/json') || (accept.includes('application/json') && !accept.includes('text/html'));
 }
 
-function locked(request, message = 'This preview is locked.') {
+function locked(request, message = 'This preview is locked.', { next, fragment } = {}) {
   if (wantsJson(request) || new URL(request.url).pathname.startsWith('/api/')) {
     return jsonResponse(401, { error: message, code: 'PREVIEW_LOCKED' });
   }
-  return htmlResponse(401, formPage(message === 'This preview is locked.' ? '' : message));
+  const url = new URL(request.url);
+  const dest = next !== undefined ? next : (url.pathname + url.search);
+  const nonce = newNonce();
+  const html = formPage(message === 'This preview is locked.' ? '' : message, { next: dest, fragment, nonce });
+  return htmlResponse(401, html, { nonce });
 }
 
 function failClosed(request) {
@@ -173,25 +222,29 @@ function failClosed(request) {
   if (wantsJson(request) || new URL(request.url).pathname.startsWith('/api/')) {
     return jsonResponse(503, { error: message });
   }
-  return htmlResponse(503, formPage(message));
+  const nonce = newNonce();
+  return htmlResponse(503, formPage(message, { nonce }), { nonce });
 }
 
-async function readPassword(request) {
+async function readForm(request) {
   const type = request.headers.get('Content-Type') || '';
   const raw = new TextDecoder().decode(await request.arrayBuffer());
+  let fields = {};
   if (type.includes('application/json')) {
-    try {
-      const body = raw ? JSON.parse(raw) : {};
-      return typeof body.password === 'string' ? body.password : '';
-    } catch { return ''; }
+    try { fields = raw ? JSON.parse(raw) : {}; } catch { fields = {}; }
+  } else {
+    fields = Object.fromEntries(new URLSearchParams(raw));
   }
-  const params = Object.fromEntries(new URLSearchParams(raw));
-  return typeof params.password === 'string' ? params.password : '';
+  return {
+    password: typeof fields.password === 'string' ? fields.password : '',
+    next: typeof fields.next === 'string' ? fields.next : '/',
+    fragment: typeof fields.fragment === 'string' ? fields.fragment : ''
+  };
 }
 
 async function unlock(request, env, key) {
-  const provided = await readPassword(request);
-  const ok = passwordsMatch(key, provided, env.PREVIEW_PASSWORD);
+  const fields = await readForm(request);
+  const ok = passwordsMatch(key, fields.password, env.PREVIEW_PASSWORD);
   if (!ok) {
     const db = createDb(env.DB);
     const client = request.headers.get('CF-Connecting-IP') || 'unknown';
@@ -200,17 +253,18 @@ async function unlock(request, env, key) {
     } catch (error) {
       if (error.status === 429) {
         const message = error.message;
-        return wantsJson(request)
-          ? jsonResponse(429, { error: message, code: 'PREVIEW_LOCKED' })
-          : htmlResponse(429, formPage(message));
+        if (wantsJson(request)) return jsonResponse(429, { error: message, code: 'PREVIEW_LOCKED' });
+        const nonce = newNonce();
+        return htmlResponse(429, formPage(message, { next: fields.next, fragment: fields.fragment, nonce }), { nonce });
       }
       throw error;
     }
-    return locked(request, 'That password is incorrect.');
+    return locked(request, 'That password is incorrect.', { next: fields.next, fragment: fields.fragment });
   }
   const cookie = setCookie(signPreviewCookie(key));
-  if (wantsJson(request)) return jsonResponse(200, { ok: true }, { 'Set-Cookie': cookie });
-  return new Response(null, { status: 303, headers: { ...securityHeaders, Location: '/', 'Set-Cookie': cookie, 'Content-Type': 'text/html; charset=utf-8' } });
+  const dest = safeNext(fields.next) + safeFragment(fields.fragment);
+  if (wantsJson(request)) return jsonResponse(200, { ok: true, next: dest }, { 'Set-Cookie': cookie });
+  return new Response(null, { status: 303, headers: { ...securityHeaders, Location: dest, 'Set-Cookie': cookie, 'Content-Type': 'text/html; charset=utf-8' } });
 }
 
 /**

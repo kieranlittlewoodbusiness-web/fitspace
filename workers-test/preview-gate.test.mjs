@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:workers';
 import worker, { cronTick } from '../worker/index.mjs';
 import { db, seedBlock, insertBooking } from './helpers.mjs';
-import { GATE_PATH, COOKIE_NAME, ROBOTS_BODY, signPreviewCookie, TTL_MS, deriveCookieKey } from '../src/preview-gate.mjs';
+import { GATE_PATH, COOKIE_NAME, ROBOTS_BODY, signPreviewCookie, TTL_MS, deriveCookieKey, safeNext, safeFragment, TOKEN_FRAGMENT } from '../src/preview-gate.mjs';
 
 const PASSWORD = 'correct-horse-preview';
 const gated = (extra = {}) => Object.assign(Object.create(null), env, {
@@ -13,18 +13,18 @@ const gated = (extra = {}) => Object.assign(Object.create(null), env, {
 const cookieKey = (e = gated()) => deriveCookieKey(e.PT_INVITE_SECRET);
 const ORIGIN = 'http://example.test';
 
-function req(path, { method = 'GET', cookie, password, json, ip, headers } = {}) {
+function req(path, { method = 'GET', cookie, password, json, ip, headers, fields } = {}) {
   const h = { ...(headers || {}) };
   if (ip) h['CF-Connecting-IP'] = ip;
   if (cookie) h.cookie = `${COOKIE_NAME}=${cookie}`;
   let body;
   if (password !== undefined && json) {
     h['content-type'] = 'application/json';
-    body = JSON.stringify({ password });
+    body = JSON.stringify({ password, ...(fields || {}) });
     method = method === 'GET' ? 'POST' : method;
-  } else if (password !== undefined) {
+  } else if (password !== undefined || fields) {
     h['content-type'] = 'application/x-www-form-urlencoded';
-    body = new URLSearchParams({ password }).toString();
+    body = new URLSearchParams({ ...(password !== undefined ? { password } : {}), ...(fields || {}) }).toString();
     method = method === 'GET' ? 'POST' : method;
   }
   return new Request(ORIGIN + path, { method, headers: h, body });
@@ -134,7 +134,7 @@ describe('preview gate: on', () => {
   it('accepts a JSON unlock and then serves /health', async () => {
     const r = await worker.fetch(req(GATE_PATH, { method: 'POST', password: PASSWORD, json: true }), gated());
     expect(r.status).toBe(200);
-    expect(await r.json()).toEqual({ ok: true });
+    expect(await r.json()).toMatchObject({ ok: true });
     const token = cookieOf(r);
     const health = await worker.fetch(req('/health', { cookie: token }), gated());
     expect(health.status).toBe(200);
@@ -226,5 +226,79 @@ describe('preview gate: cron is unaffected', () => {
 
   it('cronTick itself is not wrapped by the gate', async () => {
     expect(await cronTick(gated({ CRON_ENABLED: undefined }))).toEqual({ skipped: 'CRON_ENABLED is not "true"' });
+  });
+});
+
+
+const SAMPLE_TOKEN = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.' + 'A'.repeat(43);
+
+describe('preview gate: return path and fragment', () => {
+  it('safeNext allows a same-origin path and query, and rejects schemes and //', () => {
+    expect(safeNext('/reset-password?token=' + SAMPLE_TOKEN)).toBe('/reset-password?token=' + SAMPLE_TOKEN);
+    expect(safeNext('/pt/preview-trainer')).toBe('/pt/preview-trainer');
+    expect(safeNext('/')).toBe('/');
+    expect(safeNext('https://evil.example/')).toBe('/');
+    expect(safeNext('//evil.example')).toBe('/');
+    expect(safeNext('javascript:alert(1)')).toBe('/');
+  });
+
+  it('safeFragment accepts only the reset-token charset', () => {
+    expect(TOKEN_FRAGMENT.test(SAMPLE_TOKEN)).toBe(true);
+    expect(safeFragment('#' + SAMPLE_TOKEN)).toBe('#' + SAMPLE_TOKEN);
+    expect(safeFragment(SAMPLE_TOKEN)).toBe('#' + SAMPLE_TOKEN);
+    expect(safeFragment('#classes')).toBe('');
+    expect(safeFragment('#javascript:alert(1)')).toBe('');
+    expect(safeFragment('')).toBe('');
+  });
+
+  it('a gated GET of /reset-password?token= includes a hidden next with that path and query', async () => {
+    const path = '/reset-password?token=' + SAMPLE_TOKEN;
+    const r = await worker.fetch(req(path), gated());
+    expect(r.status).toBe(401);
+    const html = await r.text();
+    expect(html).toContain(`name="next" value="${path}"`);
+    expect(html).toMatch(/id="preview-gate-fragment"/);
+    expect(html).toMatch(/location\.hash/);
+    expect(r.headers.get('content-security-policy')).toMatch(/script-src 'self' 'nonce-/);
+  });
+
+  it('unlock redirects to next plus a validated fragment', async () => {
+    const path = '/reset-password?token=' + SAMPLE_TOKEN;
+    const r = await worker.fetch(req(GATE_PATH, { method: 'POST', password: PASSWORD, fields: { next: path, fragment: SAMPLE_TOKEN } }), gated());
+    expect(r.status).toBe(303);
+    expect(r.headers.get('location')).toBe(path + '#' + SAMPLE_TOKEN);
+    expect(r.headers.get('set-cookie')).toMatch(new RegExp(`^${COOKIE_NAME}=`));
+  });
+
+  it('unlock with only ?token= next (no fragment) goes to the query form of the link', async () => {
+    const path = '/reset-password?token=' + SAMPLE_TOKEN;
+    const r = await worker.fetch(req(GATE_PATH, { method: 'POST', password: PASSWORD, fields: { next: path } }), gated());
+    expect(r.status).toBe(303);
+    expect(r.headers.get('location')).toBe(path);
+  });
+
+  it('rejects an unsafe next and an invalid fragment, falling back to /', async () => {
+    const r = await worker.fetch(req(GATE_PATH, { method: 'POST', password: PASSWORD, fields: { next: 'https://evil.example/', fragment: 'classes' } }), gated());
+    expect(r.status).toBe(303);
+    expect(r.headers.get('location')).toBe('/');
+  });
+
+  it('a wrong password re-renders the form with the submitted next preserved', async () => {
+    const path = '/reset-password?token=' + SAMPLE_TOKEN;
+    const r = await worker.fetch(req(GATE_PATH, { method: 'POST', password: 'nope', fields: { next: path }, ip: '203.0.113.40' }), gated());
+    expect(r.status).toBe(401);
+    expect(r.headers.get('set-cookie')).toBeNull();
+    const html = await r.text();
+    expect(html).toContain(`name="next" value="${path}"`);
+  });
+
+  it('/api/me includes preview_pt_email only when the gate is on and unlocked', async () => {
+    const off = await worker.fetch(req('/api/me'), Object.assign(Object.create(null), env, { PREVIEW_PASSWORD: PASSWORD }));
+    expect(off.status).toBe(200);
+    expect((await off.json()).preview_pt_email).toBeUndefined();
+    const unlocked = await worker.fetch(req(GATE_PATH, { method: 'POST', password: PASSWORD }), gated());
+    const me = await worker.fetch(req('/api/me', { cookie: cookieOf(unlocked) }), gated());
+    expect(me.status).toBe(200);
+    expect((await me.json()).preview_pt_email).toBe('preview-trainer@example.com');
   });
 });

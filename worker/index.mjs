@@ -128,7 +128,7 @@ export async function handle(request, env) {
   }
 
   // ---- account ----
-  if (method === 'GET' && route === '/api/me') return json(200, { user: safeUser(user), csrf: user?.csrf || null, demo, payment_mode: paymentMode, stripe_integration: integration, password_reset_available: resetConfigured(env), email_mode: emailMode, default_slug: await defaultSlug(db) });
+  if (method === 'GET' && route === '/api/me') return json(200, { user: safeUser(user), csrf: user?.csrf || null, demo, payment_mode: paymentMode, stripe_integration: integration, password_reset_available: resetConfigured(env), email_mode: emailMode, default_slug: await defaultSlug(db), ...(env.PREVIEW_GATE === 'on' ? { preview_pt_email: 'preview-trainer@example.com' } : {}) });
   if (method === 'POST' && route === '/api/auth/login') {
     await rateLimit(db, 'login', client, { max: 15 });
     const r = await login(db, request, body, { demo });

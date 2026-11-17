@@ -130,3 +130,55 @@ test('the served /app.js and / includes the approved public wording',async()=>{
   assert.ok(html.includes('<span id="modalEyebrow">Resilience Coaching</span>'));
   assertNoVisibleFitspace(html,'served /');
 });
+
+function assertCleanAuthHtml(html,label){
+  assert.equal(typeof html,'string',label+' did not render');
+  assert.equal(html.includes('${'),false,label+' contains uninterpolated ${}');
+  assert.equal(/>\s*}/.test(html),false,label+' has a stray } after a tag');
+  assert.equal(/}\s*</.test(html),false,label+' has a stray } before a tag');
+}
+
+function renderClientViews(src, {config={}, resetToken=''}={}){
+  const authStart=src.indexOf('function authModal');
+  const afterReset=src.indexOf('\nfunction ', src.indexOf('function resetPasswordView')+1);
+  const fnSrc=src.slice(authStart, afterReset===-1?src.length:afterReset);
+  let captured=null;
+  const runner=new Function('sandbox',
+    'const {config,esc,brandHeader,modal}=sandbox;\n' +
+    'let resetToken=sandbox.resetToken,authIntent=null;\n' +
+    fnSrc +
+    '\nreturn {authModal,forgotPasswordView,resetPasswordView};'
+  )({
+    config,
+    resetToken,
+    esc(value){return String(value).replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));},
+    brandHeader(){return '<header></header>';},
+    modal(_title,html){captured=html;}
+  });
+  return {
+    login: (runner.authModal('login'), captured),
+    signup: (runner.authModal('signup'), captured),
+    forgot: runner.forgotPasswordView(),
+    reset: runner.resetPasswordView()
+  };
+}
+
+test('rendered auth views do not contain a stray } or uninterpolated ${}',()=>{
+  const plain=renderClientViews(appJs);
+  for(const [name,html] of Object.entries(plain)){
+    assertCleanAuthHtml(html,name);
+  }
+  assert.equal(plain.login.includes('Forgot your password?'),true);
+  assert.equal(plain.login.includes('}</form>'),false);
+  const preview=renderClientViews(appJs,{config:{preview_pt_email:'preview-trainer@example.com',password_reset_available:false},resetToken:'x'});
+  for(const [name,html] of Object.entries(preview)){
+    assertCleanAuthHtml(html,'preview '+name);
+  }
+  assert.ok(preview.login.includes('preview-trainer@example.com'));
+  assert.ok(preview.reset.includes('preview-trainer@example.com'));
+});
+
+test('reset-password accepts a ?token= query and strips it from the URL',()=>{
+  assert.match(appJs,/URLSearchParams\(location\.search\)\.get\('token'\)/);
+  assert.match(appJs,/history\.replaceState\(null,'',location\.pathname\)/);
+});
