@@ -28,6 +28,14 @@ export function createDb(d1) {
       return { changes: meta.changes, lastRowId: meta.last_row_id };
     },
     /**
+     * Commit-time assertion for a batch (migrations/0003). Put it before the writes it
+     * protects: if `condition` is false when the batch runs, the batch aborts with a
+     * guard failure (see isGuardFailure) and nothing in it is applied.
+     */
+    guard(name, condition, ...args) {
+      return stmt(`INSERT INTO batch_guards(name,ok) SELECT ?,0 WHERE NOT (${condition})`, name, ...args);
+    },
+    /**
      * Atomic: every statement commits, or none does (D1 runs a batch as one SQL
      * transaction). Returns one result per statement: { rows, changes }.
      */
@@ -43,4 +51,9 @@ export function isUniqueViolation(error, target) {
   const message = String(error?.message || '') + String(error?.cause?.message || '');
   if (!/UNIQUE constraint failed|SQLITE_CONSTRAINT_(UNIQUE|PRIMARYKEY)/i.test(message)) return false;
   return target ? message.includes(target) : true;
+}
+
+/** True when a batch aborted because a db.guard() precondition was false at commit time. */
+export function isGuardFailure(error) {
+  return /batch_guard_failed|CHECK constraint failed: (batch_guard_failed|ok=1)/i.test(String(error?.message || '') + String(error?.cause?.message || ''));
 }

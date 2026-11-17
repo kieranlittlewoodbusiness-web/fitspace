@@ -19,3 +19,19 @@ export async function confirmationInsert(db, bookingId, { emailMode = 'preview',
     `Your booking with ${pt.brand_name} is confirmed`, body, emailMode === 'send' ? 'queued' : 'preview', now, booking.id
   );
 }
+
+// No-show email, ported from app/emails.cjs noShow(). Returns the guarded INSERT (dedupe
+// per booking+session) and the preview fields the API returns.
+export function noShowInsert(db, { booking, session, customer, pt, motivations, emailMode = 'preview', now = Date.now(), index }) {
+  const dateLabel = new Date(session.starts_at + 'Z').toLocaleDateString('en-GB', { timeZone: 'UTC', weekday: 'long', day: 'numeric', month: 'long' });
+  const body = `Hi ${customer.name.split(' ')[0]},\n\nSorry we missed you at class! We hope you are doing well.\n\nWe missed you at ${booking.title} on ${dateLabel} at ${session.starts_at.slice(11)} (UK time).\n\n${motivations[index]}\n\nWe would love to see you at your next session. If you need support getting back into your routine, just reply and let us know.\n\n${pt.brand_name}`;
+  const key = `noshow:${booking.id}:${session.id}`;
+  const status = emailMode === 'send' ? 'queued' : 'preview';
+  return {
+    key,
+    stmt: db.stmt(
+      "INSERT OR IGNORE INTO email_outbox(id,pt_id,customer_id,dedupe_key,recipient,subject,body,kind,quote_index,status,created_at) VALUES(?,?,?,?,?,'Sorry we missed you at class!',?,'no_show',?,?,?)",
+      uid(), pt.id, customer.id, key, customer.email, body, index, status, now
+    )
+  };
+}

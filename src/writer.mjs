@@ -27,7 +27,7 @@ export class Writer extends DurableObject {
   async run(name, args) {
     const op = Object.hasOwn(ops, name) ? ops[name] : null;
     if (!op) return { error: { status: 500, message: 'Unknown writer operation.' } };
-    const result = this.#tail.then(() => op(this.db, args ?? {}));
+    const result = this.#tail.then(() => op(this.db, args ?? {}, this.env));
     this.#tail = result.catch(() => {});
     try {
       return { value: await result };

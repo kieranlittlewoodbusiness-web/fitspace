@@ -55,3 +55,17 @@ export async function seedUser({ role, ptId = null }) {
   return { id, role, pt_id: ptId, token, csrf };
 }
 export const getRequest = (user, path) => new Request(ORIGIN + path, { headers: { cookie: 'fit_session=' + user.token } });
+
+export function jsonRequest(user, method, path, body) {
+  const headers = { origin: ORIGIN, 'content-type': 'application/json' };
+  if (user) Object.assign(headers, { cookie: 'fit_session=' + user.token, 'x-csrf-token': user.csrf });
+  return new Request(ORIGIN + path, { method, headers, body: JSON.stringify(body ?? {}) });
+}
+/** Insert a booking row directly (any status), returning its id. */
+export async function insertBooking({ blockId, customerId, status = 'paid', mode = 'demo', expiresAt = Date.now() + 30 * 60000, extra = {} }) {
+  const id = 'bk-' + crypto.randomUUID();
+  const cols = { id, block_id: blockId, customer_id: customerId, reference: 'FIT-' + id.slice(3, 11).toUpperCase(), status, amount_pence: 1500, mode, checkout_token: crypto.randomUUID(), expires_at: expiresAt, created_at: Date.now(), paid_at: status === 'paid' ? Date.now() : null, ...extra };
+  const keys = Object.keys(cols);
+  await db().run(`INSERT INTO bookings(${keys.join(',')}) VALUES(${keys.map(() => '?').join(',')})`, ...keys.map(k => cols[k]));
+  return id;
+}

@@ -4,15 +4,19 @@
 // bundles exactly what is imported; the nested v4 fitspace/ tree is never reached).
 // Bindings are read per request from `env`; nothing is cached across requests.
 //
-// Phase 1 routes: GET /health, POST /api/bookings (capacity hold, demo mode),
-// GET /api/bookings/:id (tenant-scoped read),
-// POST /api/stripe/webhook (platform/Connect endpoint). Every other /api/* route answers
+// Routes so far: GET /health; POST /api/bookings (capacity hold, demo mode);
+// GET /api/bookings/:id and POST /api/bookings/:id/pay (demo); POST /api/stripe/webhook
+// (platform/Connect endpoint, all event types); POST /api/auth/forgot-password and
+// /api/auth/reset-password (D1 rate limited); POST /api/admin/pts; POST /api/blocks;
+// PUT /api/blocks/:id; POST /api/attendance. Every other /api/* route answers
 // 501 until its phase lands; netlify/functions/platform.mjs stays the live path until cutover.
 import { createDb } from '../src/db.mjs';
 import { write } from '../src/writer.mjs';
 import { currentUser, requireUser, checkMutation } from '../src/auth.mjs';
 import { verifyWebhook } from '../src/stripe-webhook.mjs';
 import { viewBooking } from '../src/scope.mjs';
+import { rateLimit } from '../src/ratelimit.mjs';
+import { MESSAGE as RESET_MESSAGE } from '../src/ops/password-reset.mjs';
 import { httpError, isStripe } from '../src/util.mjs';
 
 export { Writer } from '../src/writer.mjs';
@@ -60,10 +64,64 @@ export async function handle(request, env) {
     return json(200, await write(env, 'handleWebhook', { event, mode: paymentMode, emailMode: env.EMAIL_MODE || 'preview' }));
   }
 
+  const demo = env.DEMO_MODE === 'true';
+  const client = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const PUBLIC_POSTS = ['/api/auth/login', '/api/auth/signup', '/api/auth/forgot-password', '/api/auth/reset-password'];
+  const mutation = async () => {
+    const user = await currentUser(db, request, { demo });
+    checkMutation(request, user, { origin: url.origin, route, unauthenticatedRoutes: PUBLIC_POSTS });
+    return { user, body: await jsonBody(request) };
+  };
+  const emailMode = env.EMAIL_MODE || 'preview';
+
+  if (route === '/api/auth/forgot-password' && request.method === 'POST') {
+    const { body } = await mutation();
+    await rateLimit(db, 'forgot', client, { max: 10 });
+    // Writes the reset + auth_mail_jobs row; delivery (Resend) is the phase 3 mail worker.
+    await write(env, 'requestReset', { email: body.email });
+    return json(200, { message: RESET_MESSAGE });
+  }
+  if (route === '/api/auth/reset-password' && request.method === 'POST') {
+    const { body } = await mutation();
+    await rateLimit(db, 'reset', client, { max: 15 });
+    await write(env, 'resetPassword', { token: body.token, newPassword: body.new_password });
+    const secure = url.protocol === 'https:';
+    return new Response(JSON.stringify({ ok: true, message: 'Your password has been reset. Sign in with your new password.' }), {
+      status: 200,
+      headers: { ...securityHeaders, 'Content-Type': 'application/json; charset=utf-8', 'Set-Cookie': `fit_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure ? '; Secure' : ''}` }
+    });
+  }
+  const payRoute = route.match(/^\/api\/bookings\/([^/]+)\/pay$/);
+  if (payRoute && request.method === 'POST') {
+    const { user, body } = await mutation();
+    requireUser(user, ['customer']);
+    const booking = await write(env, 'completeDemo', { bookingId: decodeURIComponent(payRoute[1]), userId: user.id, result: body.result, emailMode });
+    return json(200, { booking: await viewBooking(db, user, booking.id) });
+  }
+  if (route === '/api/admin/pts' && request.method === 'POST') {
+    const { user, body } = await mutation();
+    requireUser(user, ['admin']);
+    return json(201, await write(env, 'createPt', { userId: user.id, body }));
+  }
+  if (route === '/api/blocks' && request.method === 'POST') {
+    const { user, body } = await mutation();
+    requireUser(user, ['pt', 'admin']);
+    return json(201, { block: await write(env, 'createBlock', { userId: user.id, body }) });
+  }
+  const blockRoute = route.match(/^\/api\/blocks\/([^/]+)$/);
+  if (blockRoute && request.method === 'PUT') {
+    const { user, body } = await mutation();
+    requireUser(user, ['pt', 'admin']);
+    return json(200, await write(env, 'updateBlock', { userId: user.id, blockId: decodeURIComponent(blockRoute[1]), body }));
+  }
+  if (route === '/api/attendance' && request.method === 'POST') {
+    const { user, body } = await mutation();
+    requireUser(user, ['pt', 'admin']);
+    return json(200, await write(env, 'markAttendance', { userId: user.id, bookingId: body.booking_id, sessionId: body.session_id, status: body.status, emailMode }));
+  }
+
   if (route === '/api/bookings' && request.method === 'POST') {
-    const user = await currentUser(db, request, { demo: env.DEMO_MODE === 'true' });
-    checkMutation(request, user, { origin: url.origin, route });
-    const body = await jsonBody(request);
+    const { user, body } = await mutation();
     requireUser(user, ['customer']);
     // Stripe Checkout creation (prepareCheckout + stripe_jobs) lands in phase 3; refuse
     // before taking a hold so no orphan pending bookings are created meanwhile.
@@ -74,7 +132,7 @@ export async function handle(request, env) {
 
   const bookingRoute = route.match(/^\/api\/bookings\/([^/]+)$/);
   if (bookingRoute && request.method === 'GET') {
-    const user = requireUser(await currentUser(db, request, { demo: env.DEMO_MODE === 'true' }));
+    const user = requireUser(await currentUser(db, request, { demo }));
     // app/server.cjs:55 expires stale holds first; a single guarded statement, no Writer needed.
     await db.run("UPDATE bookings SET status='expired' WHERE status='pending' AND expires_at<=?", Date.now());
     return json(200, { booking: await viewBooking(db, user, decodeURIComponent(bookingRoute[1])) });

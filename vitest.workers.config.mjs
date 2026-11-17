@@ -17,7 +17,14 @@ export default defineConfig({
           PAYMENT_MODE: 'demo',
           // Throwaway per-run value so tests can sign webhook payloads. Never a real secret,
           // never written to disk or printed.
-          STRIPE_WEBHOOK_SECRET: crypto.randomBytes(32).toString('hex')
+          STRIPE_WEBHOOK_SECRET: crypto.randomBytes(32).toString('hex'),
+          // Password-reset config so the reset flow is "configured" in tests. All throwaway:
+          // RESEND_API_KEY is a random dummy and no code path in the tests calls Resend.
+          RESET_EMAIL_MODE: 'send',
+          RESEND_API_KEY: 'dummy-' + crypto.randomBytes(8).toString('hex'),
+          MAIL_FROM: 'noreply@example.test',
+          AUTH_RESET_SECRET: crypto.randomBytes(32).toString('hex'),
+          APP_URL: 'https://example.test'
         },
         durableObjects: { WRITER: 'Writer', GATE_PROBE: 'GateProbe' }
       }

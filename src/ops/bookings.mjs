@@ -8,6 +8,7 @@
 import crypto from 'node:crypto';
 import { httpError, isStripe, uid } from '../util.mjs';
 import { isUniqueViolation } from '../db.mjs';
+import { confirmationInsert } from '../emails.mjs';
 
 export async function stripeConnection(db, ptId, mode, integration = 'connect') {
   if (integration === 'pt_direct') {
@@ -79,4 +80,39 @@ export async function reserve(db, { userId, blockId, token, mode = 'demo', integ
 export async function available(db, block, now = Date.now()) {
   const used = await db.get("SELECT count(*) n FROM bookings WHERE block_id=? AND (status='paid' OR (status='pending' AND expires_at>?))", block.id, now);
   return Math.max(0, block.capacity - used.n);
+}
+
+// Demo-mode "payment", ported from app/payments.cjs:11 completeDemo() (BEGIN IMMEDIATE).
+// One batch: expire stale holds, then a guarded transition pending->paid|failed that only
+// applies while the hold is live, then the confirmation email guarded on status='paid'
+// (dedupe_key keeps it to one). Concurrent or repeated calls converge on one outcome.
+export async function completeDemo(db, { bookingId, userId, result, emailMode = 'preview', now = Date.now() }) {
+  const load = () => db.get('SELECT * FROM bookings WHERE id=? AND customer_id=?', bookingId, userId);
+  const booking = await load();
+  if (!booking) throw httpError(404, 'Booking not found.');
+  if (booking.mode !== 'demo') throw httpError(403, 'This booking must be confirmed by Stripe.');
+  if (booking.status === 'paid') return booking;
+  const inactive = () => httpError(409, 'This checkout is no longer active. Book a new place to try again.');
+  if (booking.status !== 'pending' || booking.expires_at <= now) {
+    if (booking.status === 'pending') await db.run("UPDATE bookings SET status='expired' WHERE id=? AND status='pending' AND expires_at<=?", bookingId, now);
+    throw inactive();
+  }
+  const success = result === 'success';
+  const writes = [
+    db.stmt("UPDATE bookings SET status='expired' WHERE status='pending' AND expires_at<=?", now),
+    db.stmt(
+      `UPDATE bookings SET status=?,paid_at=CASE WHEN ?='paid' THEN ? ELSE paid_at END
+       WHERE id=? AND customer_id=? AND mode='demo' AND status='pending' AND expires_at>? RETURNING *`,
+      success ? 'paid' : 'failed', success ? 'paid' : 'failed', now, bookingId, userId, now
+    )
+  ];
+  if (success) writes.push(await confirmationInsert(db, bookingId, { emailMode, now }));
+  const results = await db.batch(writes);
+  const updated = results[1].rows[0];
+  if (updated) return updated;
+  // Lost a race: report the state that won (paid stays paid; anything else is inactive).
+  const current = await load();
+  if (current?.status === 'paid') return current;
+  if (!success && current?.status === 'failed') return current;
+  throw inactive();
 }
