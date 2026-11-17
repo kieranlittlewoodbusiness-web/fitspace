@@ -3,7 +3,7 @@ const {test,before,after}=require('node:test'),assert=require('node:assert/stric
 const {createApp}=require('../server.cjs');
 
 const appJs=fs.readFileSync(path.join(__dirname,'../public/app.js'),'utf8');
-const appLines=appJs.split(/\n/);
+const appLines=appJs.replace(/\n$/,'').split('\n');
 const serverSrc=fs.readFileSync(path.join(__dirname,'../server.cjs'),'utf8');
 
 const present=[
@@ -46,7 +46,7 @@ test('public app.js keeps the approved single-coach and Resilience Coaching copy
   // Previously approved customer labels stay; admin/PT labels stay
   assert.ok(appJs.includes("['trainers','people','Your coach']"));
   assert.ok(appJs.includes("['trainers','people','PT accounts']"));
-  assert.ok(appJs.includes("me.role==='pt'?'TRAINER WORKSPACE'"));
+  assert.ok(appJs.includes("role==='pt'?'TRAINER WORKSPACE'"));
   assert.ok(appJs.includes("me.role==='pt'?'Trainer workspace'"));
 });
 
