@@ -41,8 +41,8 @@ async function deliver(db,id){
  if(job.kind==='link'){
   const reset=db.prepare('SELECT * FROM password_resets WHERE id=?').get(job.reset_id);
   if(!reset||reset.used_at||reset.expires_at<=Date.now()||reset.password_hash!==user.password_hash||reset.token_hash!==auth.digest(token(reset.id)))return;
-  subject='Reset your FITSPACE password';text='A password reset was requested for your FITSPACE account.\n\nOpen this link to choose a new password:\n'+job.origin+'/reset-password#'+token(reset.id)+'\n\nThis link expires 30 minutes after the request and can be used once. If you did not request this, ignore this email. Your password has not changed.';
- }else{subject='Your FITSPACE password has changed';text='Your FITSPACE password was reset. All previous sign-in sessions have been closed.\n\nIf you did not make this change, request a fresh password reset from '+job.origin+'/forgot-password and contact your trainer or platform owner.';}
+  subject='Reset your Resilience Coaching password';text='A password reset was requested for your Resilience Coaching account.\n\nOpen this link to choose a new password:\n'+job.origin+'/reset-password#'+token(reset.id)+'\n\nThis link expires 30 minutes after the request and can be used once. If you did not request this, ignore this email. Your password has not changed.';
+ }else{subject='Your Resilience Coaching password has changed';text='Your Resilience Coaching password was reset. All previous sign-in sessions have been closed.\n\nIf you did not make this change, request a fresh password reset from '+job.origin+'/forgot-password and contact your coach or platform owner.';}
  try{
   const response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+process.env.RESEND_API_KEY,'Content-Type':'application/json','Idempotency-Key':'fitspace-auth:'+id},body:JSON.stringify({from:job.sender,to:[job.recipient],subject,text}),signal:AbortSignal.timeout(12000)});
   if(!response.ok)throw new Error('Email delivery not accepted');
