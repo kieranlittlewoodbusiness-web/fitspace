@@ -21,7 +21,7 @@
 // Errors with an HTTP status are returned as an envelope, because Workers RPC does not
 // carry custom Error properties across the Durable Object boundary.
 import { DurableObject } from 'cloudflare:workers';
-import { createDb } from './db.mjs';
+import { createDb, withoutDb } from './db.mjs';
 import { ops } from './ops/index.mjs';
 import { errorExtras, httpError } from './util.mjs';
 
@@ -42,6 +42,7 @@ export class Writer extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.db = createDb(env.DB);
+    this.appEnv = withoutDb(env); // ops never see the raw binding (CR 5941600057 M4)
     this.slotMs = Number(env.WRITER_SLOT_MS) > 0 ? Number(env.WRITER_SLOT_MS) : DEFAULT_SLOT_MS;
   }
 
@@ -50,7 +51,7 @@ export class Writer extends DurableObject {
     const op = Object.hasOwn(table, name) ? table[name] : null;
     if (!op) return { error: { status: 500, message: 'Unknown writer operation.' } };
     const turn = this.#tail;
-    const result = turn.then(() => op(this.db, args ?? {}, this.env));
+    const result = turn.then(() => op(this.db, args ?? {}, this.appEnv));
     // The slot is held from when this op STARTS until it settles or slotMs passes.
     this.#tail = turn.then(() => new Promise(release => {
       const timer = setTimeout(release, this.slotMs);

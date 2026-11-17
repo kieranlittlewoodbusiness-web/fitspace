@@ -5,7 +5,7 @@
 // stale entry. Everything else must go through scopeFor(). Regenerate fingerprints with:
 //   node workers-test/scope-lint-core.mjs   (prints the current keys)
 import { describe, it, expect } from 'vitest';
-import { ptOwnedQueries, nonLiteralSqlCalls, rawAccess, sqlConstantUses, sqlCallCount } from './scope-lint-core.mjs';
+import { ptOwnedQueries, nonLiteralSqlCalls, rawAccess, sqlConstantUses, sqlCallCount, foreignReceiverCalls } from './scope-lint-core.mjs';
 
 const sources = {
   ...import.meta.glob('../src/**/*.mjs', { query: '?raw', import: 'default', eager: true }),
@@ -528,6 +528,13 @@ export const NONLITERAL = {
   '../scripts/snapshot-import.mjs::rowCounts::dynamic::fac7f363': 'local import CLI: table name from the fixed TABLE_ORDER list',
   '../src/views.mjs::inChunks::expr::4eef12a7': 'expands (?*) to ? placeholders for chunked IN lists; callers pass literals (fingerprinted)'
 };
+// CR 5941600057 M4: get/all/run/exec/... calls on a receiver that is not the db wrapper.
+export const RECEIVERS = {
+  '../scripts/snapshot-import.mjs::expectedSchema::receiver:mem.exec': 'local import CLI: node:sqlite in-memory DB built from migrations/ (schema only)',
+  '../scripts/snapshot-import.mjs::prepareImport::receiver:upgraded.exec': 'local import CLI: node:sqlite scratch copy, runs the migration files',
+  '../src/writer.mjs::write::receiver:binding.get': 'Durable Object namespace get(id), not SQL',
+  '../src/writer.mjs::write::receiver:stub.run': 'Writer RPC run(name, args), not SQL'
+};
 // Uses of a module-level SQL constant outside the file that defines it.
 export const CONST_USES = {
   '../scripts/cutover-import.mjs::uses:DUPLICATE_REPORT_SQL': 'cutover CLI (local scratch DB): same report as the gate',
@@ -542,6 +549,7 @@ export function violations(src) {
     ...ptOwnedQueries(src).filter(q => !allowedKeys().includes(q.key)).map(q => 'query ' + q.key),
     ...nonLiteralSqlCalls(src).filter(q => !(q.key in NONLITERAL)).map(q => 'nonliteral ' + q.key),
     ...rawAccess(src).map(r => 'raw ' + r),
+    ...foreignReceiverCalls(src).filter(k => !(k in RECEIVERS)).map(k => 'receiver ' + k),
     ...sqlConstantUses(src).filter(k => !(k in CONST_USES)).map(k => 'uses ' + k),
     ...(sqlCallCount(src['../worker/index.mjs'] || '') ? ['worker/index.mjs makes SQL calls'] : [])
   ];
@@ -580,6 +588,7 @@ describe('scope lint (per query)', () => {
     const nl = [...new Set(nonLiteralSqlCalls(sources).map(q => q.key))].sort();
     expect(nl).toEqual(Object.keys(NONLITERAL).sort());
     expect(rawAccess(sources)).toEqual([]);
+    expect(foreignReceiverCalls(sources)).toEqual(Object.keys(RECEIVERS).sort());
     expect(sqlConstantUses(sources)).toEqual(Object.keys(CONST_USES).sort());
     expect(sqlCallCount(sources['../worker/index.mjs'])).toBe(0);
     expect(violations(sources)).toEqual([]);
@@ -605,7 +614,24 @@ describe('scope lint (per query)', () => {
     destructured: "(({ all }) => all)(db)",
     raw_binding: "env.DB.prepare('SELECT 1').all()",
     raw_wrapper_d1: "db.d1.prepare('SELECT 1').all()",
-    variable: "db.all(q)"
+    variable: "db.all(q)",
+    // CR 5941600057 M4: each of these passed the lint at 036cb53 and leaked at runtime.
+    cr_db_alias: "(() => { const h = db; return h.all(q); })()",
+    cr_object_property_alias: "(() => { const o = { h: db }; return o.h.all(q); })()",
+    cr_env_destructuring: "(() => { const { DB: x } = env; return x.prepare(q).all(); })()",
+    cr_comma_join: "db.all('SELECT b.* FROM (SELECT 1) z, bookings b')",
+    cr_unicode_escape: "db.all('SELECT * FROM \\u0062ookings')",
+    cr_hex_escape: "db.all('SELECT * FROM \\x62ookings')",
+    // and their neighbours
+    unicode_brace_escape: "db.all(`SELECT * FROM \\u{62}ookings`)",
+    line_continuation: "db.all('SELECT * FROM book\\\nings')",
+    arrow_alias: "((h => h)(db)).all(q)",
+    call_result_receiver: "(await Promise.resolve(db)).all(q)",
+    raw_binding_argument: "createDbLike(env.DB)",
+    computed_env: "env[q].prepare('SELECT 1').all()",
+    reflect: "Reflect.get(db, 'all')(q)",
+    durable_object_env: "this.env.DB.prepare(q).all()",
+    platform_env_import: "(await import('cloudflare:workers')).env"
   };
   for (const [name, call] of Object.entries(BYPASSES)) {
     it(`bypass "${name}" is caught in worker/index.mjs and in an allowlisted src function`, () => {

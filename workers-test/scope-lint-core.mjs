@@ -10,12 +10,25 @@ const GAP = '(?:\\s|/\\*[\\s\\S]*?\\*/|--[^\\n]*(?:\\n|$))';
 const OPEN = '["\\u0060\\[]?', CLOSE = '["\\u0060\\]]?';
 const NAME = OPEN + '(?:' + TABLES.join('|') + ')' + CLOSE;
 const QUALIFIER = '(?:' + OPEN + '\\w+' + CLOSE + GAP + '*\\.' + GAP + '*)?';
-export const PT_OWNED = new RegExp('\\b(?:FROM|JOIN|UPDATE|INTO)(?:' + GAP + '+|(?=["\\u0060\\[]))' + QUALIFIER + NAME + '(?!\\w)', 'i');
+// CR 5941600057 M4: a comma join (`FROM (SELECT 1) z, bookings b`) names a table after ','.
+export const PT_OWNED = new RegExp('(?:\\b(?:FROM|JOIN|UPDATE|INTO)|,)(?:' + GAP + '*?(?=["\\u0060\\[])|' + GAP + '+|(?=\\w))' + QUALIFIER + NAME + '(?!\\w|' + GAP + '*\\.)', 'i'); // `, pts.slug` is a column, not a table
 
 /** String/template literals with their start offsets. Templates: ${...} becomes ${}; nested
  *  literals inside expressions are returned separately. Comments are skipped. */
 const ESCAPES = { n: '\n', r: '\r', t: '\t', v: '\v', f: '\f', b: '\b', 0: '\0' };
-const unescape1 = c => ESCAPES[c] ?? c;
+/** One escape sequence at src[i] === '\\': [decoded text, length consumed]. CR 5941600057 M4:
+ *  \xHH, \uHHHH and \u{H...} are decoded (`\u0062ookings` is `bookings`); a backslash-newline
+ *  line continuation is dropped. */
+function unescapeAt(src, i) {
+  const c = src[i + 1];
+  let m;
+  if (c === 'x' && (m = /^[0-9a-fA-F]{2}/.exec(src.slice(i + 2)))) return [String.fromCharCode(parseInt(m[0], 16)), 4];
+  if (c === 'u' && (m = /^\{([0-9a-fA-F]{1,6})\}/.exec(src.slice(i + 2)))) return [String.fromCodePoint(parseInt(m[1], 16)), 2 + m[0].length];
+  if (c === 'u' && (m = /^[0-9a-fA-F]{4}/.exec(src.slice(i + 2)))) return [String.fromCharCode(parseInt(m[0], 16)), 6];
+  if (c === '\r' && src[i + 2] === '\n') return ['', 3];
+  if (c === '\n' || c === '\r') return ['', 2];
+  return [ESCAPES[c] ?? c, 2];
+}
 
 export function literals(src, comments = []) {
   const out = [];
@@ -24,7 +37,7 @@ export function literals(src, comments = []) {
   function readQuoted(q) {
     const start = i; i++;
     let s = '';
-    while (i < n && src[i] !== q) { if (src[i] === '\\') { s += unescape1(src[i + 1]); i += 2; } else s += src[i++]; }
+    while (i < n && src[i] !== q) { if (src[i] === '\\') { const [t, len] = unescapeAt(src, i); s += t; i += len; } else s += src[i++]; }
     i++;
     out.push({ start, end: i, text: s });
   }
@@ -32,7 +45,7 @@ export function literals(src, comments = []) {
     const start = i; i++;
     let s = '';
     while (i < n && src[i] !== '`') {
-      if (src[i] === '\\') { s += unescape1(src[i + 1]); i += 2; continue; }
+      if (src[i] === '\\') { const [t, len] = unescapeAt(src, i); s += t; i += len; continue; }
       if (src[i] === '$' && src[i + 1] === '{') { i += 2; s += '${}'; readCode(true); continue; }
       s += src[i++];
     }
@@ -174,16 +187,64 @@ export function rawAccess(sources) {
     [/\{[^}]*\}\s*=\s*db\b/, 'destructured db'],
     [/\{\s*(?:[\w$]+\s*(?::\s*[\w$]+\s*)?,\s*)*(?:all|stmt|guard|batch|d1|prepare)\b[^}]*\}\s*(?:=[^=>]|\)\s*=>)/, 'destructured SQL method'],
     [/\.\s*d1\b/, '.d1 (raw binding)'],
-    [/\benv\s*\.\s*DB\b(?!\s*\))/, 'env.DB used other than createDb(env.DB)'],
-    [/\b(env|this\.env)\s*\[\s*$/m, 'computed env access']
+    // CR 5941600057 M4: `const q = db`, `{ h: db }`, `x => db`, `c ? db : ...` (an alias of the
+    // wrapper; calls on it are also caught by foreignReceiverCalls).
+    [/(?:(?<![=!<>])=(?![=>])|:|=>|\?)\s*(?:this\s*\.\s*)?db\b(?!\s*(?:[.\w$]|=>))/, 'db alias'],
+    // The raw binding: only `createDb(env.DB)` at the entry points may name DB (blanked below);
+    // `const { DB: x } = env`, `env.DB`, `foo(env.DB)` are all reported.
+    [/\bDB\b/, 'raw DB binding'],
+    [/\{[^{}]*\}\s*=\s*(?:this\s*\.\s*)?env\b/, 'destructured env'],
+    [/\b(?:env|this\s*\.\s*env)\s*\[/, 'computed env access'],
+    [/\bthis\s*\.\s*env\b/, 'this.env (raw Durable Object env)'],
+    [/\bReflect\b/, 'Reflect']
   ];
   const out = [];
   for (const [file, src] of Object.entries(sources)) {
     if (file.endsWith('/src/db.mjs')) continue;
-    const { text } = masked(src);
+    const text = masked(src).text.replace(/createDb\(\s*env\s*\.\s*DB\s*\)/g, m => 'createDb(' + ' '.repeat(m.length - 10) + ')');
     for (const [re, what] of rules) { const g = new RegExp(re.source, 'g' + re.flags.replace('g', '')); let m; while ((m = g.exec(text))) out.push(`${file}::${enclosing(src, m.index)}::${what}`); }
+    // The platform env (with the raw DB binding) is importable from any module: only the
+    // Writer's `import { DurableObject } from 'cloudflare:workers'` is allowed.
+    for (const m of src.matchAll(/cloudflare:workers/g)) {
+      const line = src.slice(src.lastIndexOf('\n', m.index) + 1, src.indexOf('\n', m.index) < 0 ? undefined : src.indexOf('\n', m.index));
+      if (!/^import \{ DurableObject \} from 'cloudflare:workers';$/.test(line.trim())) out.push(`${file}::${enclosing(src, m.index)}::cloudflare:workers import`);
+    }
   }
   return out.sort();
+}
+
+// Receivers whose get/all/run/... are never D1 (standard library and request objects).
+export const SAFE_RECEIVERS = new Set(['Promise', 'request.headers', 'headers', 'url.searchParams', 'searchParams']);
+const DB_RECEIVERS = new Set(['db', 'this.db', 'd1', 'sqlite', 'database']);
+
+/** CR 5941600057 M4: a get/all/run/stmt/exec/prepare/batch/guard call on ANY receiver other
+ *  than the `db` wrapper (whose calls are linted as SQL calls) or a statement returned by
+ *  prepare()/stmt(). Catches aliases (`q.all`, `o.h.all`, `(await x).all`). Each is reported as
+ *  `file::fn::receiver:<receiver>.<method>` and must be allowlisted (RECEIVERS in the test). */
+export function foreignReceiverCalls(sources) {
+  const out = [];
+  for (const [file, src] of Object.entries(sources)) {
+    if (file.endsWith('/src/db.mjs')) continue;
+    const { text } = masked(src);
+    for (const m of text.matchAll(/\.\s*(get|all|run|stmt|exec|prepare|batch|guard)\s*\(/g)) {
+      let p = m.index - 1;
+      while (p >= 0 && /\s/.test(text[p])) p--;
+      let receiver;
+      if (text[p] === ')' || text[p] === ']') {
+        const close = text[p], open = close === ')' ? '(' : '[';
+        let depth = 0, q = p;
+        for (; q >= 0; q--) { if (text[q] === close) depth++; else if (text[q] === open && --depth === 0) break; }
+        const before = /([\w$.\s]*)$/.exec(text.slice(Math.max(0, q - 80), q))[1].replace(/\s+/g, '');
+        if (close === ')' && /(?:^|\.)(?:prepare|stmt)$/.test(before)) continue; // statement from a linted prepare()/stmt()
+        receiver = (before || '') + (close === ')' ? '(...)' : '[...]');
+      } else {
+        receiver = /((?:[\w$]+\s*\.\s*)*[\w$]+)$/.exec(text.slice(Math.max(0, p - 120), p + 1))?.[1].replace(/\s+/g, '') || '?';
+      }
+      if (DB_RECEIVERS.has(receiver) || SAFE_RECEIVERS.has(receiver)) continue;
+      out.push(`${file}::${enclosing(src, m.index)}::receiver:${receiver}.${m[1]}`);
+    }
+  }
+  return [...new Set(out)].sort();
 }
 
 /** Module-level constants holding PT-owned SQL, and every use of one outside its own file
@@ -219,5 +280,6 @@ if (typeof process !== 'undefined' && process.argv?.[1]?.endsWith('scope-lint-co
   for (const q of ptOwnedQueries(sources)) console.log(q.key, '|', q.sql);
   for (const q of nonLiteralSqlCalls(sources)) console.log('NONLITERAL', q.key, '|', q.sql.slice(0, 100));
   for (const r of rawAccess(sources)) console.log('RAW', r);
+  for (const r of foreignReceiverCalls(sources)) console.log('RECEIVER', r);
   for (const r of sqlConstantUses(sources)) console.log('USES', r);
 }

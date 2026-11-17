@@ -8,7 +8,7 @@
 // Trigger for email delivery and housekeeping. netlify/functions/platform.mjs stays the
 // live path until cutover.
 import crypto from 'node:crypto';
-import { createDb } from '../src/db.mjs';
+import { createDb, withoutDb } from '../src/db.mjs';
 import { write } from '../src/writer.mjs';
 import { currentUser, requireUser, checkMutation } from '../src/auth.mjs';
 import { verifyWebhook } from '../src/stripe-webhook.mjs';
@@ -62,6 +62,10 @@ function idParam(value, label = 'id', { encoded = false } = {}) {
 }
 
 export async function handle(request, env) {
+  // CR 5941600057 M4 (structural): the wrapper is the only D1 handle; everything below sees an
+  // env without the raw binding.
+  const db = createDb(env.DB);
+  env = withoutDb(env);
   const url = new URL(request.url);
   const route = url.pathname;
   const method = request.method;
@@ -73,7 +77,6 @@ export async function handle(request, env) {
   // netlify/functions/platform.mjs:47: with the owner (Connect) integration a configured key that
   // does not match the payment mode fails closed for every API route except sign-in, before any write.
   if (integration !== 'pt_direct' && env.STRIPE_SECRET_KEY && route.startsWith('/api/') && !route.startsWith('/api/auth/')) validatePlatformKey(env, paymentMode);
-  const db = createDb(env.DB);
   const stripeOpts = { mode: paymentMode, integration };
   const paymentOrigin = env.APP_URL ? new URL(env.APP_URL).origin : url.origin;
   const secure = url.protocol === 'https:';
@@ -306,7 +309,7 @@ function temporaryPassword(env, key) {
 
 export default {
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(runScheduled(env, createDb(env.DB)).then(r => console.log('RC-4 cron:', JSON.stringify(r)), e => console.error('RC-4 cron failed:', e.code || e.name || 'Error')));
+    ctx.waitUntil(runScheduled(withoutDb(env), createDb(env.DB)).then(r => console.log('RC-4 cron:', JSON.stringify(r)), e => console.error('RC-4 cron failed:', e.code || e.name || 'Error')));
   },
   async fetch(request, env) {
     try {

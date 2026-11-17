@@ -14,8 +14,9 @@ const clean = args => args.map(value => (value === undefined ? null : typeof val
 export function createDb(d1) {
   if (!d1 || typeof d1.prepare !== 'function') throw new DbError('D1 binding DB is missing.');
   const stmt = (sql, ...args) => d1.prepare(sql).bind(...clean(args));
-  return {
-    d1,
+  // CR 5941600057 M4 (structural): the wrapper is frozen and does not expose the raw binding,
+  // so code holding `db` (or any alias of it) can only run SQL through these methods.
+  return Object.freeze({
     /** A bound statement for use in batch(). */
     stmt,
     /** First row or null (DatabaseSync .get() returned undefined). */
@@ -43,7 +44,18 @@ export function createDb(d1) {
       const results = await d1.batch(statements.filter(Boolean));
       return results.map(r => ({ rows: r.results || [], changes: r.meta?.changes ?? 0 }));
     }
-  };
+  });
+}
+
+/**
+ * CR 5941600057 M4 (structural): the env handed to route, op, view and cron code. The raw D1
+ * binding is removed, so `env.DB`, `const { DB } = env` or `env['DB']` downstream are all
+ * undefined; the only D1 handle downstream is the createDb() wrapper created at the entry
+ * points (worker fetch/scheduled and the Writer constructor).
+ */
+export function withoutDb(env) {
+  const { DB, ...rest } = env;
+  return Object.freeze(rest);
 }
 
 /** True when a D1 error is a UNIQUE/PRIMARY KEY violation, optionally on a given target. */
