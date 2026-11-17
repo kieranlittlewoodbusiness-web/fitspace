@@ -269,7 +269,7 @@ Types are written for Postgres. On D1 use `TEXT` / `INTEGER` (epoch seconds, 0/1
 | Table | Key columns | Notes / ticket |
 |---|---|---|
 | `stripe_accounts` (replaces `stripe_connections` + `pt_stripe_credentials` for new PTs) | `pt_id`, `mode`, `account_id` (UNIQUE per mode), `charges_enabled`, `payouts_enabled`, `details_submitted`, `requirements_currently_due` (json), `requirements_past_due` (json), `disabled_reason`, `status_source_ts`, `updated_at`; PK `(pt_id, mode)` | RC-5. `status_source_ts` guards against out-of-order status updates. Keep `pt_stripe_credentials` read-only for historical `pt_direct` bookings and refunds until migrated. |
-| `stripe_webhook_events` (replaces `webhook_events`) | PK `(endpoint, event_id)`, `type`, `account_id` (null for platform), `object_id`, `received_at`, `processed_at`, `status` (`processing`/`done`/`failed`), `attempts`, `last_error` | All tickets. Idempotency is `INSERT … ON CONFLICT DO NOTHING` (both Postgres and D1/SQLite support it), and "inserted 0 rows" means a duplicate. Also store `(type, object_id)` to catch the rare "two Event objects for one change" case Stripe documents. |
+| `stripe_webhook_events` (replaces `webhook_events`) | PK `(endpoint, event_id)`, `type`, `account_id` (null for platform), `object_id`, `received_at` | All tickets. Idempotency: the event key is inserted **in the same transaction/batch as the event's effects**; a duplicate key aborts it (see "Duplicates" below; corrected after CR review, superseded by RC-4's rule). Also store `(type, object_id)` to catch the rare "two Event objects for one change" case Stripe documents. |
 | `stripe_jobs` (existing) | as today | Kept: outbound calls stay idempotent and retryable. |
 | `bookings` (existing, extended) | add `list_price_pence`, `discount_code_id`, `discount_pence`. `amount_pence` = the final charged amount. Keep `checkout_session` UNIQUE, `stripe_account_id`, `refund_status`, `refunded_pence` | RC-6, RC-8. Capacity holds stay as today (`status='pending'` + `expires_at`). |
 | `platform_customers` | PK `(pt_id, mode)`, `customer_id` UNIQUE | RC-7. Stripe Customer on the **platform** account for each PT. |
@@ -298,9 +298,8 @@ Types are written for Postgres. On D1 use `TEXT` / `INTEGER` (epoch seconds, 0/1
   - **Postgres via Hyperdrive:** open a `pg` client from `env.HYPERDRIVE.connectionString` **inside** the request and close it in `ctx.waitUntil`. RC-1 showed a module-level pool hangs on the 2nd request.
   - **D1:** use the `env.DB` binding directly; there is no pool to manage.
 - **Duplicates:**
-  - Insert into `stripe_webhook_events` first (`ON CONFLICT DO NOTHING`). If 0 rows were inserted, the event has already been processed, so return 200.
-  - If the row exists with `status='failed'`, reprocess it; Stripe retries.
-  - Effects must be idempotent anyway, for example `UPDATE bookings SET status='paid' … WHERE id=? AND status='pending'`.
+  - **One rule (corrected after CR review; the earlier "insert first, then process, reprocess `failed`" text contradicted itself and could record an event whose effects never committed):** insert the event key in the **same** transaction (Postgres) or `batch()` (D1) as the event's effects. If the key already exists, the unique violation aborts everything and the endpoint returns 200 as a duplicate. If any effect fails, the key rolls back too and Stripe's retry applies the event. No `processing`/`failed` status rows. RC-4 implements and tests this (`docs/rc-4/RC-4-d1-port.md` on branch `rc-4-d1`).
+  - Effects stay individually guarded anyway, for example `UPDATE bookings SET status='paid' … WHERE id=? AND status='pending'`.
 - **Out-of-order events:**
   - Stripe documents that it doesn't guarantee order, and that `created` must not be used for ordering.
   - For **state mirrors** (account status, subscription status), treat the event as a trigger and **re-retrieve the object** from Stripe, then upsert, guarded by `status_source_ts`. Stripe's Billing docs recommend retrieving the subscription after `invoice.paid` to confirm `active`.
