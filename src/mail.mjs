@@ -63,12 +63,12 @@ export async function deliverAuthMail(env, db, { now = Date.now(), limit = 10 } 
         await db.run("UPDATE auth_mail_jobs SET status='dropped',last_error='Link no longer valid; not sent.' WHERE id=?", id);
         out.dropped++; continue;
       }
-      subject = 'Reset your FITSPACE password';
-      text = 'A password reset was requested for your FITSPACE account.\n\nOpen this link to choose a new password:\n' + job.origin + '/reset-password#' + token + '\n\nThis link expires 30 minutes after the request and can be used once. If you did not request this, ignore this email. Your password has not changed.';
+      subject = 'Reset your Resilience Coaching password';
+      text = 'A password reset was requested for your Resilience Coaching account.\n\nOpen this link to choose a new password:\n' + job.origin + '/reset-password#' + token + '\n\nThis link expires 30 minutes after the request and can be used once. If you did not request this, ignore this email. Your password has not changed.';
     } else {
       if (!user || user.email !== job.recipient) { await db.run("UPDATE auth_mail_jobs SET status='dropped' WHERE id=?", id); out.dropped++; continue; }
-      subject = 'Your FITSPACE password has changed';
-      text = 'Your FITSPACE password was reset. All previous sign-in sessions have been closed.\n\nIf you did not make this change, request a fresh password reset from ' + job.origin + '/forgot-password and contact your trainer or platform owner.';
+      subject = 'Your Resilience Coaching password has changed';
+      text = 'Your Resilience Coaching password was reset. All previous sign-in sessions have been closed.\n\nIf you did not make this change, request a fresh password reset from ' + job.origin + '/forgot-password and contact your coach or platform owner.';
     }
     try {
       await sendResend(env, { idempotencyKey: 'fitspace-auth:' + id, payload: { from: job.sender, to: [job.recipient], subject, text } });

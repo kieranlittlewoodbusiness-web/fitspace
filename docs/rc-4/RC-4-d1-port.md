@@ -303,6 +303,10 @@ Everything was done through the Cloudflare connector's API (no wrangler login, n
   - stripe-netlify #4: `payment_error` is asserted after a decline.
 - **Guard mutations:** 22/22 killed (16 earlier plus 6 new: payment readiness ×2, reset-off, cron gate, Writer env, wrapper). The route env one is an equivalent mutant on its own and is covered by the paired bypass case above.
 - **Preview (parked, not redeployed):** the next upload must carry `CRON_ENABLED` (added to `gen-upload.mjs`). With M6, its Stripe-mode payment routes answer 503 by design, because there's no key or webhook secret.
+- **Merge of `origin/main` (1de6264: #2, #5, #6 RC-20) — normal merge commit `e16be05`:**
+  - `package.json`: RC-4's Workers devDependencies and scripts + #5's `@netlify/zip-it-and-ship-it` ^16.6.0 and the `minimatch` ^11.0.1 / `glob` ^14.0.2 overrides. Lockfile = main's + `npm install`; only minimatch and glob moved in the Workers tree. `npm audit` 0, `npm ls --all` exit 0.
+  - `app/public/app.js` auto-merged: RC-20 wording plus RC-4's `create_key` fields (lines 60/63); it differs from main only on those two lines.
+  - RC-20 copy carried into the Worker port: auth email subjects/bodies ("Resilience Coaching", "contact your coach") in `src/mail.mjs`, and the public 404 "This page is not available." in `src/public.mjs`. Internal HMAC/Idempotency-Key prefixes (`fitspace-…`) are unchanged on purpose: changing them would invalidate live reset tokens and PT temporary passwords. Test: `tests/worker-copy-parity.test.mjs`.
 - **Follow-ups (not fixed here):**
   - Minors 2–4 (mail backoff and attempt cap, the Resend key after an error, a refund-validation failure after the Stripe refund).
   - `bootstrap-admin --remote --confirm-remote` can reach the real id (owner-only by design).

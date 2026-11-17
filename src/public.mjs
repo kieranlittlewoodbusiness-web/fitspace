@@ -10,7 +10,7 @@ export async function publishedPts(db) {
 }
 export async function publishedPtPage(db, slug, now = Date.now()) {
   const pt = await db.get('SELECT * FROM pts WHERE slug=? AND published=1', slug);
-  if (!pt) throw httpError(404, 'This trainer page is not available.');
+  if (!pt) throw httpError(404, 'This page is not available.');
   const blocks = (await viewBlocks(db, await db.all('SELECT * FROM blocks WHERE pt_id=? AND published=1 AND closed=0', pt.id), now))
     .filter(b => b.can_book).sort((a, b) => a.sessions[0].starts_epoch - b.sessions[0].starts_epoch);
   return { pt: publicPt(pt), blocks };
