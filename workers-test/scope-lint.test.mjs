@@ -5,7 +5,7 @@
 // stale entry. Everything else must go through scopeFor(). Regenerate fingerprints with:
 //   node workers-test/scope-lint-core.mjs   (prints the current keys)
 import { describe, it, expect } from 'vitest';
-import { ptOwnedQueries } from './scope-lint-core.mjs';
+import { ptOwnedQueries, nonLiteralSqlCalls, rawAccess, sqlConstantUses, sqlCallCount } from './scope-lint-core.mjs';
 
 const sources = {
   ...import.meta.glob('../src/**/*.mjs', { query: '?raw', import: 'default', eager: true }),
@@ -14,6 +14,168 @@ const sources = {
 };
 
 export const ALLOWED = {
+  '../src/sessions.mjs::signup': {
+    why: 'public signup: role forced to customer',
+    queries: [
+      '4e0e7f76', // INSERT INTO users(id,name,email,password_hash,role,pt_id,must_change_p
+    ]
+  },
+  '../src/sessions.mjs::login': {
+    why: 'login by email; password verified before anything is returned',
+    queries: [
+      'e75aa28a', // SELECT * FROM users WHERE email=?
+    ]
+  },
+  '../src/public.mjs::publishedPts': {
+    why: 'public: published PTs only, public fields rendered by the view',
+    queries: [
+      '76b9bb78', // SELECT * FROM pts WHERE published=1 ORDER BY created_at
+    ]
+  },
+  '../src/public.mjs::markWebhookSeen': {
+    why: "PT webhook: after signature verification with this credential's secret",
+    queries: [
+      '652b1312', // UPDATE pt_stripe_credentials SET webhook_seen_at=? WHERE id=?
+    ]
+  },
+  '../src/public.mjs::defaultSlug': {
+    why: 'public: first published PT slug',
+    queries: [
+      '4b8c0975', // SELECT slug FROM pts WHERE published=1 ORDER BY created_at LIMIT 1
+    ]
+  },
+  '../src/public.mjs::credentialById': {
+    why: "PT webhook: credential by the id in the URL, verified by that credential's own signing secret",
+    queries: [
+      'e1aa6054', // SELECT * FROM pt_stripe_credentials WHERE id=?
+    ]
+  },
+  '../src/public.mjs::adminSetupStatus': {
+    why: 'admin-only route (requireUser admin in the Worker before the call); the credential query selects no cipher columns',
+    queries: [
+      'a5c09f8a', // SELECT id,pt_id,mode,account_id,enabled,charges_ready,webhook_seen_at 
+      'b5a5e138', // SELECT c.*,p.brand_name FROM stripe_connections c JOIN pts p ON p.id=c
+    ]
+  },
+  '../src/pt-credentials.mjs::loadCredential': {
+    why: "credential by id; callers re-check ownership (runJob: booking/block pt_id binding; PT webhook: the URL's own credential)",
+    queries: [
+      'e1aa6054', // SELECT * FROM pt_stripe_credentials WHERE id=?
+    ]
+  },
+  '../src/ops/stripe-jobs.mjs::prepareLink': {
+    why: 'admin-only op (actor role checked first)',
+    queries: [
+      '4b1f8101', // SELECT id FROM pts WHERE id=?
+    ]
+  },
+  '../src/ops/stripe-jobs.mjs::prepareConnect': {
+    why: "PT op: pts row for the caller's own pt_id",
+    queries: [
+      'abf4ec84', // SELECT * FROM pts WHERE id=?
+    ]
+  },
+  '../src/ops/stripe-jobs.mjs::bindStmts': {
+    why: "system: binds the account from a verified Stripe job to the job's pt_id",
+    queries: [
+      '4b9fd779', // NOT EXISTS(SELECT 1 FROM stripe_connections WHERE mode=? AND account_i
+      'b2681801', // UPDATE pts SET stripe_account=?,stripe_ready=? WHERE id=?
+      'c50e14e5', // INSERT INTO stripe_connections(pt_id,mode,account_id,routing,ready) VA
+    ]
+  },
+  '../src/ops/stripe-jobs.mjs::actor': {
+    why: 'loads the signed-in user by id (the caller itself)',
+    queries: [
+      'cc279490', // SELECT id,role,pt_id,email,name,must_change_password FROM users WHERE 
+    ]
+  },
+  '../src/ops/password-reset.mjs::resetPassword': {
+    why: "reset by HMAC-verified token: touches only that token's user",
+    queries: [
+      '831b3b65', // EXISTS(SELECT 1 FROM password_resets r JOIN users u ON u.id=r.user_id 
+      'ecf1970f', // UPDATE users SET password_hash=?,must_change_password=0 WHERE id=?
+      'faacb7da', // SELECT r.*,u.email,u.role,u.active,u.demo,u.password_hash current_hash
+    ]
+  },
+  '../src/ops/password-reset.mjs::requestReset': {
+    why: 'public reset request: generic response, nothing returned to the caller',
+    queries: [
+      'cafb0bdf', // SELECT * FROM users WHERE email=? AND active=1 AND demo=0 AND role IN 
+    ]
+  },
+  '../src/ops/manage.mjs::createPt>replay': {
+    why: 'admin-only op: replay lookup by create_key',
+    queries: [
+      '7b19ade0', // SELECT p.id,p.slug,p.create_hash,u.email,u.must_change_password FROM p
+    ]
+  },
+  '../src/ops/manage.mjs::createPt': {
+    why: 'admin-only op (actor role checked first): creates the PT and its user',
+    queries: [
+      '33751c95', // INSERT INTO users(id,name,email,password_hash,role,pt_id,must_change_p
+      '93b0bb8a', // INSERT INTO pts(id,slug,brand_name,tagline,description,about,accent,ba
+    ]
+  },
+  '../src/ops/manage.mjs::actor': {
+    why: 'loads the signed-in user by id (the caller itself)',
+    queries: [
+      '67051a79', // SELECT id,role,pt_id,active,must_change_password FROM users WHERE id=?
+    ]
+  },
+  '../src/ops/bookings.mjs::stripeConnection': {
+    why: "payment routing for the block's own pt_id (block already scoped)",
+    queries: [
+      '7c8afa9c', // SELECT stripe_account,stripe_ready FROM pts WHERE id=?
+      'a49c8539', // SELECT * FROM pt_stripe_credentials WHERE pt_id=? AND mode=?
+      'b64f1291', // SELECT account_id,routing,ready FROM stripe_connections WHERE pt_id=? 
+    ]
+  },
+  '../src/ops/accounts.mjs::updatePtBranding': {
+    why: 'admin-only op (actor role checked first)',
+    queries: [
+      'aca33a48', // UPDATE pts SET slug=?,brand_name=?,tagline=?,description=?,about=?,acc
+      'e9162fed', // SELECT id,role FROM users WHERE id=? AND active=1
+    ]
+  },
+  '../src/ops/accounts.mjs::changePassword': {
+    why: 'own account only: id is the signed-in user',
+    queries: [
+      'a825c7d7', // EXISTS(SELECT 1 FROM users WHERE id=? AND active=1 AND password_hash=?
+      'ecf1970f', // UPDATE users SET password_hash=?,must_change_password=0 WHERE id=?
+    ]
+  },
+  '../src/ops/accounts.mjs::bindConnection': {
+    why: 'admin-only op (actor role checked first); binds by pt_id from the verified job',
+    queries: [
+      '45cb7122', // UPDATE stripe_connections SET ready=? WHERE pt_id=? AND mode=? AND acc
+      '5f50fda9', // SELECT id,role,pt_id FROM users WHERE id=? AND active=1
+      'd54e1a4c', // UPDATE pts SET stripe_ready=? WHERE id=? AND stripe_account=?
+    ]
+  },
+  '../src/mail.mjs::deliverAuthMail': {
+    why: 'system (Cron Trigger): recipient of a queued auth mail job, by id',
+    queries: [
+      '6deccc12', // SELECT * FROM users WHERE id=? AND active=1
+    ]
+  },
+  '../src/auth.mjs::currentUser': {
+    why: "session lookup by token hash: returns only the session's own user",
+    queries: [
+      '12c5eecc', // SELECT u.*,s.csrf,s.expires_at FROM sessions s JOIN users u ON u.id=s.
+    ]
+  },
+  '../scripts/bootstrap-admin.mjs::main': {
+    why: 'owner-only CLI: refuses when an admin already exists',
+    queries: [
+      '62c6dc0a', // SELECT count(*) AS admins FROM users WHERE role='admin'
+    ]
+  },
+  '../scripts/bootstrap-admin.mjs::bootstrapAdminSql': {
+    why: 'owner-only CLI: one-off admin bootstrap SQL (no tenant)',
+    queries: [
+      'cf8a91d8', // INSERT INTO users(id,name,email,password_hash,role,created_at) SELECT 
+    ]
+  },
   '../src/cutover.mjs::DUPLICATE_REPORT_SQL': {
     why: "cutover tool (scratch DB, CLI only): global duplicate report, PM ruling",
     queries: [
@@ -39,6 +201,8 @@ export const ALLOWED = {
       '89ee9507', // SELECT * FROM blocks WHERE id=?
       '91231c6d', // SELECT * FROM bookings WHERE id=?
       '9b4cb986', // INSERT OR IGNORE INTO email_outbox(id,pt_id,customer_id,dedupe_key,rec
+      'abf4ec84', // SELECT * FROM pts WHERE id=?
+      'fe0a9ecc', // SELECT name,email FROM users WHERE id=?
     ]
   },
   '../src/emails.mjs::noShowInsert': {
@@ -55,6 +219,7 @@ export const ALLOWED = {
       'de588a69', // UPDATE email_outbox SET status='sending',next_attempt_at=? WHERE id=? 
       'e17b2f90', // UPDATE email_outbox SET status='sent',provider_id=?,sent_at=?,last_err
       'e77454e4', // SELECT id FROM email_outbox WHERE status IN ('queued','failed','sendin
+      '8ceea2ec', // SELECT email FROM users WHERE pt_id=? AND role='pt' LIMIT 1
     ]
   },
   '../src/mail.mjs::runScheduled': {
@@ -67,6 +232,7 @@ export const ALLOWED = {
     why: "keyed by a booking id first returned by scopeFor().booking()",
     queries: [
       '62e5858a', // UPDATE bookings SET status='cancelled' WHERE id=? AND status IN ('paid
+      '5f50fda9', // SELECT id,role,pt_id FROM users WHERE id=? AND active=1
     ]
   },
   '../src/ops/bookings.mjs::available': {
@@ -122,7 +288,8 @@ export const ALLOWED = {
   '../src/ops/manage.mjs::createBlock': {
     why: "insert with pt_id = caller PT (admin: named PT); replay goes through scopeFor().blockByCreateKey",
     queries: [
-      '2f711107', // INSERT INTO blocks(id,pt_id,title,description,venue,price_pence,capaci
+      'ba9eb617', // INSERT INTO blocks(id,pt_id,title,description,venue,price_pence,capaci
+      '4b1f8101', // SELECT id FROM pts WHERE id=?
     ]
   },
   '../src/ops/manage.mjs::markAttendance': {
@@ -132,6 +299,8 @@ export const ALLOWED = {
       '4ccb536b', // SELECT * FROM class_sessions WHERE id=? AND block_id=?
       '594f42e1', // INSERT INTO attendance VALUES(?,?,?,?,?) ON CONFLICT(booking_id,sessio
       'c968da9a', // SELECT id,status,subject,body FROM email_outbox WHERE dedupe_key=?
+      '6ec86903', // SELECT * FROM users WHERE id=?
+      'abf4ec84', // SELECT * FROM pts WHERE id=?
     ]
   },
   '../src/ops/manage.mjs::sessionRows': {
@@ -215,6 +384,11 @@ export const ALLOWED = {
       'f375f377', // SELECT b.* FROM bookings b WHERE b.id=?
       'f987b4b2', // UPDATE bookings SET status=?,payment_error=? WHERE id=? AND paid_at IS
       'fe09232b', // SELECT * FROM bookings WHERE payment_intent=? AND mode=?
+      '3a8f6ced', // UPDATE pt_stripe_credentials SET charges_ready=?,payouts_ready=?,enabl
+      '8aa04ec6', // UPDATE stripe_connections SET ready=?,charges_enabled=?,payouts_enable
+      'cf4ab232', // UPDATE pts SET stripe_ready=? WHERE stripe_account=?
+      'f0b8d0cd', // SELECT stripe_account FROM pts WHERE id=?
+      'fcc80658', // SELECT id,account_id FROM pt_stripe_credentials WHERE id=?
     ]
   },
   '../src/ops/webhooks.mjs::refundWrites': {
@@ -232,6 +406,7 @@ export const ALLOWED = {
     why: "scoped by c.pt_id = the caller PT id (route passes user.pt_id)",
     queries: [
       '5ebbfa29', // SELECT b.id FROM bookings b JOIN blocks c ON c.id=b.block_id WHERE c.p
+      'aa1044ba', // SELECT * FROM pt_stripe_credentials WHERE pt_id=? AND mode IN ('stripe
     ]
   },
   '../src/public.mjs::expireHolds': {
@@ -244,6 +419,7 @@ export const ALLOWED = {
     why: "public: published, open blocks of a published PT only",
     queries: [
       '065588a7', // SELECT * FROM blocks WHERE pt_id=? AND published=1 AND closed=0
+      '61a62fb3', // SELECT * FROM pts WHERE slug=? AND published=1
     ]
   },
   '../src/scope.mjs::BOOKING_VIEW': {
@@ -305,6 +481,9 @@ export const ALLOWED = {
     why: "PT dashboard count scoped by c.pt_id = user.pt_id",
     queries: [
       '0e3720a6', // SELECT count(*) n FROM attendance a JOIN bookings b ON b.id=a.booking_
+      '2ce7f380', // SELECT p.*,u.name owner_name,u.email owner_email,u.active owner_active
+      'abf4ec84', // SELECT * FROM pts WHERE id=?
+      'b2e884bd', // SELECT count(*) n FROM users WHERE role='customer'
     ]
   },
   '../src/views.mjs::viewBlocks': {
@@ -322,6 +501,44 @@ export const ALLOWED = {
     ]
   }
 };
+
+// CR 5940914487 M4: SQL calls whose SQL is not one plain literal (concatenated, interpolated
+// template, identifier, other expression) must each be listed here too. Fingerprints for
+// dynamic/expr entries are of the argument text, so editing one fails until re-reviewed.
+export const NONLITERAL = {
+  '../src/cutover.mjs::importGate::ident:DUPLICATE_REPORT_SQL': 'cutover CLI: module constant from the same file (fingerprinted above)',
+  '../src/cutover.mjs::markDuplicatesForReview::ident:sql': 'cutover CLI: runs MARK_SQL() statements (fingerprinted above)',
+  '../src/db.mjs::createDb>stmt::ident:sql': 'the D1 wrapper itself: every caller is linted at its own call site',
+  '../src/ops/password-reset.mjs::requestReset::dynamic::0067fc82': '${limited} is a constant rate-limit predicate built in the same function; values are bound',
+  '../src/ops/password-reset.mjs::requestReset::dynamic::aa8ad8ff': '${limited} is a constant rate-limit predicate built in the same function; values are bound',
+  '../src/ops/stripe-jobs.mjs::prepareRefund::ident:activeSql': 'local constant literal in the same function (stripe_jobs by booking id already scoped)',
+  '../src/ops/webhooks.mjs::refundWrites::dynamic::75b0d86d': '${total}/${pending} are constant SQL sub-expressions defined in the same function',
+  '../src/scope.mjs::scopeFor>block::dynamic::bc8ac335': 'scopeFor: ${} is the role scope predicate',
+  '../src/scope.mjs::scopeFor>booking::dynamic::36684df0': 'scopeFor: base select + role scope predicate',
+  '../src/scope.mjs::scopeFor>booking::dynamic::7281c458': 'scopeFor: base select, customer-scoped',
+  '../src/scope.mjs::scopeFor>bookings::dynamic::1c68967c': 'scopeFor: base select + role scope predicate',
+  '../src/scope.mjs::scopeFor>bookings::dynamic::b9bffe24': 'scopeFor: base select, customer-scoped',
+  '../src/scope.mjs::scopeFor>outbox::dynamic::f2773b8b': 'scopeFor: role scope predicate',
+  '../src/scope.mjs::scopeFor>updateBlockStmt::dynamic::46ab8046': 'scopeFor: whitelisted column list; admin form',
+  '../src/scope.mjs::scopeFor>updateBlockStmt::dynamic::a709c197': 'scopeFor: whitelisted column list; PT form with pt_id',
+  '../src/views.mjs::inChunks::expr::4eef12a7': 'expands (?*) to ? placeholders for chunked IN lists; callers pass literals (fingerprinted)'
+};
+// Uses of a module-level SQL constant outside the file that defines it.
+export const CONST_USES = {
+  '../scripts/cutover-import.mjs::uses:DUPLICATE_REPORT_SQL': 'cutover CLI (local scratch DB): same report as the gate',
+  '../scripts/cutover-import.mjs::uses:MARK_SQL': 'cutover CLI: writes the opt-in mark SQL to a 0600 file'
+};
+
+/** Everything the lint reports for a source map (empty = clean). */
+export function violations(src) {
+  return [
+    ...ptOwnedQueries(src).filter(q => !allowedKeys().includes(q.key)).map(q => 'query ' + q.key),
+    ...nonLiteralSqlCalls(src).filter(q => !(q.key in NONLITERAL)).map(q => 'nonliteral ' + q.key),
+    ...rawAccess(src).map(r => 'raw ' + r),
+    ...sqlConstantUses(src).filter(k => !(k in CONST_USES)).map(k => 'uses ' + k),
+    ...(sqlCallCount(src['../worker/index.mjs'] || '') ? ['worker/index.mjs makes SQL calls'] : [])
+  ];
+}
 
 const allowedKeys = () => Object.entries(ALLOWED).flatMap(([fn, v]) => v.queries.map(h => `${fn}::${h}`)).sort();
 
@@ -351,4 +568,46 @@ describe('scope lint (per query)', () => {
     expect(extra.length).toBeGreaterThan(0);
     expect(extra.some(q => q.key.startsWith('../src/views.mjs::dashboard::') && q.sql === 'SELECT * FROM bookings')).toBe(true);
   });
+
+  it('non-literal SQL calls, raw D1 access and SQL-constant reuse are all allowlisted; nothing stale', () => {
+    const nl = [...new Set(nonLiteralSqlCalls(sources).map(q => q.key))].sort();
+    expect(nl).toEqual(Object.keys(NONLITERAL).sort());
+    expect(rawAccess(sources)).toEqual([]);
+    expect(sqlConstantUses(sources)).toEqual(Object.keys(CONST_USES).sort());
+    expect(sqlCallCount(sources['../worker/index.mjs'])).toBe(0);
+    expect(violations(sources)).toEqual([]);
+  });
+
+  // CR 5940914487 M4: each reported bypass, plus aliasing, injected into the Worker entry and
+  // into an allowlisted src function; every one must be reported by a rule other than the
+  // "worker makes no SQL calls" rule as well.
+  const BYPASSES = {
+    concatenated: "db.all('SELECT * FROM ' + 'bookings')",
+    template: "db.all(`SELECT * FROM ${'bookings'}`)",
+    quoted: 'db.all(\'SELECT * FROM "bookings"\')',
+    backtick_quoted: "db.all('SELECT * FROM `bookings`')",
+    schema_qualified: "db.all('SELECT * FROM main.bookings')",
+    block_comment: "db.all('SELECT * FROM/**/bookings')",
+    line_comment: "db.all('SELECT * FROM -- x\\n bookings')",
+    credentials: "db.all('SELECT * FROM pt_stripe_credentials')",
+    users: "db.all('SELECT * FROM users')",
+    pts: "db.get('SELECT * FROM pts WHERE id=?', id)",
+    allowlisted_constant: 'db.all(DUPLICATE_REPORT_SQL)',
+    method_alias: "(0, db.all)('SELECT 1')",
+    computed_member: "db['all']('SELECT 1')",
+    destructured: "(({ all }) => all)(db)",
+    raw_binding: "env.DB.prepare('SELECT 1').all()",
+    raw_wrapper_d1: "db.d1.prepare('SELECT 1').all()",
+    variable: "db.all(q)"
+  };
+  for (const [name, call] of Object.entries(BYPASSES)) {
+    it(`bypass "${name}" is caught in worker/index.mjs and in an allowlisted src function`, () => {
+      const inWorker = { ...sources, '../worker/index.mjs': sources['../worker/index.mjs'] + `\nexport async function leak(db, env, id, q) {\n  return ${call};\n}\n` };
+      const w = violations(inWorker);
+      expect(w.filter(v => v !== 'worker/index.mjs makes SQL calls').length, name + ': ' + w.join('; ')).toBeGreaterThan(0);
+      const views = sources['../src/views.mjs'].replace('export async function dashboard(', `export async function dashboard(db, env, id, q) { await ${call}; }\nasync function dashboardOld(`);
+      const v = violations({ ...sources, '../src/views.mjs': views });
+      expect(v.length, name).toBeGreaterThan(0);
+    });
+  }
 });

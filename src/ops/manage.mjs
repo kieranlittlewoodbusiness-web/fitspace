@@ -18,6 +18,10 @@ const requireRole = (user, roles) => { if (!roles.includes(user.role)) throw htt
 const sessionRows = (db, blockId, sessions) => sessions.map(s => db.stmt('INSERT INTO class_sessions VALUES(?,?,?,?,?)', s.id, blockId, s.starts_at, s.starts_epoch, s.duration_minutes));
 const audit = (db, userId, action, target, now) => db.stmt('INSERT INTO audit_log VALUES(?,?,?,?,?)', uid(), userId, action, target, now);
 
+/** sha256 of the normalised create payload (CR 5940914487 minor 1). */
+const payloadHash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const reused = () => httpError(409, 'This request key was already used for different details. Refresh the page and try again.', { code: 'CREATE_KEY_REUSED' });
+
 const createKey = key => {
   if (typeof key !== 'string' || !/^[a-zA-Z0-9-]{12,80}$/.test(key)) throw httpError(400, 'Refresh the page and try again.', { code: 'CREATE_KEY_REQUIRED' });
   return key;
@@ -31,18 +35,20 @@ export async function createPt(db, { userId, body, temporaryHash, temporary, now
   const user = await actor(db, userId);
   requireRole(user, ['admin']);
   const key = createKey(body.create_key);
+  const b = branding(body), address = validEmail(body.email), name = text(body.owner_name, 'PT name', 80, 2);
+  const hash = payloadHash({ b, address, name });
   const replay = async () => {
-    const row = await db.get("SELECT p.id,p.slug,u.email,u.must_change_password FROM pts p JOIN users u ON u.pt_id=p.id AND u.role='pt' WHERE p.create_key=?", key);
+    const row = await db.get("SELECT p.id,p.slug,p.create_hash,u.email,u.must_change_password FROM pts p JOIN users u ON u.pt_id=p.id AND u.role='pt' WHERE p.create_key=?", key);
+    if (row && row.create_hash && row.create_hash !== hash) throw reused();
     return row && { pt_id: row.id, email: row.email, temporary_password: row.must_change_password ? temporary : null, path: '/pt/' + row.slug, replay: true };
   };
   const prior = await replay();
   if (prior) return prior;
   if (typeof temporaryHash !== 'string' || typeof temporary !== 'string') throw httpError(500, 'Missing temporary credential.');
-  const b = branding(body), address = validEmail(body.email), name = text(body.owner_name, 'PT name', 80, 2);
   const id = uid();
   try {
     await db.batch([
-      db.stmt('INSERT INTO pts(id,slug,brand_name,tagline,description,about,accent,background,foreground,features,published,created_at,create_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', id, b.slug, b.name, b.tagline, b.description, b.about, b.accent, b.background, b.foreground, JSON.stringify(b.features), b.published, now, key),
+      db.stmt('INSERT INTO pts(id,slug,brand_name,tagline,description,about,accent,background,foreground,features,published,created_at,create_key,create_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)', id, b.slug, b.name, b.tagline, b.description, b.about, b.accent, b.background, b.foreground, JSON.stringify(b.features), b.published, now, key, hash),
       db.stmt("INSERT INTO users(id,name,email,password_hash,role,pt_id,must_change_password,created_at) VALUES(?,?,?,?,'pt',?,1,?)", uid(), name, address, temporaryHash, id, now),
       audit(db, user.id, 'pt_created', id, now)
     ]);
@@ -63,20 +69,22 @@ export async function createBlock(db, { userId, body, now = Date.now() }) {
   if (user.must_change_password) throw httpError(403, 'Change your temporary password before managing classes.');
   const key = createKey(body.create_key);
   const scope = scopeFor(db, user);
+  // A PT always creates for their own pt_id; body.pt_id is honoured for admins only.
+  const ptId = user.role === 'pt' ? user.pt_id : text(body.pt_id, 'PT', 80);
+  const d = blockData(body), id = uid();
+  const hash = payloadHash({ ptId, ...d, sessions: d.sessions.map(x => [x.starts_at, x.duration_minutes]) });
   const replay = async () => {
     const existing = await scope.blockByCreateKey(key);
     if (existing === undefined) throw httpError(409, 'This request key was already used. Refresh the page and try again.', { code: 'CREATE_KEY_REUSED' });
+    if (existing && existing.create_hash && existing.create_hash !== hash) throw reused();
     return existing && { block: existing, replay: true };
   };
   const prior = await replay();
   if (prior) return prior;
-  // A PT always creates for their own pt_id; body.pt_id is honoured for admins only.
-  const ptId = user.role === 'pt' ? user.pt_id : text(body.pt_id, 'PT', 80);
   if (!(await db.get('SELECT id FROM pts WHERE id=?', ptId))) throw httpError(404, 'Trainer not found.');
-  const d = blockData(body), id = uid();
   try {
     await db.batch([
-      db.stmt('INSERT INTO blocks(id,pt_id,title,description,venue,price_pence,capacity,published,created_at,create_key) VALUES(?,?,?,?,?,?,?,?,?,?)', id, ptId, d.title, d.description, d.venue, d.price, d.capacity, d.published, now, key),
+      db.stmt('INSERT INTO blocks(id,pt_id,title,description,venue,price_pence,capacity,published,created_at,create_key,create_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)', id, ptId, d.title, d.description, d.venue, d.price, d.capacity, d.published, now, key, hash),
       ...sessionRows(db, id, d.sessions),
       audit(db, user.id, 'block_created', id, now)
     ]);

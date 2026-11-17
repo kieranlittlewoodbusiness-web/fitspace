@@ -1,7 +1,8 @@
-// Down-migrations 0003 then 0002 undo cleanly to the app/db.cjs schema; both re-apply.
+// Down-migrations 0005, 0004, 0003 then 0002 undo cleanly to the app/db.cjs schema; both re-apply.
 import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:workers';
 import downSql from '../migrations-down/0002_locks_and_rc5_rc9_foundation.down.sql?raw';
+import down5Sql from '../migrations-down/0005_create_hash.down.sql?raw';
 import down4Sql from '../migrations-down/0004_phase3.down.sql?raw';
 import down3Sql from '../migrations-down/0003_guards_and_expiry_index.down.sql?raw';
 import { db } from './helpers.mjs';
@@ -14,14 +15,17 @@ const columns = async table => (await db().all(`SELECT name FROM pragma_table_in
 const objects = async () => (await db().all("SELECT type,name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name<>'d1_migrations' ORDER BY type,name")).map(r => r.type + ':' + r.name);
 
 describe('migration rollback', () => {
-  it('0004, 0003, 0002 down -> schema equals 0001; then 0002..0004 re-apply', async () => {
+  it('0005, 0004, 0003, 0002 down -> schema equals 0001; then 0002..0005 re-apply', async () => {
     const before = await objects();
     expect(before).toContain('table:batch_guards');
     expect(before).toContain('index:bookings_pending_expiry');
     const d = db();
     const recorded = async () => (await d.all('SELECT name FROM d1_migrations ORDER BY id')).map(r => r.name);
     const migrationsBefore = await recorded();
-    expect(migrationsBefore).toEqual(['0001_initial_schema.sql', '0002_locks_and_rc5_rc9_foundation.sql', '0003_guards_and_expiry_index.sql', '0004_phase3.sql']);
+    expect(migrationsBefore).toEqual(['0001_initial_schema.sql', '0002_locks_and_rc5_rc9_foundation.sql', '0003_guards_and_expiry_index.sql', '0004_phase3.sql', '0005_create_hash.sql']);
+    await d.batch(statements(down5Sql).map(s => d.stmt(s)));
+    expect(await recorded()).toEqual(migrationsBefore.slice(0, 4));
+    expect(await d.all("SELECT name FROM pragma_table_info('pts') WHERE name='create_hash' UNION ALL SELECT name FROM pragma_table_info('blocks') WHERE name='create_hash'")).toEqual([]);
     await d.batch(statements(down4Sql).map(s => d.stmt(s)));
     expect(await recorded()).toEqual(migrationsBefore.slice(0, 3));
     expect((await objects()).filter(n => /create_key|email_outbox_due/.test(n))).toEqual([]);
@@ -43,7 +47,7 @@ describe('migration rollback', () => {
     expect(Object.keys(appSchema)).toHaveLength(17);
     // Each down file is ONE `d1 execute --file` step: its last statement removed the record.
     expect(await recorded()).toEqual(migrationsBefore.slice(0, 1));
-    for (const prefix of ['0002', '0003', '0004']) {
+    for (const prefix of ['0002', '0003', '0004', '0005']) {
       const m = env.TEST_MIGRATIONS.find(x => x.name.startsWith(prefix));
       await d.batch([...m.queries.map(s => d.stmt(s)), d.stmt('INSERT INTO d1_migrations(name) VALUES(?)', m.name)]);
     }
