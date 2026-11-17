@@ -1,4 +1,4 @@
-# FITSPACE Netlify v8
+# Resilience Coaching — Netlify v8
 
 Start with **START_HERE.md** and **STRIPE_SETUP.md**. No owner Stripe account is needed. Each PT securely configures their own restricted Stripe key and webhook; credentials are encrypted, sandbox/live are separate and payments use the server-owned class price. Signed, account-owned events confirm bookings; refunds, expiry, failures and participant limits remain integrated.
 

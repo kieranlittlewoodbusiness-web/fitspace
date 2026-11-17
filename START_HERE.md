@@ -1,4 +1,4 @@
-# FITSPACE — Netlify v8
+# Resilience Coaching — Netlify v8
 
 Public, responsive customer pages; protected customer, PT and admin accounts. Black/white/yellow default branding, custom trainer pages, flexible class blocks, limited places, upfront payment and attendance. Each PT configures their own Stripe restricted key and signed webhook; the owner does not need a Stripe account. Payments use the class price set by that PT.
 
