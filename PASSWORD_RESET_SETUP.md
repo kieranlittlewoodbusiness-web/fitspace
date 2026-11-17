@@ -10,7 +10,7 @@ Create a Resend account, verify your sender domain and create a sending API key.
 | --- | --- |
 | `RESET_EMAIL_MODE` | `send` |
 | `RESEND_API_KEY` | Your server-side Resend sending key |
-| `MAIL_FROM` | A verified sender, e.g. `FITSPACE <accounts@your-domain>` |
+| `MAIL_FROM` | A verified sender, e.g. `Resilience Coaching <accounts@your-domain>` |
 | `AUTH_RESET_SECRET` | A randomly generated secret, at least 32 characters |
 | `APP_URL` | Canonical HTTPS origin, e.g. your production Netlify URL; no path |
 

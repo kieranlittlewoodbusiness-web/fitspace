@@ -1,6 +1,6 @@
-# FITSPACE v8 — independent PT Stripe accounts
+# Resilience Coaching v8 — independent PT Stripe accounts
 
-**The owner does not need a Stripe account.** Default integration is `pt_direct`. Each PT supplies a restricted key from their own Stripe account plus their own webhook signing secret. Customer payments are created in that PT’s account, at the class/block price saved in FITSPACE. There is no application fee or Stripe-Account routing header.
+**The owner does not need a Stripe account.** Default integration is `pt_direct`. Each PT supplies a restricted key from their own Stripe account plus their own webhook signing secret. Customer payments are created in that PT’s account, at the class/block price saved in Resilience Coaching. There is no application fee or Stripe-Account routing header.
 
 No real Stripe credentials, account configuration, provider-hosted checkout or remote deployment have been used in preparing this package. Automated provider tests are mocked. Validate the following on your deployed site before genuine purchases.
 
@@ -29,7 +29,7 @@ No owner STRIPE_SECRET_KEY, Connect platform, OAuth client ID or global signing 
 ## 2. PT: create a restricted sandbox key
 
 1. Sign in to your own Stripe account and choose a **sandbox**.
-2. Open API keys → Create restricted key. Name it FITSPACE sandbox.
+2. Open API keys → Create restricted key. Name it Resilience Coaching sandbox.
 3. Start with these resource permissions:
 
    | Resource | Access |
@@ -41,18 +41,18 @@ No owner STRIPE_SECRET_KEY, Connect platform, OAuth client ID or global signing 
    | Refunds | Write |
 
    Stripe’s permission labels may vary. Required API calls are GET /v1/account, POST/GET /v1/checkout/sessions, POST /v1/checkout/sessions/{id}/expire, GET /v1/events/{id}, and POST /v1/refunds. Checkout uses inline GBP price_data/product_data. Review Stripe request logs during sandbox testing for any additional permissions required by that request configuration; grant only the required resource. Account lookup alone does not validate checkout/refund permissions. The exact provider permission combination must be validated with the full sandbox journey, not inferred from mocked tests.
-4. In FITSPACE, open Payments → Stripe sandbox. Enter the `rk_test_...` key and choose **Save and verify account**. Unrestricted `sk_...` keys and keys from the wrong mode are rejected.
+4. In Resilience Coaching, open Payments → Stripe sandbox. Enter the `rk_test_...` key and choose **Save and verify account**. Unrestricted `sk_...` keys and keys from the wrong mode are rejected.
 5. Confirm the account ID is yours. Saving pauses new payments. Keys are never returned to the browser after saving. Blank fields preserve existing saved values.
 
 Create/check/save actions are authenticated, CSRF-protected and rate limited. The admin cannot upload an arbitrary account for you. An account can belong to only one PT profile in each mode. Payments use the saved credential ID; the browser cannot choose another account or price.
 
 ## 3. PT: register your webhook
 
-After saving the restricted key, FITSPACE displays **Your webhook URL** for that mode. Copy it exactly; it includes a credential ID and is different for each PT and for sandbox/live.
+After saving the restricted key, Resilience Coaching displays **Your webhook URL** for that mode. Copy it exactly; it includes a credential ID and is different for each PT and for sandbox/live.
 
 1. In the same Stripe sandbox, open Workbench → Webhooks → Create an event destination.
 2. Select **Your account**, not Connected accounts. Use **Snapshot** event payloads with the configured API version.
-3. Paste the URL copied from FITSPACE. Subscribe to:
+3. Paste the URL copied from Resilience Coaching. Subscribe to:
    - checkout.session.completed
    - checkout.session.async_payment_succeeded
    - checkout.session.expired
@@ -61,7 +61,7 @@ After saving the restricted key, FITSPACE displays **Your webhook URL** for that
    - refund.created, refund.updated, refund.failed
    - charge.refunded
    - account.updated
-4. Copy that endpoint’s `whsec_...` signing secret into the matching FITSPACE sandbox form. Leave the API key blank to retain it, then save again.
+4. Copy that endpoint’s `whsec_...` signing secret into the matching Resilience Coaching sandbox form. Leave the API key blank to retain it, then save again.
 5. Choose **Check account status**, then **Enable sandbox payments** and confirm.
 
 The signing secret is encrypted. The server verifies signatures against the raw body, checks the event’s mode, then retrieves the event from **that PT’s Stripe account** using GET /v1/events/{id}. Only the account-owned event data is processed. Forged metadata, another PT’s signing secret, or an event from the wrong account cannot confirm a booking. Unrelated events can be acknowledged without changing bookings.
@@ -87,7 +87,7 @@ The price is owned by the server and frozen in the booking at reservation time. 
 Only after deployed sandbox validation and merchant activation:
 
 1. PT chooses their live Stripe account and creates a matching restricted `rk_live_...` key with the required permissions.
-2. Save it in FITSPACE → Payments → Live Stripe. Register its separate **Your account** live endpoint using the displayed live URL, and save its live signing secret.
+2. Save it in Resilience Coaching → Payments → Live Stripe. Register its separate **Your account** live endpoint using the displayed live URL, and save its live signing secret.
 3. Check account status. Complete Stripe’s business/bank/verification requirements as needed. Card readiness and payout readiness are distinct.
 4. Choose **Enable live payments** and explicitly confirm. The server requires that PT to have completed a paid, signed sandbox booking and a successful full refund first.
 5. Owner sets PAYMENT_MODE=stripe_live in Netlify and redeploys when ready. Both the site mode and PT’s live enablement must permit new live bookings.
