@@ -26,7 +26,7 @@ export default defineConfig({
           AUTH_RESET_SECRET: crypto.randomBytes(32).toString('hex'),
           APP_URL: 'https://example.test'
         },
-        durableObjects: { WRITER: 'Writer', GATE_PROBE: 'GateProbe' }
+        durableObjects: { WRITER: 'Writer', TEST_WRITER: 'TestWriter' }
       }
     }))
   ],

@@ -9,6 +9,10 @@ import { httpError } from './util.mjs';
 
 const BOOKING_VIEW = 'SELECT b.*,c.title,c.venue,c.description,c.pt_id,p.slug,p.brand_name,u.name customer_name,u.email customer_email FROM bookings b JOIN blocks c ON c.id=b.block_id JOIN pts p ON p.id=c.pt_id JOIN users u ON u.id=b.customer_id';
 
+// Columns a PT/admin may change on their own block. pt_id and id are never updatable.
+export const BLOCK_UPDATE_COLUMNS = new Set(['title', 'description', 'venue', 'price_pence', 'capacity', 'published', 'closed', 'updated_at',
+  'kind', 'weeks', 'duration_minutes', 'location_type', 'online_url', 'cancellation_policy']);
+
 export function scopeFor(db, user) {
   if (!user) throw httpError(401, 'Please sign in to continue.');
   const role = user.role;
@@ -51,11 +55,15 @@ export function scopeFor(db, user) {
       const [clause, ...args] = ptClause('o');
       return db.all(`SELECT o.* FROM email_outbox o WHERE ${clause} ORDER BY o.created_at DESC LIMIT ?`, ...args, limit);
     },
-    /** A guarded statement that only updates a block the caller manages (for batches). */
-    updateBlockStmt(id, sets, ...setArgs) {
+    /** A guarded statement that only updates a block the caller manages (for batches).
+     *  `values` is an object; only allowlisted columns are accepted (no SQL from callers). */
+    updateBlockStmt(id, values) {
       ptOnly();
-      if (role === 'admin') return db.stmt(`UPDATE blocks SET ${sets} WHERE id=?`, ...setArgs, id);
-      return db.stmt(`UPDATE blocks SET ${sets} WHERE id=? AND pt_id=?`, ...setArgs, id, user.pt_id);
+      const keys = Object.keys(values || {});
+      if (!keys.length || keys.some(k => !BLOCK_UPDATE_COLUMNS.has(k))) throw new Error('updateBlockStmt: column not allowed');
+      const sets = keys.map(k => k + '=?').join(','), args = keys.map(k => values[k]);
+      if (role === 'admin') return db.stmt(`UPDATE blocks SET ${sets} WHERE id=?`, ...args, id);
+      return db.stmt(`UPDATE blocks SET ${sets} WHERE id=? AND pt_id=?`, ...args, id, user.pt_id);
     }
   };
 }

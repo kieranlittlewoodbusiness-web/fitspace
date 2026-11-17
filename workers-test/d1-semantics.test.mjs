@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:workers';
 import crypto from 'node:crypto';
-import { db, tally } from './helpers.mjs';
+import { db } from './helpers.mjs';
 
 describe('D1 semantics (local workerd)', () => {
   it('rejects BEGIN and SAVEPOINT (no interactive transactions)', async () => {
@@ -39,25 +39,10 @@ describe('D1 semantics (local workerd)', () => {
     expect(b2.rows).toEqual([{ n: 7 }]);
   });
 
-  it('a Durable Object does NOT hold other requests while awaiting D1, so the queue is needed', async () => {
-    const d = db();
-    await d.run('CREATE TABLE IF NOT EXISTS gate_blocks(id TEXT PRIMARY KEY, capacity INTEGER NOT NULL)');
-    await d.run('CREATE TABLE IF NOT EXISTS gate_holds(block_id TEXT NOT NULL, tag TEXT NOT NULL)');
-    const stub = env.GATE_PROBE.get(env.GATE_PROBE.idFromName('one'));
-    const naiveRows = [], queuedRows = [];
-    for (let round = 0; round < 10; round++) {
-      const nb = 'naive-' + round, qb = 'queued-' + round;
-      await d.batch([d.stmt('INSERT INTO gate_blocks VALUES(?,5)', nb), d.stmt('INSERT INTO gate_blocks VALUES(?,5)', qb)]);
-      await Promise.all(Array.from({ length: 20 }, (_, i) => stub.naive(nb, 'n' + i)));
-      await Promise.all(Array.from({ length: 20 }, (_, i) => stub.queued(qb, 'q' + i)));
-      naiveRows.push((await d.get('SELECT count(*) n FROM gate_holds WHERE block_id=?', nb)).n);
-      queuedRows.push((await d.get('SELECT count(*) n FROM gate_holds WHERE block_id=?', qb)).n);
-    }
-    console.log('DO gate probe, 10 rounds x 20 calls, capacity 5. Rows held per round: naive', JSON.stringify(naiveRows), '| queued', JSON.stringify(queuedRows));
-    // Interleaving is timing-dependent, so any oversold round proves the DO does not
-    // serialise across D1 awaits; the queued variant must never oversell.
-    expect(Math.max(...naiveRows)).toBeGreaterThan(5);
-    expect(queuedRows.every(n => n === 5)).toBe(true);
+  it('the expiry sweep uses bookings_pending_expiry (no full scan)', async () => {
+    const plan = await db().all("EXPLAIN QUERY PLAN UPDATE bookings SET status='expired' WHERE status='pending' AND expires_at<=?", Date.now());
+    console.log('expiry sweep plan:', plan.map(p => p.detail).join(' | '));
+    expect(plan.some(p => /bookings_pending_expiry/.test(p.detail))).toBe(true);
   });
 
   // Local workerd does NOT enforce CPU limits (Free: 10 ms/request); this only measures cost.
@@ -66,6 +51,7 @@ describe('D1 semantics (local workerd)', () => {
     for (let i = 0; i < 5; i++) crypto.scryptSync('correct horse battery staple', crypto.randomBytes(16).toString('hex'), 64);
     const elapsed = { performanceNow: performance.now() - t0, dateNow: Date.now() - d0 };
     console.log('5x scryptSync (N=16384, r=8) inside local workerd (ms):', JSON.stringify(elapsed), 'per call ~', (elapsed.performanceNow / 5).toFixed(1));
-    expect(elapsed.performanceNow).toBeGreaterThan(5 * 10); // above the Free plan's 10 ms CPU per request
+    // Measurement only (CR minor: asserting a duration measures the machine, not the code).
+    expect(Number.isFinite(elapsed.performanceNow)).toBe(true);
   });
 });

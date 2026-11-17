@@ -1,8 +1,8 @@
 -- DOWN for 0002. NOT in migrations/ so `wrangler d1 migrations apply` never runs it.
 -- Use only to undo 0002's schema while KEEPING data written since (otherwise prefer a
 -- D1 Time Travel restore; see docs/rc-4/RC-4-d1-port.md "Rollback").
--- Run: wrangler d1 execute DB --local|--remote --file migrations-down/0002_locks_and_rc5_rc9_foundation.down.sql
---      then: DELETE FROM d1_migrations WHERE name='0002_locks_and_rc5_rc9_foundation.sql';
+-- Run 0003's down first. One step: wrangler d1 execute DB --local|--remote --file migrations-down/0002_locks_and_rc5_rc9_foundation.down.sql
+-- The last statement removes the migration record so `migrations apply` can re-apply 0002.
 -- Data in the dropped tables/columns (subscriptions, codes, waitlist, rate limits) is lost:
 -- export it first with `wrangler d1 export`.
 DROP TABLE IF EXISTS rate_limits;
@@ -31,3 +31,4 @@ ALTER TABLE stripe_connections DROP COLUMN charges_enabled;
 ALTER TABLE webhook_events DROP COLUMN account;
 ALTER TABLE webhook_events DROP COLUMN type;
 DROP INDEX IF EXISTS bookings_one_live_per_customer;
+DELETE FROM d1_migrations WHERE name='0002_locks_and_rc5_rc9_foundation.sql';

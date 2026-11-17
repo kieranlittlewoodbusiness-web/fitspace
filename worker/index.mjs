@@ -46,11 +46,21 @@ async function jsonBody(request) {
   return body;
 }
 
+/** A path or body id: a non-empty string; malformed %-escapes and non-strings are 400s. */
+function idParam(value, label = 'id', { encoded = false } = {}) {
+  let id = value;
+  if (encoded) { try { id = decodeURIComponent(value); } catch { throw httpError(400, `Invalid ${label}.`); } }
+  if (typeof id !== 'string' || !id || id.length > 200) throw httpError(400, `Invalid ${label}.`);
+  return id;
+}
+
 export async function handle(request, env) {
   const url = new URL(request.url);
   const route = url.pathname;
   const paymentMode = env.PAYMENT_MODE || 'demo';
+  // Same default and validation as app/pt-stripe.cjs; wrangler.jsonc sets 'connect' explicitly.
   const integration = env.STRIPE_INTEGRATION || 'pt_direct';
+  if (!['pt_direct', 'connect'].includes(integration)) throw httpError(503, 'Set STRIPE_INTEGRATION=pt_direct or connect.');
   if (!['demo', 'stripe_test', 'stripe_live'].includes(paymentMode)) throw httpError(503, 'Use PAYMENT_MODE=demo, stripe_test or stripe_live.');
   const db = createDb(env.DB);
 
@@ -95,7 +105,7 @@ export async function handle(request, env) {
   if (payRoute && request.method === 'POST') {
     const { user, body } = await mutation();
     requireUser(user, ['customer']);
-    const booking = await write(env, 'completeDemo', { bookingId: decodeURIComponent(payRoute[1]), userId: user.id, result: body.result, emailMode });
+    const booking = await write(env, 'completeDemo', { bookingId: idParam(payRoute[1], 'booking', { encoded: true }), userId: user.id, result: body.result, emailMode });
     return json(200, { booking: await viewBooking(db, user, booking.id) });
   }
   if (route === '/api/admin/pts' && request.method === 'POST') {
@@ -112,12 +122,12 @@ export async function handle(request, env) {
   if (blockRoute && request.method === 'PUT') {
     const { user, body } = await mutation();
     requireUser(user, ['pt', 'admin']);
-    return json(200, await write(env, 'updateBlock', { userId: user.id, blockId: decodeURIComponent(blockRoute[1]), body }));
+    return json(200, await write(env, 'updateBlock', { userId: user.id, blockId: idParam(blockRoute[1], 'class', { encoded: true }), body }));
   }
   if (route === '/api/attendance' && request.method === 'POST') {
     const { user, body } = await mutation();
     requireUser(user, ['pt', 'admin']);
-    return json(200, await write(env, 'markAttendance', { userId: user.id, bookingId: body.booking_id, sessionId: body.session_id, status: body.status, emailMode }));
+    return json(200, await write(env, 'markAttendance', { userId: user.id, bookingId: idParam(body.booking_id, 'booking'), sessionId: idParam(body.session_id, 'session'), status: body.status, emailMode }));
   }
 
   if (route === '/api/bookings' && request.method === 'POST') {
@@ -126,7 +136,7 @@ export async function handle(request, env) {
     // Stripe Checkout creation (prepareCheckout + stripe_jobs) lands in phase 3; refuse
     // before taking a hold so no orphan pending bookings are created meanwhile.
     if (isStripe(paymentMode)) throw httpError(501, 'Stripe checkout is not ported to Workers yet (RC-4 phase 3).');
-    const booking = await write(env, 'reserve', { userId: user.id, blockId: body.block_id, token: body.checkout_token, mode: paymentMode, integration });
+    const booking = await write(env, 'reserve', { userId: user.id, blockId: idParam(body.block_id, 'class'), token: body.checkout_token, mode: paymentMode, integration });
     return json(201, { booking: await viewBooking(db, user, booking.id), url: (booking.status === 'paid' ? '/booking/' : '/checkout/') + booking.id });
   }
 
@@ -135,7 +145,7 @@ export async function handle(request, env) {
     const user = requireUser(await currentUser(db, request, { demo }));
     // app/server.cjs:55 expires stale holds first; a single guarded statement, no Writer needed.
     await db.run("UPDATE bookings SET status='expired' WHERE status='pending' AND expires_at<=?", Date.now());
-    return json(200, { booking: await viewBooking(db, user, decodeURIComponent(bookingRoute[1])) });
+    return json(200, { booking: await viewBooking(db, user, idParam(bookingRoute[1], 'booking', { encoded: true })) });
   }
 
   if (route.startsWith('/api/')) return json(501, { error: 'This route is not ported to Workers yet (RC-4).' });

@@ -21,6 +21,7 @@
   "vars": {
     "EMAIL_MODE": "preview",
     "PAYMENT_MODE": "demo",
+    // Explicit on purpose: overrides the code default (pt_direct, same as app/pt-stripe.cjs).
     "STRIPE_INTEGRATION": "connect"
   },
   "d1_databases": [

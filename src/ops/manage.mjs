@@ -73,7 +73,7 @@ export async function updateBlock(db, { userId, blockId, body, now = Date.now() 
     db.guard('capacity_not_below_holds', "(SELECT count(*) FROM bookings WHERE block_id=? AND status IN ('paid','pending'))<=?", block.id, d.capacity)
   ];
   if (!hasBookings) writes.push(db.guard('dates_unlocked', 'NOT EXISTS(SELECT 1 FROM bookings WHERE block_id=?)', block.id));
-  writes.push(scope.updateBlockStmt(block.id, 'title=?,description=?,venue=?,price_pence=?,capacity=?,published=?,closed=?,updated_at=?', d.title, d.description, d.venue, d.price, d.capacity, d.published, body.closed ? 1 : 0, now));
+  writes.push(scope.updateBlockStmt(block.id, { title: d.title, description: d.description, venue: d.venue, price_pence: d.price, capacity: d.capacity, published: d.published, closed: body.closed ? 1 : 0, updated_at: now }));
   if (!hasBookings) writes.push(db.stmt('DELETE FROM class_sessions WHERE block_id=?', block.id), ...sessionRows(db, block.id, d.sessions));
   writes.push(audit(db, user.id, 'block_updated', block.id, now));
   try {

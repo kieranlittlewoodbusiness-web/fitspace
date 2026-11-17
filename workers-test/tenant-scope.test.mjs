@@ -34,11 +34,14 @@ describe('tenant scope (data layer)', () => {
 
   it('a guarded update from another PT changes nothing', async () => {
     const d = db();
-    const [r] = await d.batch([scopeFor(d, ptB).updateBlockStmt(a.blockId, 'title=?', 'Hijacked')]);
+    const [r] = await d.batch([scopeFor(d, ptB).updateBlockStmt(a.blockId, { title: 'Hijacked' })]);
     expect(r.changes).toBe(0);
     expect((await d.get('SELECT title FROM blocks WHERE id=?', a.blockId)).title).toBe('Strength block');
-    const [ok] = await d.batch([scopeFor(d, ptA).updateBlockStmt(a.blockId, 'title=?', 'Renamed by owner')]);
+    const [ok] = await d.batch([scopeFor(d, ptA).updateBlockStmt(a.blockId, { title: 'Renamed by owner' })]);
     expect(ok.changes).toBe(1);
+    // Only allowlisted columns; never pt_id, never a SQL fragment.
+    expect(() => scopeFor(d, ptA).updateBlockStmt(a.blockId, { pt_id: b.ptId })).toThrow(/not allowed/);
+    expect(() => scopeFor(d, ptA).updateBlockStmt(a.blockId, { 'title=title,pt_id': 'x' })).toThrow(/not allowed/);
   });
 
   it('customers cannot use PT management reads and see only their own bookings', async () => {

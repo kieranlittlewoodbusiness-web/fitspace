@@ -3,7 +3,7 @@
 // which checked ADMIN_EMAIL/ADMIN_PASSWORD on EVERY request. The Worker never reads these.
 //
 //   ADMIN_EMAIL=you@example.com ADMIN_NAME="Site Admin" node scripts/bootstrap-admin.mjs --local
-//   (password: ADMIN_PASSWORD env, or piped on stdin; never printed, never stored in plain text)
+//   (local option: --persist-to <dir>; password: ADMIN_PASSWORD env, or piped on stdin; never printed, never stored in plain text)
 //
 // Inserts the admin only if NO admin exists yet (idempotent; safe to re-run).
 // --remote targets the real D1 database and additionally needs --confirm-remote; it must
@@ -43,8 +43,10 @@ async function main(argv) {
   try {
     await writeFile(file, sql, { mode: 0o600 });
     const target = remote ? '--remote' : '--local';
-    execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', target, '--file', file], { stdio: ['ignore', 'ignore', 'inherit'] });
-    const out = execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', target, '--json', '--command', "SELECT count(*) AS admins FROM users WHERE role='admin'"], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+    const p = argv.indexOf('--persist-to');
+    const extra = !remote && p >= 0 && argv[p + 1] ? ['--persist-to', argv[p + 1]] : [];
+    execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', target, ...extra, '--file', file], { stdio: ['ignore', 'ignore', 'inherit'] });
+    const out = execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', target, ...extra, '--json', '--command', "SELECT count(*) AS admins FROM users WHERE role='admin'"], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
     console.log(`Admin bootstrap (${target}): admin accounts now = ${JSON.parse(out)[0].results[0].admins}. (Unchanged if one already existed.)`);
   } finally {
     await rm(dir, { recursive: true, force: true });
