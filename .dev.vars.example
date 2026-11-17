@@ -13,3 +13,7 @@ CREDENTIAL_ENCRYPTION_KEY=
 AUTH_RESET_SECRET=
 RESEND_API_KEY=
 MAIL_FROM=
+# Phase 3: HMAC key for retry-safe temporary PT passwords (32+ random chars).
+PT_INVITE_SECRET=
+# Optional: Writer queue-slot timeout in ms (default 2000).
+# WRITER_SLOT_MS=2000

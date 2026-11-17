@@ -4,7 +4,7 @@
 import crypto from 'node:crypto';
 import { scopeFor } from '../scope.mjs';
 import { isGuardFailure, isUniqueViolation } from '../db.mjs';
-import { hashPassword, httpError, uid } from '../util.mjs';
+import { httpError, uid } from '../util.mjs';
 import { blockData, branding, email as validEmail, text, MOTIVATIONS } from '../validate.mjs';
 import { noShowInsert } from '../emails.mjs';
 
@@ -18,40 +18,82 @@ const requireRole = (user, roles) => { if (!roles.includes(user.role)) throw htt
 const sessionRows = (db, blockId, sessions) => sessions.map(s => db.stmt('INSERT INTO class_sessions VALUES(?,?,?,?,?)', s.id, blockId, s.starts_at, s.starts_epoch, s.duration_minutes));
 const audit = (db, userId, action, target, now) => db.stmt('INSERT INTO audit_log VALUES(?,?,?,?,?)', uid(), userId, action, target, now);
 
-export async function createPt(db, { userId, body, now = Date.now() }) {
+const createKey = key => {
+  if (typeof key !== 'string' || !/^[a-zA-Z0-9-]{12,80}$/.test(key)) throw httpError(400, 'Refresh the page and try again.', { code: 'CREATE_KEY_REQUIRED' });
+  return key;
+};
+
+/** Admin creates a PT + its owner account. Retry-safe (CR 5940418854 finding 2):
+ *  pts.create_key is UNIQUE; a retry or concurrent duplicate returns the SAME PT, and the
+ *  same temporary password while it is still unused (the route derives it from the key, so
+ *  it is never stored; scrypt runs in the Worker, not here). */
+export async function createPt(db, { userId, body, temporaryHash, temporary, now = Date.now() }) {
   const user = await actor(db, userId);
   requireRole(user, ['admin']);
+  const key = createKey(body.create_key);
+  const replay = async () => {
+    const row = await db.get("SELECT p.id,p.slug,u.email,u.must_change_password FROM pts p JOIN users u ON u.pt_id=p.id AND u.role='pt' WHERE p.create_key=?", key);
+    return row && { pt_id: row.id, email: row.email, temporary_password: row.must_change_password ? temporary : null, path: '/pt/' + row.slug, replay: true };
+  };
+  const prior = await replay();
+  if (prior) return prior;
+  if (typeof temporaryHash !== 'string' || typeof temporary !== 'string') throw httpError(500, 'Missing temporary credential.');
   const b = branding(body), address = validEmail(body.email), name = text(body.owner_name, 'PT name', 80, 2);
-  const id = uid(), temporary = crypto.randomBytes(12).toString('base64url') + '!';
+  const id = uid();
   try {
     await db.batch([
-      db.stmt('INSERT INTO pts(id,slug,brand_name,tagline,description,about,accent,background,foreground,features,published,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', id, b.slug, b.name, b.tagline, b.description, b.about, b.accent, b.background, b.foreground, JSON.stringify(b.features), b.published, now),
-      db.stmt("INSERT INTO users(id,name,email,password_hash,role,pt_id,must_change_password,created_at) VALUES(?,?,?,?,'pt',?,1,?)", uid(), name, address, hashPassword(temporary), id, now),
+      db.stmt('INSERT INTO pts(id,slug,brand_name,tagline,description,about,accent,background,foreground,features,published,created_at,create_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', id, b.slug, b.name, b.tagline, b.description, b.about, b.accent, b.background, b.foreground, JSON.stringify(b.features), b.published, now, key),
+      db.stmt("INSERT INTO users(id,name,email,password_hash,role,pt_id,must_change_password,created_at) VALUES(?,?,?,?,'pt',?,1,?)", uid(), name, address, temporaryHash, id, now),
       audit(db, user.id, 'pt_created', id, now)
     ]);
   } catch (error) {
+    if (isUniqueViolation(error, 'pts.create_key')) { const again = await replay(); if (again) return again; }
     if (isUniqueViolation(error, 'pts.slug')) throw httpError(409, 'That page address is already in use.');
     if (isUniqueViolation(error, 'users.email')) throw httpError(409, 'An account already exists for this email.');
     throw error;
   }
-  // As today, the temporary password is returned once to the admin (RC-10 replaces this with invite emails).
-  return { pt_id: id, email: address, temporary_password: temporary, path: '/pt/' + b.slug };
+  // As today, the temporary password is returned to the admin (RC-10 replaces this with invite emails).
+  return { pt_id: id, email: address, temporary_password: temporary, path: '/pt/' + b.slug, replay: false };
 }
 
+/** Retry-safe via blocks.create_key (UNIQUE). A replay returns the same block, scoped. */
 export async function createBlock(db, { userId, body, now = Date.now() }) {
   const user = await actor(db, userId);
   requireRole(user, ['pt', 'admin']);
   if (user.must_change_password) throw httpError(403, 'Change your temporary password before managing classes.');
+  const key = createKey(body.create_key);
+  const scope = scopeFor(db, user);
+  const replay = async () => {
+    const existing = await scope.blockByCreateKey(key);
+    if (existing === undefined) throw httpError(409, 'This request key was already used. Refresh the page and try again.', { code: 'CREATE_KEY_REUSED' });
+    return existing && { block: existing, replay: true };
+  };
+  const prior = await replay();
+  if (prior) return prior;
   // A PT always creates for their own pt_id; body.pt_id is honoured for admins only.
   const ptId = user.role === 'pt' ? user.pt_id : text(body.pt_id, 'PT', 80);
   if (!(await db.get('SELECT id FROM pts WHERE id=?', ptId))) throw httpError(404, 'Trainer not found.');
   const d = blockData(body), id = uid();
-  await db.batch([
-    db.stmt('INSERT INTO blocks(id,pt_id,title,description,venue,price_pence,capacity,published,created_at) VALUES(?,?,?,?,?,?,?,?,?)', id, ptId, d.title, d.description, d.venue, d.price, d.capacity, d.published, now),
-    ...sessionRows(db, id, d.sessions),
-    audit(db, user.id, 'block_created', id, now)
-  ]);
-  return scopeFor(db, user).block(id);
+  try {
+    await db.batch([
+      db.stmt('INSERT INTO blocks(id,pt_id,title,description,venue,price_pence,capacity,published,created_at,create_key) VALUES(?,?,?,?,?,?,?,?,?,?)', id, ptId, d.title, d.description, d.venue, d.price, d.capacity, d.published, now, key),
+      ...sessionRows(db, id, d.sessions),
+      audit(db, user.id, 'block_created', id, now)
+    ]);
+  } catch (error) {
+    if (isUniqueViolation(error, 'blocks.create_key')) { const again = await replay(); if (again) return again; }
+    throw error;
+  }
+  return { block: await scope.block(id), replay: false };
+}
+
+/** PM ruling (capacity cut): a 409 is acceptable if it is clear and retryable. Stable codes
+ *  for the admin UI: CAPACITY_BELOW_HOLDS (read check) and BOOKINGS_CHANGED (commit guard). */
+function capacityError(paid, pending, nextExpiry, now) {
+  const retryable = pending > 0;
+  return httpError(409,
+    `Capacity cannot be lower than paid or reserved places (${paid} paid, ${pending} reserved).` + (retryable ? ' Reserved places are released when their checkout expires; try again then.' : ' Cancel or refund bookings first.'),
+    { code: 'CAPACITY_BELOW_HOLDS', retryable, ...(retryable ? { retry_after_seconds: Math.max(1, Math.ceil((nextExpiry - now) / 1000)) } : {}) });
 }
 
 export async function updateBlock(db, { userId, blockId, body, now = Date.now() }) {
@@ -65,8 +107,9 @@ export async function updateBlock(db, { userId, blockId, body, now = Date.now() 
   const hasBookings = (await db.get('SELECT count(*) n FROM bookings WHERE block_id=?', block.id)).n;
   const old = await db.all('SELECT starts_at,duration_minutes FROM class_sessions WHERE block_id=? ORDER BY starts_epoch', block.id);
   if (hasBookings && JSON.stringify(old) !== JSON.stringify(d.sessions.map(s => ({ starts_at: s.starts_at, duration_minutes: s.duration_minutes })))) throw httpError(409, 'Dates are locked once bookings exist. Create a new block for a different schedule.');
-  const used = (await db.get("SELECT count(*) n FROM bookings WHERE block_id=? AND (status='paid' OR (status='pending' AND expires_at>?))", block.id, now)).n;
-  if (d.capacity < used) throw httpError(409, 'Capacity cannot be lower than paid or reserved places.');
+  const holds = await db.get("SELECT sum(status='paid') paid, sum(status='pending' AND expires_at>?) pending, min(CASE WHEN status='pending' AND expires_at>? THEN expires_at END) next_expiry FROM bookings WHERE block_id=?", now, now, block.id);
+  const paid = holds.paid || 0, pending = holds.pending || 0;
+  if (d.capacity < paid + pending) throw capacityError(paid, pending, holds.next_expiry, now);
   const writes = [
     db.stmt("UPDATE bookings SET status='expired' WHERE status='pending' AND expires_at<=?", now),
     // Commit-time: a reservation that landed after the read cannot push holds above the new capacity.
@@ -79,7 +122,7 @@ export async function updateBlock(db, { userId, blockId, body, now = Date.now() 
   try {
     await db.batch(writes);
   } catch (error) {
-    if (isGuardFailure(error)) throw httpError(409, 'Bookings changed while you were editing. Refresh and try again.');
+    if (isGuardFailure(error)) throw httpError(409, 'Bookings changed while you were saving. Refresh and try again.', { code: 'BOOKINGS_CHANGED', retryable: true, retry_after_seconds: 1 });
     throw error;
   }
   return { ok: true };

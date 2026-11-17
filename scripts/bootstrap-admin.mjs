@@ -6,8 +6,10 @@
 //   (local option: --persist-to <dir>; password: ADMIN_PASSWORD env, or piped on stdin; never printed, never stored in plain text)
 //
 // Inserts the admin only if NO admin exists yet (idempotent; safe to re-run).
-// --remote targets the real D1 database and additionally needs --confirm-remote; it must
-// only be run with Kieran's approval once the real database exists.
+//
+// OWNER-ONLY: `--remote --confirm-remote` targets the real D1 database. It is run only by
+// the owner, and only after Kieran's explicit yes for that run (CR 5940418854 condition 4).
+// Agents and CI never run it; they use --local (optionally --persist-to <dir>) only.
 import { email as validEmail, password as validPassword, text } from '../src/validate.mjs';
 import { hashPassword, uid } from '../src/util.mjs';
 
@@ -29,9 +31,19 @@ async function readStdin() {
   return data.replace(/\r?\n$/, '');
 }
 
+export const HELP = `Usage: ADMIN_EMAIL=... [ADMIN_NAME=...] node scripts/bootstrap-admin.mjs --local [--persist-to <dir>]
+Password: ADMIN_PASSWORD env or stdin (never printed). Idempotent: inserts only if no admin exists.
+
+  --local                 local D1 (wrangler dev / Miniflare state). Default for agents and CI.
+  --persist-to <dir>      local state directory.
+  --remote --confirm-remote
+                          OWNER-ONLY. Real D1 database. Run only by the owner, and only with
+                          Kieran's explicit yes for this run. Never by agents or CI.`;
+
 async function main(argv) {
+  if (argv.includes('--help') || argv.includes('-h') || !argv.length) { console.log(HELP); return; }
   const remote = argv.includes('--remote');
-  if (remote && !argv.includes('--confirm-remote')) throw new Error('--remote needs --confirm-remote (and Kieran\'s approval).');
+  if (remote && !argv.includes('--confirm-remote')) throw new Error('--remote is OWNER-ONLY: it needs --confirm-remote and Kieran\'s explicit yes for this run. See --help.');
   const password = process.env.ADMIN_PASSWORD || (await readStdin());
   const sql = bootstrapAdminSql({ email: process.env.ADMIN_EMAIL, name: process.env.ADMIN_NAME || 'Site Admin', password });
   const { mkdtemp, writeFile, rm } = await import('node:fs/promises');

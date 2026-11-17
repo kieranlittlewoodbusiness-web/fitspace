@@ -1,16 +1,12 @@
--- RC-4 cutover pre-check (CR 5940135102 minor 4). Run against the SOURCE data loaded into a
--- scratch D1/SQLite database (schema 0001 only, i.e. before 0002 creates the partial unique
--- index), BEFORE importing to the real D1. Every query must return ZERO rows; otherwise
--- `CREATE UNIQUE INDEX bookings_one_live_per_customer` in 0002 fails and the import stops.
---   wrangler d1 execute DB --local --file scripts/cutover-precheck.sql
--- Resolution for duplicates is a product decision (keep the paid one, expire the other
--- pending holds) and must be agreed before cutover; this script only reports.
-
--- 1. More than one live (pending/paid) booking per customer per block.
-SELECT 'duplicate_live_booking' AS problem, block_id, customer_id, count(*) AS n,
-       group_concat(id || ':' || status, ',') AS bookings
-FROM bookings WHERE status IN ('pending','paid')
-GROUP BY block_id, customer_id HAVING count(*) > 1;
-
--- 2. Duplicate discount codes per owner (0002 discount_codes_unique), if codes are imported.
--- (No source table yet at 7cebef2; kept for RC-8 imports.)
+-- RC-4 cutover pre-check (CR 5940135102 minor 4; PM ruling 17 Nov 2026). Run against the
+-- SOURCE data in a scratch D1 at schema 0001, before 0002 creates the partial unique index.
+-- Must return ZERO rows. Any row means the import STOPS (scripts/cutover-import.mjs writes
+-- the report). Never auto-delete or auto-refund; the only resolution is the explicit opt-in
+-- step in scripts/cutover-import.mjs (see docs/rc-4/RC-4-d1-port.md §4).
+-- Kept identical to DUPLICATE_REPORT_SQL in src/cutover.mjs (tested).
+SELECT b.id AS booking_id, b.customer_id, b.block_id, b.status AS payment_status,
+  b.paid_at, b.refund_status, b.created_at
+FROM bookings b JOIN (SELECT block_id, customer_id FROM bookings WHERE status IN ('pending','paid')
+  GROUP BY block_id, customer_id HAVING count(*) > 1) d ON d.block_id = b.block_id AND d.customer_id = b.customer_id
+WHERE b.status IN ('pending','paid')
+ORDER BY b.block_id, b.customer_id, b.created_at, b.id;

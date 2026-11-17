@@ -23,7 +23,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { createDb } from './db.mjs';
 import { ops } from './ops/index.mjs';
-import { httpError } from './util.mjs';
+import { errorExtras, httpError } from './util.mjs';
 
 export const DEFAULT_SLOT_MS = 2000;
 const BLOCK_KEYED = new Set(['reserve', 'updateBlock']);
@@ -59,7 +59,7 @@ export class Writer extends DurableObject {
     try {
       return { value: await result };
     } catch (error) {
-      if (error.status) return { error: { status: error.status, message: error.message } };
+      if (error.status) return { error: { status: error.status, message: error.message, ...errorExtras(error) } };
       // Never echo SQL, bindings or stack traces.
       console.error('RC-4 writer operation failed:', name, error.code || error.name || 'Error');
       return { error: { status: 503, message: 'The booking service could not save your change. Please try again.' } };
@@ -71,6 +71,6 @@ export class Writer extends DurableObject {
 export async function write(env, name, args, { binding = env.WRITER } = {}) {
   const stub = binding.get(binding.idFromName(writerKey(name, args)));
   const outcome = await stub.run(name, args);
-  if (outcome.error) throw httpError(outcome.error.status, outcome.error.message);
+  if (outcome.error) { const { status, message, ...extra } = outcome.error; throw httpError(status, message, extra); }
   return outcome.value;
 }

@@ -31,6 +31,14 @@ export function scopeFor(db, user) {
       const [clause, ...args] = ptClause('c');
       return db.get(`SELECT c.* FROM blocks c WHERE c.id=? AND ${clause}`, id, ...args);
     },
+    /** Block created with this create_key: the block if the caller manages it, null if the
+     *  key is unused, undefined if it belongs to someone else (do not reveal which). */
+    async blockByCreateKey(key) {
+      ptOnly();
+      const row = await db.get('SELECT c.* FROM blocks c WHERE c.create_key=?', key);
+      if (!row) return null;
+      return role === 'admin' || row.pt_id === user.pt_id ? row : undefined;
+    },
     /** Blocks the caller manages. Admins may pass a ptId to narrow. */
     async blocks({ ptId } = {}) {
       ptOnly();

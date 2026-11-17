@@ -40,5 +40,9 @@
   // SQLite-backed class so it is also valid on the Workers Free plan. The writer keeps no
   // storage of its own; all data lives in D1.
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Writer"] }],
+  // Cron Trigger (src/mail.mjs): email delivery (booking + password-reset mail) and
+  // housekeeping (expire holds, prune rate limits) every minute. Local: wrangler dev
+  // --test-scheduled, then GET /__scheduled. Nothing is deployed from this branch.
+  "triggers": { "crons": ["* * * * *"] },
   "observability": { "enabled": false }
 }

@@ -54,6 +54,16 @@ export async function handleWebhook(db, { event, credentialId = null, mode = 'st
     const pi = typeof obj.payment_intent === 'object' ? obj.payment_intent?.id : obj.payment_intent;
     const row = await db.get('SELECT * FROM bookings WHERE payment_intent=? AND mode=?', pi || '', mode);
     if (row && !matches(row)) throw httpError(400, 'Refund account mismatch.');
+    if (!row) {
+      // CR 5940418854 finding 1: a refund can arrive BEFORE the payment-success event that
+      // records payment_intent. If the event names one of our bookings (refund/charge
+      // metadata, or an expanded PaymentIntent's metadata) that has no recorded payment yet,
+      // answer 409 WITHOUT recording the event key, so Stripe retries it after the payment
+      // event. Events with no such reference are recorded as before (legacy behaviour).
+      const ref = obj.metadata?.booking_id || (typeof obj.payment_intent === 'object' ? obj.payment_intent?.metadata?.booking_id : null);
+      const early = ref ? await db.get('SELECT id,payment_intent,paid_at FROM bookings WHERE id=? AND mode=?', ref, mode) : null;
+      if (early && !early.payment_intent) throw httpError(409, 'Payment not recorded yet for this refund; retry later.', { code: 'REFUND_BEFORE_PAYMENT', retryable: true });
+    }
     if (row) {
       if (event.type === 'charge.refunded') {
         if (obj.currency !== 'gbp' || obj.amount !== row.amount_pence || !Number.isInteger(obj.amount_refunded) || obj.amount_refunded < 0 || obj.amount_refunded > row.amount_pence) throw httpError(400, 'Refund amount mismatch.');
@@ -104,7 +114,7 @@ export async function handleWebhook(db, { event, credentialId = null, mode = 'st
 //   - a guard aborts if succeeded refunds would exceed the booking amount,
 //   - the booking totals are recomputed from stripe_refunds, and only when this event's
 //     state is the one stored (a stale event changes nothing).
-async function refundWrites(db, row, refund, eventTime) {
+export async function refundWrites(db, row, refund, eventTime) {
   const paymentId = typeof refund.payment_intent === 'object' ? refund.payment_intent?.id : refund.payment_intent;
   if (paymentId !== row.payment_intent || refund.currency !== 'gbp' || !Number.isInteger(refund.amount) || refund.amount < 1 || refund.amount > row.amount_pence || !/^re_/.test(refund.id || '')) throw httpError(400, 'Refund payment or amount mismatch.');
   const previous = await db.get('SELECT * FROM stripe_refunds WHERE id=?', refund.id);

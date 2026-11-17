@@ -24,7 +24,12 @@ export default defineConfig({
           RESEND_API_KEY: 'dummy-' + crypto.randomBytes(8).toString('hex'),
           MAIL_FROM: 'noreply@example.test',
           AUTH_RESET_SECRET: crypto.randomBytes(32).toString('hex'),
-          APP_URL: 'https://example.test'
+          APP_URL: 'https://example.test',
+          // Phase 3 throwaways. Stripe/Resend HTTP is mocked in every test (vi.spyOn(fetch));
+          // the "keys" below only satisfy format checks and are random per run.
+          PT_INVITE_SECRET: crypto.randomBytes(32).toString('hex'),
+          CREDENTIAL_ENCRYPTION_KEY: crypto.randomBytes(32).toString('hex'),
+          STRIPE_SECRET_KEY: 'sk_test_dummy' + crypto.randomBytes(8).toString('hex')
         },
         durableObjects: { WRITER: 'Writer', TEST_WRITER: 'TestWriter' }
       }
