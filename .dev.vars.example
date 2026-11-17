@@ -1,0 +1,8 @@
+# RC-1 spike: copy to .dev.vars (git-ignored) and fill with LOCAL throwaway values only.
+# Never commit .dev.vars. Names only here.
+DATABASE_URL=
+DATA_NAMESPACE=rc1-spike
+PAYMENT_MODE=demo
+ADMIN_EMAIL=
+ADMIN_PASSWORD=
+ADMIN_NAME=

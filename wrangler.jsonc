@@ -1,0 +1,39 @@
+// RC-1 Workers runtime spike: LOCAL ONLY (wrangler dev / --dry-run).
+// Not approved for deploy. No account_id, routes, or bindings to Cloudflare resources.
+{
+  "name": "resiliencecoaching-rc1-spike",
+  "main": "worker/index.mjs",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "app/public",
+    "binding": "ASSETS",
+    // The Worker runs first so the app's security headers are applied and
+    // /api/* plus /__spike/* reach the handler, as netlify.toml's force rewrite did.
+    "run_worker_first": true,
+    "not_found_handling": "single-page-application"
+  },
+  "vars": {
+    "EMAIL_MODE": "preview"
+  },
+  // platform.mjs computes runtimeRoot from import.meta.url at module load; workerd leaves it
+  // undefined (boot crash, experiment E1). With this define runtimeRoot is "/", so its
+  // require(`${runtimeRoot}/app/server.cjs`) becomes "//app/server.cjs", which workerd's
+  // module registry resolves to the uploaded "app/server.cjs" module.
+  "define": { "import.meta.url": "\"file:///netlify/functions/platform.mjs\"" },
+  // Upload app/*.cjs as separate CommonJS modules (platform.mjs require()s them by runtime path).
+  "base_dir": ".",
+  "find_additional_modules": true,
+  // fallthrough:false on Text/Data/CompiledWasm stops the default globs from also scanning
+  // node_modules/ and the nested v4 fitspace/ tree (RC-3) into the upload.
+  "rules": [
+    { "type": "CommonJS", "globs": ["app/*.cjs"], "fallthrough": false },
+    { "type": "ESModule", "globs": ["worker/__none__/*.mjs"], "fallthrough": false },
+    { "type": "Text", "globs": ["worker/__none__/*.txt"], "fallthrough": false },
+    { "type": "Data", "globs": ["worker/__none__/*.bin"], "fallthrough": false },
+    { "type": "CompiledWasm", "globs": ["worker/__none__/*.wasm"], "fallthrough": false }
+  ],
+  "observability": { "enabled": false }
+}
