@@ -2,16 +2,15 @@ import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:workers';
 import worker, { cronTick } from '../worker/index.mjs';
 import { db, seedBlock, insertBooking } from './helpers.mjs';
-import { GATE_PATH, COOKIE_NAME, ROBOTS_BODY, signPreviewCookie, TTL_MS } from '../src/preview-gate.mjs';
+import { GATE_PATH, COOKIE_NAME, ROBOTS_BODY, signPreviewCookie, TTL_MS, deriveCookieKey } from '../src/preview-gate.mjs';
 
 const PASSWORD = 'correct-horse-preview';
-const SECRET = 'a'.repeat(64);
 const gated = (extra = {}) => Object.assign(Object.create(null), env, {
   PREVIEW_GATE: 'on',
   PREVIEW_PASSWORD: PASSWORD,
-  PREVIEW_GATE_SECRET: SECRET,
   ...extra
 });
+const cookieKey = (e = gated()) => deriveCookieKey(e.PT_INVITE_SECRET);
 const ORIGIN = 'http://example.test';
 
 function req(path, { method = 'GET', cookie, password, json, ip, headers } = {}) {
@@ -39,10 +38,7 @@ const cookieOf = r => {
 describe('preview gate: off by default', () => {
   it('the default env does not gate, even if PREVIEW_PASSWORD were set', async () => {
     expect(env.PREVIEW_GATE).toBeUndefined();
-    const e = Object.assign(Object.create(null), env, {
-      PREVIEW_PASSWORD: PASSWORD,
-      PREVIEW_GATE_SECRET: SECRET
-    });
+    const e = Object.assign(Object.create(null), env, { PREVIEW_PASSWORD: PASSWORD });
     const health = await worker.fetch(req('/health'), e);
     expect(health.status).toBe(200);
     expect(await health.json()).toEqual({ ok: true });
@@ -96,14 +92,14 @@ describe('preview gate: on', () => {
     expect(await robots.text()).toBe(ROBOTS_BODY);
   });
 
-  it('fails closed with 503 if either secret is missing', async () => {
+  it('fails closed with 503 if PREVIEW_PASSWORD or PT_INVITE_SECRET is missing', async () => {
     const noPass = await worker.fetch(req('/'), gated({ PREVIEW_PASSWORD: '' }));
     expect(noPass.status).toBe(503);
     expect(noPass.headers.get('X-Robots-Tag')).toBe('noindex, nofollow');
-    const noSecret = await worker.fetch(req('/api/me'), gated({ PREVIEW_GATE_SECRET: '' }));
-    expect(noSecret.status).toBe(503);
-    expect(await noSecret.json()).toMatchObject({ error: expect.any(String) });
-    const neither = await worker.fetch(req('/'), { ...Object.assign(Object.create(null), env, { PREVIEW_GATE: 'on' }) });
+    const noInvite = await worker.fetch(req('/api/me'), gated({ PT_INVITE_SECRET: '' }));
+    expect(noInvite.status).toBe(503);
+    expect(await noInvite.json()).toMatchObject({ error: expect.any(String) });
+    const neither = await worker.fetch(req('/'), Object.assign(Object.create(null), env, { PREVIEW_GATE: 'on', PREVIEW_PASSWORD: '', PT_INVITE_SECRET: '' }));
     expect(neither.status).toBe(503);
   });
 
@@ -161,7 +157,7 @@ describe('preview gate: on', () => {
   });
 
   it('rejects an expired cookie', async () => {
-    const token = signPreviewCookie(SECRET, Date.now() - TTL_MS - 1000);
+    const token = signPreviewCookie(await cookieKey(), Date.now() - TTL_MS - 1000);
     const r = await worker.fetch(req('/', { cookie: token }), gated());
     expect(r.status).toBe(401);
     const api = await worker.fetch(req('/api/me', { cookie: token }), gated());
@@ -170,16 +166,33 @@ describe('preview gate: on', () => {
   });
 
   it('rejects a tampered cookie', async () => {
-    const token = signPreviewCookie(SECRET);
+    const token = signPreviewCookie(await cookieKey());
     const [ts, mac] = token.split('.');
     const flipped = mac[0] === 'A' ? 'B' + mac.slice(1) : 'A' + mac.slice(1);
     const r = await worker.fetch(req('/', { cookie: `${ts}.${flipped}` }), gated());
     expect(r.status).toBe(401);
     const cut = await worker.fetch(req('/api/public/site', { cookie: ts }), gated());
     expect(cut.status).toBe(401);
-    const foreign = signPreviewCookie('b'.repeat(64));
+    const foreign = signPreviewCookie(await deriveCookieKey('b'.repeat(64)));
     const other = await worker.fetch(req('/', { cookie: foreign }), gated());
     expect(other.status).toBe(401);
+  });
+
+  it('the derived cookie key differs from the invite-signing key, and a cookie signed with the raw PT_INVITE_SECRET is rejected', async () => {
+    const invite = gated().PT_INVITE_SECRET;
+    const derived = await deriveCookieKey(invite);
+    expect(derived.length).toBe(32);
+    expect(derived.equals(Buffer.from(invite, 'utf8'))).toBe(false);
+
+    const rawSigned = signPreviewCookie(invite);
+    const rejected = await worker.fetch(req('/', { cookie: rawSigned }), gated());
+    expect(rejected.status).toBe(401);
+    const api = await worker.fetch(req('/api/me', { cookie: rawSigned }), gated());
+    expect(api.status).toBe(401);
+    expect((await api.json()).code).toBe('PREVIEW_LOCKED');
+
+    const allowed = await worker.fetch(req('/', { cookie: signPreviewCookie(derived) }), gated());
+    expect(allowed.status).toBe(200);
   });
 
   it('rate-limits wrong attempts: 5 per 15 minutes per IP, then 429', async () => {

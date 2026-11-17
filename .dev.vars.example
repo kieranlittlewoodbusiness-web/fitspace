@@ -20,4 +20,3 @@ PT_INVITE_SECRET=
 # Preview Worker only (env.preview). Leave unset so local/default env never gates.
 # PREVIEW_GATE=on
 # PREVIEW_PASSWORD=
-# PREVIEW_GATE_SECRET=

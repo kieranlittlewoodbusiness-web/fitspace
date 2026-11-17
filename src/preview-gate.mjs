@@ -23,8 +23,29 @@ const ROBOTS_TAG = 'noindex, nofollow';
 
 export const gateOn = env => env.PREVIEW_GATE === 'on';
 
+export const COOKIE_HKDF_SALT = 'resiliencecoaching-preview-gate';
+export const COOKIE_HKDF_INFO = 'cookie-v1';
+
 function secretsReady(env) {
-  return Boolean(env.PREVIEW_PASSWORD) && Boolean(env.PREVIEW_GATE_SECRET);
+  return Boolean(env.PREVIEW_PASSWORD) && Boolean(env.PT_INVITE_SECRET);
+}
+
+/** 32-byte cookie HMAC key, HKDF-SHA256 from PT_INVITE_SECRET (WebCrypto). */
+export async function deriveCookieKey(inviteSecret) {
+  const enc = new TextEncoder();
+  const baseKey = await globalThis.crypto.subtle.importKey(
+    'raw',
+    enc.encode(String(inviteSecret)),
+    'HKDF',
+    false,
+    ['deriveBits']
+  );
+  const bits = await globalThis.crypto.subtle.deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt: enc.encode(COOKIE_HKDF_SALT), info: enc.encode(COOKIE_HKDF_INFO) },
+    baseKey,
+    256
+  );
+  return Buffer.from(bits);
 }
 
 export function withPreviewHeaders(env, response) {
@@ -33,20 +54,20 @@ export function withPreviewHeaders(env, response) {
   return response;
 }
 
-export function signPreviewCookie(secret, issuedAt = Date.now()) {
+export function signPreviewCookie(key, issuedAt = Date.now()) {
   const ts = String(issuedAt);
-  const mac = crypto.createHmac('sha256', secret).update(ts).digest('base64url');
+  const mac = crypto.createHmac('sha256', key).update(ts).digest('base64url');
   return `${ts}.${mac}`;
 }
 
-export function verifyPreviewCookie(secret, value, now = Date.now()) {
+export function verifyPreviewCookie(key, value, now = Date.now()) {
   if (typeof value !== 'string') return false;
   const dot = value.indexOf('.');
   if (dot < 1) return false;
   const ts = value.slice(0, dot);
   const mac = value.slice(dot + 1);
   if (!/^\d+$/.test(ts)) return false;
-  const expected = crypto.createHmac('sha256', secret).update(ts).digest('base64url');
+  const expected = crypto.createHmac('sha256', key).update(ts).digest('base64url');
   const a = Buffer.from(mac);
   const b = Buffer.from(expected);
   if (a.length !== b.length) return false;
@@ -67,10 +88,10 @@ function readCookie(request, name) {
   return null;
 }
 
-/** HMAC both values with the gate secret, then compare the digests in constant time. */
-export function passwordsMatch(secret, provided, expected) {
-  const a = crypto.createHmac('sha256', secret).update(String(provided ?? '')).digest();
-  const b = crypto.createHmac('sha256', secret).update(String(expected ?? '')).digest();
+/** HMAC both values with the derived cookie key, then compare the digests in constant time. */
+export function passwordsMatch(key, provided, expected) {
+  const a = crypto.createHmac('sha256', key).update(String(provided ?? '')).digest();
+  const b = crypto.createHmac('sha256', key).update(String(expected ?? '')).digest();
   return crypto.timingSafeEqual(a, b);
 }
 
@@ -168,9 +189,9 @@ async function readPassword(request) {
   return typeof params.password === 'string' ? params.password : '';
 }
 
-async function unlock(request, env) {
+async function unlock(request, env, key) {
   const provided = await readPassword(request);
-  const ok = passwordsMatch(env.PREVIEW_GATE_SECRET, provided, env.PREVIEW_PASSWORD);
+  const ok = passwordsMatch(key, provided, env.PREVIEW_PASSWORD);
   if (!ok) {
     const db = createDb(env.DB);
     const client = request.headers.get('CF-Connecting-IP') || 'unknown';
@@ -187,7 +208,7 @@ async function unlock(request, env) {
     }
     return locked(request, 'That password is incorrect.');
   }
-  const cookie = setCookie(signPreviewCookie(env.PREVIEW_GATE_SECRET));
+  const cookie = setCookie(signPreviewCookie(key));
   if (wantsJson(request)) return jsonResponse(200, { ok: true }, { 'Set-Cookie': cookie });
   return new Response(null, { status: 303, headers: { ...securityHeaders, Location: '/', 'Set-Cookie': cookie, 'Content-Type': 'text/html; charset=utf-8' } });
 }
@@ -210,12 +231,13 @@ export async function previewFetch(request, env) {
 
   if (!secretsReady(env)) return withPreviewHeaders(env, failClosed(request));
 
+  const key = await deriveCookieKey(env.PT_INVITE_SECRET);
   if (path === GATE_PATH && request.method === 'POST') {
-    return withPreviewHeaders(env, await unlock(request, env));
+    return withPreviewHeaders(env, await unlock(request, env, key));
   }
 
   const token = readCookie(request, COOKIE_NAME);
-  if (verifyPreviewCookie(env.PREVIEW_GATE_SECRET, token)) return null;
+  if (verifyPreviewCookie(key, token)) return null;
 
   return withPreviewHeaders(env, locked(request));
 }

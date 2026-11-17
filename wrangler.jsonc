@@ -56,7 +56,7 @@
   // before any Stripe call or write (worker/index.mjs paymentReadiness, CR 5941600057 M6).
   // No Resend key: mail stays in preview. Static assets: the API upload ships app/public as
   // text modules behind docs/rc-4/preview/entry.mjs (connector cannot run the assets upload).
-  // Secrets (set through the API, never committed): PT_INVITE_SECRET, PREVIEW_PASSWORD, PREVIEW_GATE_SECRET.
+  // Secrets (set through the API, never committed): PT_INVITE_SECRET (already on the Worker; also used as HKDF IKM for the gate cookie), PREVIEW_PASSWORD (preview only, set in the dashboard).
   "env": {
     "preview": {
       "name": "resiliencecoaching-preview",

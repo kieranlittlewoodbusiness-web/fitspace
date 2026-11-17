@@ -112,8 +112,7 @@ Schema rule that keeps B possible: no `REFERENCES` on columns added with `ALTER 
 | `MAIL_FROM` | var | emails.cjs, password-reset.cjs | `src/mail.mjs` | test domain | per RC-10 |
 | `PT_INVITE_SECRET` | **secret** (≥32 chars) | — (new) | `worker/index.mjs` createPtRoute: HMAC(create_key) → retry-safe temporary PT password; 503 if unset | random per run in vitest; `.dev.vars` | `wrangler secret put` |
 | `PREVIEW_GATE` | var (`on` / unset) | — (new) | `src/preview-gate.mjs`. Password gate for the preview Worker only. Default is off; the default env must never gate. | unset in vitest | `on` in `env.preview` only |
-| `PREVIEW_PASSWORD` | **secret** | — (new) | Preview gate password. Compared in constant time (HMAC + timingSafeEqual). | unset in default tests | Worker secret, preview only |
-| `PREVIEW_GATE_SECRET` | **secret** (32 bytes) | — (new) | HMAC key for the 24h preview-gate cookie. | unset in default tests | Worker secret, preview only |
+| `PREVIEW_PASSWORD` | **secret** | — (new) | Preview gate password. Compared in constant time (HMAC + timingSafeEqual) with the HKDF-derived cookie key. | unset in default tests | Worker secret, preview only, set in the dashboard |
 | `STRIPE_SECRET_KEY` | **secret** | payments.cjs, stripe-mode.cjs | `src/stripe.mjs` (Worker only) | vitest: random `sk_test_dummy…`, fetch mocked; test key in `.dev.vars` | `wrangler secret put` (test key until RC-OPS-2) |
 | `STRIPE_WEBHOOK_SECRET` | **secret** | server.cjs, platform.mjs | yes (`/api/stripe/webhook`) | random per run in vitest; Stripe CLI value in `.dev.vars` | `wrangler secret put` |
 | `STRIPE_CONNECT_WEBHOOK_SECRET` | **secret** | server.cjs | yes | `.dev.vars` | `wrangler secret put` |
@@ -268,7 +267,7 @@ Everything was done through the Cloudflare connector's API (no wrangler login, n
   - Bindings: `DB` → `81379d2e-…` (preview only), `WRITER` → Durable Object namespace `cf8aedd7f82b4337bfbe8921daf0b2be` (SQLite class `Writer`, migration tag v1).
   - Vars: `EMAIL_MODE=preview`, `PAYMENT_MODE=stripe_test` (the app's test-mode value; there's no Stripe key, so Stripe calls fail closed before any request), `STRIPE_INTEGRATION=connect`, `APP_URL`, `CRON_ENABLED=true`, `PREVIEW_GATE=on`.
   - Cron `* * * * *`. Observability is on.
-  - Secrets: `PT_INVITE_SECRET`, `PREVIEW_PASSWORD`, `PREVIEW_GATE_SECRET`. There's no Stripe or Resend secret.
+  - Secrets: `PT_INVITE_SECRET` (already on the Worker) and `PREVIEW_PASSWORD` (set in the dashboard). The cookie HMAC key is derived from `PT_INVITE_SECRET` with HKDF-SHA256 (salt `resiliencecoaching-preview-gate`, info `cookie-v1`). There's no Stripe or Resend secret.
 - **Assets:** the connector can't run the static-assets direct-upload step (it needs the upload-session JWT as bearer, and the connector always sends its own credentials, so the call returned 401).
   - Instead, the upload ships `app/public` as Text modules, with `docs/rc-4/preview/entry.mjs` giving the unchanged Worker an `env.ASSETS` that serves the exact file, `/` → index.html, and index.html otherwise (SPA).
   - This was checked locally with `wrangler dev`: assets, the SPA fallback, security headers and the API all work.
@@ -277,9 +276,9 @@ Everything was done through the Cloudflare connector's API (no wrangler login, n
 - **workers.dev:** URL `https://resiliencecoaching-preview.littlk.workers.dev`. Preview URLs stay off. The public route is enabled only after the preview password gate is in place (see below).
 - **Access: dropped (Kieran, 16:49 UK, 17 Nov 2026).** Cloudflare Access is not used. The preview Worker is protected by a password gate (`PREVIEW_GATE=on` in `env.preview` only; the default/production env never sets it).
   - `src/preview-gate.mjs` gates every `fetch` except `POST /__preview-gate` and `/robots.txt`. `scheduled()` is not gated.
-  - HTML 401 form; `/api/*` returns `{error, code:'PREVIEW_LOCKED'}`. Cookie: HttpOnly, Secure, SameSite=Lax, Path=/, 24h, HMAC-SHA256 with `PREVIEW_GATE_SECRET`. Wrong attempts are rate-limited (5 / 15 min / IP) in D1.
+  - HTML 401 form; `/api/*` returns `{error, code:'PREVIEW_LOCKED'}`. Cookie: HttpOnly, Secure, SameSite=Lax, Path=/, 24h, HMAC-SHA256 with an HKDF-SHA256 key derived from `PT_INVITE_SECRET`. Wrong attempts are rate-limited (5 / 15 min / IP) in D1.
   - Every gated or app response carries `X-Robots-Tag: noindex, nofollow`. `/robots.txt` is `User-agent: *\nDisallow: /`.
-  - Missing secrets fail closed with 503. Secrets `PREVIEW_PASSWORD` and `PREVIEW_GATE_SECRET` are set through the API only, never committed (`keep_bindings` preserves `PT_INVITE_SECRET` on upload).
+  - Missing `PREVIEW_PASSWORD` or `PT_INVITE_SECRET` fails closed with 503. `PREVIEW_PASSWORD` is the only secret Kieran sets in the dashboard. Uploads keep existing `secret_text` bindings (`PT_INVITE_SECRET`).
 - **CPU check (scrypt, about 27 ms):** run after the owner unlocks the preview and signs up as a customer, then read Worker telemetry for `exceededCpu` / 1102.
 
 ## 14. CR 5941600057 fixes (on top of c386472)
