@@ -3,8 +3,25 @@ const {test,before,after}=require('node:test'),assert=require('node:assert/stric
 const {createApp}=require('../server.cjs');
 
 const appJs=fs.readFileSync(path.join(__dirname,'../public/app.js'),'utf8');
-const appLines=appJs.replace(/\n$/,'').split('\n');
 const serverSrc=fs.readFileSync(path.join(__dirname,'../server.cjs'),'utf8');
+const siteHtml=fs.readFileSync(path.join(__dirname,'../../site/index.html'),'utf8');
+const resetSrc=fs.readFileSync(path.join(__dirname,'../password-reset.cjs'),'utf8');
+
+// Infra identifiers that must stay "fitspace". Visible copy must not.
+const fitspaceIdAllowlist=[
+  'fitspace-password-reset:',
+  'fitspace-auth:',
+  'fitspace_preview_',
+  'fitspace-public-v4',
+  'FITSPACE_TEST_BUNDLED',
+  'fitspace-netlify-public'
+];
+function withoutAllowlistedIds(text){
+  return fitspaceIdAllowlist.reduce((out,id)=>out.split(id).join(''),text);
+}
+function assertNoVisibleFitspace(text,label){
+  assert.equal(/FITSPACE/i.test(withoutAllowlistedIds(text)),false,label+' still contains FITSPACE outside allowlisted identifiers');
+}
 
 const present=[
   'View classes ↗',
@@ -48,19 +65,33 @@ test('public app.js keeps the approved single-coach and Resilience Coaching copy
   assert.ok(appJs.includes("['trainers','people','PT accounts']"));
   assert.ok(appJs.includes("role==='pt'?'TRAINER WORKSPACE'"));
   assert.ok(appJs.includes("me.role==='pt'?'Trainer workspace'"));
+  // Exact surfaces that a loose "Your coach" / header check would miss
+  assert.ok(appJs.includes('<a href="/trainers" class="optional" data-route>Your coach</a>'));
+  assert.ok(appJs.includes("document.title='Choose a new password — Resilience Coaching'"));
+  assert.ok(appJs.includes("document.title=(me.role==='admin'?'Platform admin':me.role==='pt'?'Trainer workspace':'My bookings')+' — Resilience Coaching'"));
 });
 
-test('app.js lines 60 and 63 remain the class and brand forms, not copy edits',()=>{
-  assert.equal(appLines.length,73);
-  assert.match(appLines[59],/^function blockForm\(/);
-  assert.match(appLines[62],/^function brandForm\(/);
-  assert.equal(appLines[59].includes('create_key'),false);
-  assert.equal(appLines[62].includes('create_key'),false);
+test('blockForm and brandForm remain the class and brand form functions',()=>{
+  // Anchor by function name so this passes before and after rc-4-d1 adds create_key.
+  assert.match(appJs,/^function blockForm\(/m);
+  assert.match(appJs,/^function brandForm\(/m);
 });
 
 test('the public PT 404 uses the approved page copy',()=>{
   assert.ok(serverSrc.includes("throw auth.error(404,'This page is not available.')"));
   assert.equal(serverSrc.includes('This trainer page is not available.'),false);
+});
+
+test('site/index.html and password-reset emails keep the approved Resilience Coaching copy',()=>{
+  assert.ok(siteHtml.includes('<title>Resilience Coaching setup</title>'));
+  assert.ok(siteHtml.includes('<h1>Resilience Coaching · deployment setup</h1>'));
+  assertNoVisibleFitspace(siteHtml,'site/index.html');
+  assert.ok(resetSrc.includes("subject='Reset your Resilience Coaching password'"));
+  assert.ok(resetSrc.includes(String.raw`text='A password reset was requested for your Resilience Coaching account.\n\nOpen this link to choose a new password:\n'+job.origin+'/reset-password#'+token(reset.id)+'\n\nThis link expires 30 minutes after the request and can be used once. If you did not request this, ignore this email. Your password has not changed.'`));
+  assert.ok(resetSrc.includes("subject='Your Resilience Coaching password has changed'"));
+  assert.ok(resetSrc.includes(String.raw`text='Your Resilience Coaching password was reset. All previous sign-in sessions have been closed.\n\nIf you did not make this change, request a fresh password reset from '+job.origin+'/forgot-password and contact your coach or platform owner.'`));
+  assert.equal(resetSrc.includes('and contact your trainer or platform owner.'),false);
+  assertNoVisibleFitspace(resetSrc,'password-reset email source');
 });
 
 let app,base,dir;
@@ -89,8 +120,13 @@ test('the served /app.js and / includes the approved public wording',async()=>{
   assert.ok(js.includes('Your coach\u2019s classes, schedule and training space are shown below.'));
   assert.ok(js.includes('Visit the site ↗'));
   assert.ok(js.includes('Find your coach'));
+  assert.ok(js.includes('<a href="/trainers" class="optional" data-route>Your coach</a>'));
+  assert.ok(js.includes("document.title='Choose a new password — Resilience Coaching'"));
+  assert.ok(js.includes("document.title=(me.role==='admin'?'Platform admin':me.role==='pt'?'Trainer workspace':'My bookings')+' — Resilience Coaching'"));
   assert.equal(js.includes('Discover another trainer'),false);
+  assertNoVisibleFitspace(js,'served /app.js');
   const html=await (await fetch(base+'/')).text();
   assert.ok(html.includes('<title>Resilience Coaching — Your training, connected</title>'));
   assert.ok(html.includes('<span id="modalEyebrow">Resilience Coaching</span>'));
+  assertNoVisibleFitspace(html,'served /');
 });
