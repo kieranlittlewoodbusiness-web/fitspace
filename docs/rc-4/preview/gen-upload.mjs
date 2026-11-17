@@ -5,7 +5,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 const OUT = process.argv[2]; if (!OUT) throw new Error('usage: gen-upload.mjs <out.js>');
 const PREVIEW_DB = '81379d2e-c718-48b7-870d-1d189feea966';
-const PRODUCTION_DB = 'fd8a613f-4dd4-462b-83e0-d7673031a6fc';
+import { mentionsProduction } from '../d1-rehearsal/guard.mjs';
 const cfg = readFileSync('wrangler.jsonc', 'utf8');
 if (!cfg.includes(`"database_id": "${PREVIEW_DB}"`)) throw new Error('env.preview database_id not found in wrangler.jsonc');
 const b64 = p => readFileSync(p).toString('base64');
@@ -31,7 +31,7 @@ const metadata = {
   observability: { enabled: true }
 };
 const all = JSON.stringify(metadata) + modules.map(m => Buffer.from(m.b64, 'base64').toString('utf8')).join('');
-if (all.includes(PRODUCTION_DB) || all.includes(PRODUCTION_DB.slice(0, 8))) throw new Error('refusing: production database id present in the upload');
+if (mentionsProduction(all)) throw new Error('refusing: production database id present in the upload');
 writeFileSync(OUT, `async () => {
 const name = 'resiliencecoaching-preview'; const base = \`/accounts/\${accountId}/workers/scripts/\${name}\`;
 const MODULES = ${JSON.stringify(modules)}; const META = ${JSON.stringify(metadata)};

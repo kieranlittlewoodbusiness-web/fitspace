@@ -4,11 +4,11 @@
 // Kept under docs/ (not scripts/) on purpose: it is rehearsal evidence that runs unscoped DDL and
 // synthetic inserts, not app or ops code, so it sits outside the per-query scope lint.
 import { readFileSync, writeFileSync, readdirSync, mkdirSync } from 'node:fs';
-const DB = process.argv[2]; if (!DB) throw new Error('usage: node docs/rc-4/d1-rehearsal/generate.mjs <rehearsal-database-uuid> [outdir]');
-// CR 5941600057: never the production database (step2 runs DOWN migrations).
-export const PRODUCTION_DB = 'fd8a613f-4dd4-462b-83e0-d7673031a6fc';
-if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(DB)) throw new Error('refusing: not a database uuid');
-if (DB.toLowerCase() === PRODUCTION_DB || DB.toLowerCase().startsWith(PRODUCTION_DB.slice(0, 8))) throw new Error('refusing: that is the production database');
+import { safeDatabaseId } from './guard.mjs';
+if (!process.argv[2]) throw new Error('usage: node docs/rc-4/d1-rehearsal/generate.mjs <rehearsal-database-uuid> [outdir]');
+// CR 5941600057 / 5943169048 C2: never the production database (step2 runs DOWN migrations);
+// the shared guard normalises (trim + lowercase) before comparing.
+const DB = safeDatabaseId(process.argv[2]);
 const OUT = process.argv[3] || '/tmp/rc4-remote';
 mkdirSync(OUT, { recursive: true });
 const statements = sql => { const out = []; let cur = '', i = 0, inStr = false;

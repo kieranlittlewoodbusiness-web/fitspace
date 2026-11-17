@@ -5,9 +5,11 @@
 // Usage: node docs/rc-4/d1-rehearsal/preview-apply.mjs <preview-database-uuid> <out.js>
 // Never point it at the production database.
 import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
-const [DB, OUT] = process.argv.slice(2);
-if (!DB || !OUT) throw new Error('usage: preview-apply.mjs <preview-database-uuid> <out.js>');
-if (DB.startsWith('fd8a613f')) throw new Error('refusing: that is the production database');
+import { safeDatabaseId } from './guard.mjs';
+const [RAW_DB, OUT] = process.argv.slice(2);
+if (!RAW_DB || !OUT) throw new Error('usage: preview-apply.mjs <preview-database-uuid> <out.js>');
+// CR 5943169048 C2: the shared, normalised guard (upper case / whitespace no longer get past).
+const DB = safeDatabaseId(RAW_DB);
 const statements = sql => { const out = []; let cur = '', i = 0, inStr = false;
   while (i < sql.length) { const c = sql[i];
     if (inStr) { cur += c; if (c === "'") { if (sql[i + 1] === "'") { cur += "'"; i++; } else inStr = false; } i++; continue; }
