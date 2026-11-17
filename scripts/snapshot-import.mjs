@@ -12,8 +12,9 @@
 //   4. the cutover gate (PM ruling): duplicate live bookings -> STOP with a report (exit 2),
 //      unless the opt-in --mark-duplicates-for-review --confirm <phrase> is given;
 //   5. generate INSERT statements (explicit columns, FK order) -> a 0600 SQL file;
-//   6. --persist-to: apply ALL migrations in migrations/ to that LOCAL D1, refuse if it already
-//      holds data, execute the file, and verify row counts table by table.
+//   6. --persist-to (0700): refuse unless that LOCAL D1 has no tables (checked first, before
+//      anything else), apply ALL migrations, execute the file, verify row counts table by
+//      table; on a mismatch the imported rows are removed again.
 //
 //   node scripts/snapshot-import.mjs --snapshot fitspace.sqlite --persist-to .rc4-import [--out import.sql]
 //   node scripts/snapshot-import.mjs --snapshot fitspace.b64 --base64 --out import.sql
@@ -24,7 +25,8 @@
 // DB --remote`, then `wrangler d1 execute DB --remote --file <out.sql>` (see doc §11).
 import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtemp, readFile, writeFile, copyFile, rm, mkdir, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, copyFile, rm, mkdir, readdir, chmod } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -122,44 +124,66 @@ export async function prepareImport(snapshotPath, { base64 = false, markDuplicat
 
 const arg = (argv, name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
 
-async function main(argv) {
+// SQL run on the LOCAL target before anything else (CR 5941600057): a fresh D1 has no tables.
+const TABLES_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name";
+
+/** The CLI, testable: `wrangler(...args)` runs `wrangler d1 <args>` and returns stdout (the real
+ *  one is the project's pinned binary, always --local). Returns the exit code; refusals throw. */
+export async function run(argv, { wrangler = pinnedWrangler, log = console.log, error = console.error } = {}) {
   if (argv.includes('--remote')) throw new Error('No --remote option: loading the real D1 is owner-only after approval (doc §11).');
   const snapshot = arg(argv, '--snapshot');
   if (!snapshot) throw new Error('--snapshot <file> is required.');
   const persist = arg(argv, '--persist-to'), out = arg(argv, '--out');
   if (!persist && !out) throw new Error('Give --persist-to <local D1 dir> and/or --out <file.sql>.');
+  const local = (...a) => wrangler(...a.slice(0, 2), '--local', '--persist-to', persist, ...a.slice(2));
+  if (persist) {
+    // CR 5941600057: refuse a non-fresh target BEFORE applying migrations or reading the snapshot,
+    // and keep the local copy private (0700).
+    await mkdir(persist, { recursive: true, mode: 0o700 });
+    await chmod(persist, 0o700);
+    const tables = JSON.parse(local('execute', 'DB', '--json', '--command', TABLES_SQL))[0].results.map(r => r.name);
+    if (tables.length) throw new Error('Target D1 is not fresh (has tables: ' + tables.join(', ') + '); import into a new, empty local database only.');
+  }
   const result = await prepareImport(snapshot, { base64: argv.includes('--base64'), markDuplicates: argv.includes('--mark-duplicates-for-review'), confirm: arg(argv, '--confirm') });
-  if (result.status === 'schema') { console.error('IMPORT STOPPED: snapshot schema differs from migrations/0001:\n  ' + result.problems.join('\n  ')); process.exit(3); }
+  if (result.status === 'schema') { error('IMPORT STOPPED: snapshot schema differs from migrations/0001:\n  ' + result.problems.join('\n  ')); return 3; }
   if (result.status === 'halted') {
     const reportDir = arg(argv, '--report-dir') || 'cutover-reports';
-    await mkdir(reportDir, { recursive: true });
+    await mkdir(reportDir, { recursive: true, mode: 0o700 });
     const path = join(reportDir, `duplicates-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
     await writeFile(path, JSON.stringify({ halted: true, reason: 'duplicate live bookings (bookings_one_live_per_customer would fail)', rows: result.report }, null, 2) + '\n', { mode: 0o600 });
-    console.error(`IMPORT HALTED: ${result.report.length} live bookings in duplicate groups. Report: ${path}`);
-    process.exit(2);
+    error(`IMPORT HALTED: ${result.report.length} live bookings in duplicate groups. Report: ${path}`);
+    return 2;
   }
-  if (result.marked.length) console.log(`Opt-in: ${result.marked.length} duplicate bookings set to status=review (audit_log duplicate_import:kept=<id>).`);
+  if (result.marked.length) log(`Opt-in: ${result.marked.length} duplicate bookings set to status=review (audit_log duplicate_import:kept=<id>).`);
   const sql = result.statements.join(';\n') + ';\n';
-  const { execFileSync } = await import('node:child_process');
   let file = out, tmp;
   if (out) await writeFile(out, sql, { mode: 0o600 });
   else { tmp = await mkdtemp(join(tmpdir(), 'rc4-import-')); file = join(tmp, 'import.sql'); await writeFile(file, sql, { mode: 0o600 }); }
   try {
-    console.log(`Prepared ${result.statements.length} rows: ${JSON.stringify(result.counts)}`);
-    if (!persist) return;
-    // The project's pinned wrangler (never an npx download).
-    const wrangler = (...a) => execFileSync(join(ROOT, 'node_modules/.bin/wrangler'), ['d1', ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], cwd: ROOT });
-    wrangler('migrations', 'apply', 'DB', '--local', '--persist-to', persist);
+    log(`Prepared ${result.statements.length} rows: ${JSON.stringify(result.counts)}`);
+    if (!persist) return 0;
+    local('migrations', 'apply', 'DB');
     // One row of scalar subqueries (D1 rejects a 17-term UNION ALL: "too many terms in compound SELECT").
-    const count = () => JSON.parse(wrangler('execute', 'DB', '--local', '--persist-to', persist, '--json', '--command', 'SELECT ' + TABLE_ORDER.map(t => `(SELECT count(*) FROM "${t}") AS "${t}"`).join(', ')))[0].results[0];
+    const count = () => JSON.parse(local('execute', 'DB', '--json', '--command', 'SELECT ' + TABLE_ORDER.map(t => `(SELECT count(*) FROM "${t}") AS "${t}"`).join(', ')))[0].results[0];
     const before = Object.entries(count()).filter(([, n]) => n > 0).map(([t]) => t);
     if (before.length) throw new Error('Target D1 is not empty (' + before.join(', ') + '); import into a fresh database only.');
-    wrangler('execute', 'DB', '--local', '--persist-to', persist, '--file', file);
+    local('execute', 'DB', '--file', file);
     const after = count();
     const diff = TABLE_ORDER.filter(t => after[t] !== result.counts[t]);
-    if (diff.length) throw new Error('Row counts differ after import: ' + diff.map(t => `${t} ${result.counts[t]} -> ${after[t]}`).join(', '));
-    console.log(`Imported into local D1 (${persist}); row counts verified for ${TABLE_ORDER.length} tables.`);
+    if (diff.length) {
+      // The target was verified fresh above, so removing every row restores it (CR 5941600057).
+      local('execute', 'DB', '--command', [...TABLE_ORDER].reverse().map(t => `DELETE FROM "${t}"`).join('; '));
+      throw new Error('Row counts differ after import: ' + diff.map(t => `${t} ${result.counts[t]} -> ${after[t]}`).join(', ') + '. The imported rows were removed again; nothing was kept.');
+    }
+    log(`Imported into local D1 (${persist}); row counts verified for ${TABLE_ORDER.length} tables.`);
+    return 0;
   } finally { if (tmp) await rm(tmp, { recursive: true, force: true }); }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main(process.argv.slice(2)).catch(e => { console.error('Snapshot import failed:', e.message); process.exit(1); });
+// The project's pinned wrangler (never an npx download), local only.
+function pinnedWrangler(...a) {
+  if (!a.includes('--local')) throw new Error('refusing: wrangler without --local');
+  return execFileSync(join(ROOT, 'node_modules/.bin/wrangler'), ['d1', ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], cwd: ROOT });
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) run(process.argv.slice(2)).then(code => process.exit(code), e => { console.error('Snapshot import failed:', e.message); process.exit(1); });

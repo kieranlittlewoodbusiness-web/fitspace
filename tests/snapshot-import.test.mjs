@@ -8,7 +8,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { makeDemoSnapshot } from '../scripts/demo-snapshot.mjs';
-import { prepareImport, TABLE_ORDER } from '../scripts/snapshot-import.mjs';
+import { prepareImport, TABLE_ORDER, run } from '../scripts/snapshot-import.mjs';
 import { CONFIRM_PHRASE } from '../src/cutover.mjs';
 
 const root = path.join(import.meta.dirname, '..');
@@ -74,4 +74,66 @@ test('a snapshot whose schema differs from 0001 stops the import', async () => {
   assert.equal(r.status, 'schema');
   assert.deepEqual(r.problems, ['unexpected table surprise']);
   fs.rmSync(dir, { recursive: true });
+});
+
+// CR 5941600057: the CLI (run) with an injected wrangler; every refusal has a test.
+function fakeWrangler({ tables = [], countsAfterMigrate = null, importShort = false } = {}) {
+  const calls = [];
+  let counts = Object.fromEntries(TABLE_ORDER.map(t => [t, 0])), imported = null, migrated = false;
+  const fn = (...a) => {
+    calls.push(a);
+    assert.ok(a.includes('--local'), 'always --local: ' + a.join(' '));
+    assert.ok(!a.includes('--remote'));
+    if (a[0] === 'migrations') { migrated = true; if (countsAfterMigrate) counts = { ...counts, ...countsAfterMigrate }; return ''; }
+    const cmd = a[a.indexOf('--command') + 1] || '';
+    if (a.includes('--file')) { imported = a[a.indexOf('--file') + 1]; return ''; }
+    if (cmd.startsWith('SELECT name FROM sqlite_master')) return JSON.stringify([{ results: (migrated ? TABLE_ORDER : tables).map(name => ({ name })) }]);
+    if (cmd.startsWith('SELECT (SELECT count(*)')) return JSON.stringify([{ results: [imported ? fn.expected(importShort) : counts] }]);
+    if (cmd.startsWith('DELETE FROM')) { fn.deleted = cmd; return ''; }
+    throw new Error('unexpected wrangler call ' + a.join(' '));
+  };
+  fn.calls = calls;
+  return fn;
+}
+const quiet = { log: () => {}, error: () => {} };
+
+test('run(): --remote is refused before anything runs (no wrangler call, no file)', async () => {
+  const w = fakeWrangler(), dir = tmp();
+  await assert.rejects(run(['--snapshot', 'x.sqlite', '--persist-to', path.join(dir, 'd1'), '--remote'], { wrangler: w, ...quiet }), /No --remote option/);
+  assert.equal(w.calls.length, 0);
+  assert.deepEqual(fs.readdirSync(dir), []);
+});
+
+test('run(): missing --snapshot, or neither --persist-to nor --out, is refused', async () => {
+  const w = fakeWrangler();
+  await assert.rejects(run(['--persist-to', 'x'], { wrangler: w, ...quiet }), /--snapshot <file> is required/);
+  await assert.rejects(run(['--snapshot', 'x.sqlite'], { wrangler: w, ...quiet }), /--persist-to/);
+  assert.equal(w.calls.length, 0);
+});
+
+test('run(): a target that already has tables is refused FIRST: no migrations, no snapshot read, no import', async () => {
+  const w = fakeWrangler({ tables: ['bookings', 'd1_migrations'] }), dir = tmp();
+  await assert.rejects(run(['--snapshot', path.join(dir, 'does-not-exist.sqlite'), '--persist-to', path.join(dir, 'd1')], { wrangler: w, ...quiet }), /not fresh \(has tables: bookings, d1_migrations\)/);
+  assert.deepEqual(w.calls.map(a => a[0]), ['execute']);
+  assert.equal((fs.statSync(path.join(dir, 'd1')).mode & 0o777), 0o700);
+});
+
+test('run(): rows appearing after migrations are refused before the import', async () => {
+  const dir = tmp(), file = makeDemoSnapshot(path.join(dir, 'demo.sqlite'));
+  const w = fakeWrangler({ countsAfterMigrate: { pts: 1 } });
+  await assert.rejects(run(['--snapshot', file, '--persist-to', path.join(dir, 'd1')], { wrangler: w, ...quiet }), /not empty \(pts\)/);
+  assert.ok(!w.calls.some(a => a.includes('--file')));
+});
+
+test('run(): a row-count mismatch removes the imported rows and fails; a match succeeds', async () => {
+  const dir = tmp(), file = makeDemoSnapshot(path.join(dir, 'demo.sqlite'));
+  const expected = (await prepareImport(file)).counts;
+  const short = fakeWrangler({ importShort: true }); short.expected = s => (s ? { ...expected, bookings: expected.bookings - 1 } : expected);
+  await assert.rejects(run(['--snapshot', file, '--persist-to', path.join(dir, 'd1b')], { wrangler: short, ...quiet }), /Row counts differ after import: bookings .*removed again/);
+  for (const t of TABLE_ORDER) assert.match(short.deleted, new RegExp(`DELETE FROM "${t}"`));
+  assert.ok(short.deleted.indexOf('"bookings"') < short.deleted.indexOf('"pts"'), 'children before parents');
+  const ok = fakeWrangler(); ok.expected = () => expected;
+  assert.equal(await run(['--snapshot', file, '--persist-to', path.join(dir, 'd1c')], { wrangler: ok, ...quiet }), 0);
+  assert.deepEqual(ok.calls.map(a => a[0] + (a.includes('--file') ? ':file' : '')), ['execute', 'migrations', 'execute', 'execute:file', 'execute']);
+  assert.equal(ok.deleted, undefined);
 });
