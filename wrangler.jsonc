@@ -42,14 +42,19 @@
   // storage of its own; all data lives in D1.
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Writer"] }],
   // Cron Trigger (src/mail.mjs): email delivery (booking + password-reset mail) and
-  // housekeeping (expire holds, prune rate limits) every minute. Local: wrangler dev
+  // housekeeping (expire holds, prune rate limits) every minute. OFF unless CRON_ENABLED is
+  // "true" (CR 5941600057): not set here, so a deploy of this default env (real D1 id) runs
+  // nothing on a schedule until the go-live step sets it; env.preview sets it. Local: wrangler dev
   // --test-scheduled, then GET /__scheduled. Nothing is deployed from this branch.
   "triggers": { "crons": ["* * * * *"] },
   "observability": { "enabled": false },
   // Preview (approved 17 Nov 2026, item 6). Uploaded through the Cloudflare API, not
   // `wrangler deploy`. workers.dev is enabled only behind Cloudflare Access (docs §13).
-  // PAYMENT_MODE "stripe_test" is the app's test mode; no Stripe key is set, so every Stripe
-  // call fails closed before any network request. No Resend key: mail stays in preview.
+  // PAYMENT_MODE "stripe_test" is the app's test mode (PAYMENT_MODE=test is not a valid value).
+  // No Stripe key or webhook secret is set, so every non-diagnostic API route answers 503
+  // before any Stripe call or write (worker/index.mjs paymentReadiness, CR 5941600057 M6).
+  // No Resend key: mail stays in preview. Static assets: the API upload ships app/public as
+  // text modules behind docs/rc-4/preview/entry.mjs (connector cannot run the assets upload).
   // Secrets (set through the API, never committed): PT_INVITE_SECRET.
   "env": {
     "preview": {
@@ -60,7 +65,8 @@
         "EMAIL_MODE": "preview",
         "PAYMENT_MODE": "stripe_test",
         "STRIPE_INTEGRATION": "connect",
-        "APP_URL": "https://resiliencecoaching-preview.littlk.workers.dev"
+        "APP_URL": "https://resiliencecoaching-preview.littlk.workers.dev",
+        "CRON_ENABLED": "true"
       },
       "d1_databases": [
         {

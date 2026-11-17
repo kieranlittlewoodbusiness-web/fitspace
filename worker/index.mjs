@@ -15,7 +15,7 @@ import { verifyWebhook } from '../src/stripe-webhook.mjs';
 import { viewBooking, scopeFor } from '../src/scope.mjs';
 import { paymentOperation } from '../src/stripe-jobs.mjs';
 import { stripe, validatePlatformKey } from '../src/stripe.mjs';
-import { credentialStatus, open as openCredential, loadCredential } from '../src/pt-credentials.mjs';
+import { credentialStatus, open as openCredential, loadCredential, encryptionConfigured } from '../src/pt-credentials.mjs';
 import { dashboard } from '../src/views.mjs';
 import { login, signup, logout, safeUser, sessionCookie, clearCookie } from '../src/sessions.mjs';
 import { defaultSlug, publishedPts, publishedPtPage, expireHolds, adminSetupStatus, credentialById, markWebhookSeen } from '../src/public.mjs';
@@ -77,6 +77,11 @@ export async function handle(request, env) {
   // netlify/functions/platform.mjs:47: with the owner (Connect) integration a configured key that
   // does not match the payment mode fails closed for every API route except sign-in, before any write.
   if (integration !== 'pt_direct' && env.STRIPE_SECRET_KEY && route.startsWith('/api/') && !route.startsWith('/api/auth/')) validatePlatformKey(env, paymentMode);
+  // CR 5941600057 M6: netlify/functions/platform.mjs:48-49. Every non-diagnostic API route in
+  // Stripe mode needs a matching key (or, pt_direct, the credential encryption key), the
+  // platform webhook secret and an https APP_URL, checked before rate limits, Stripe calls or
+  // any write (so no stripe_jobs row is created on a misconfigured deploy).
+  if (route.startsWith('/api/')) paymentReadiness(env, route, paymentMode, integration);
   const stripeOpts = { mode: paymentMode, integration };
   const paymentOrigin = env.APP_URL ? new URL(env.APP_URL).origin : url.origin;
   const secure = url.protocol === 'https:';
@@ -148,7 +153,9 @@ export async function handle(request, env) {
   if (method === 'POST' && route === '/api/auth/forgot-password') {
     await rateLimit(db, 'forgot', client, { max: 10 });
     // Writes the reset + auth_mail_jobs row; the Cron Trigger delivers it within a minute.
-    await write(env, 'requestReset', { email: body.email });
+    // Reset off (password_reset_available=false): same generic answer, nothing written or sent
+    // (legacy password-reset #6; the Writer would otherwise read its own deployment env).
+    if (resetConfigured(env)) await write(env, 'requestReset', { email: body.email });
     return json(200, { message: RESET_MESSAGE });
   }
   if (method === 'POST' && route === '/api/auth/reset-password') {
@@ -293,6 +300,20 @@ export async function handle(request, env) {
   return null;
 }
 
+const DIAGNOSTIC = /^\/api\/(me|auth\/.*|dashboard|admin\/.*|public\/.*)$/;
+const PT_WEBHOOK = /^\/api\/stripe\/pt\/[a-f0-9-]{36}\/webhook$/;
+/** Legacy platform.mjs:47-49 (`diagnostic` routes stay reachable so the owner can see and fix
+ *  the configuration). Throws 503 before anything else runs. */
+export function paymentReadiness(env, route, paymentMode, integration) {
+  if (PT_WEBHOOK.test(route) || route.startsWith('/api/pt/stripe/') || DIAGNOSTIC.test(route)) return;
+  if (integration === 'pt_direct') {
+    if (isStripe(paymentMode) && !encryptionConfigured(env)) throw httpError(503, 'The owner must configure CREDENTIAL_ENCRYPTION_KEY as 64 random hexadecimal characters.');
+  } else validatePlatformKey(env, paymentMode);
+  if (paymentMode !== 'demo' && ((integration !== 'pt_direct' && !env.STRIPE_WEBHOOK_SECRET) || !/^https:\/\/[^/]+(?:\/)?$/.test(env.APP_URL || ''))) {
+    throw httpError(503, 'Set STRIPE_WEBHOOK_SECRET and an HTTPS APP_URL before accepting Stripe payments.');
+  }
+}
+
 /** POST /api/admin/pts: retry-safe via body.create_key; the temporary password is derived
  *  from the key (HMAC, server secret) so a retry after a lost response returns the same one
  *  while it is still unused. scrypt runs here, not in the Writer. */
@@ -307,9 +328,17 @@ function temporaryPassword(env, key) {
   return crypto.createHmac('sha256', secret).update('fitspace-pt-temporary:' + key).digest('base64url').slice(0, 16) + '!';
 }
 
+/** CR 5941600057: the Cron Trigger is OFF unless CRON_ENABLED is exactly "true". Only
+ *  env.preview sets it; production sets it at the approved go-live step. So an accidental
+ *  deploy of the default env (bound to the real D1 database) runs nothing on a schedule. */
+export async function cronTick(env) {
+  if (env.CRON_ENABLED !== 'true') return { skipped: 'CRON_ENABLED is not "true"' };
+  return runScheduled(withoutDb(env), createDb(env.DB));
+}
+
 export default {
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(runScheduled(withoutDb(env), createDb(env.DB)).then(r => console.log('RC-4 cron:', JSON.stringify(r)), e => console.error('RC-4 cron failed:', e.code || e.name || 'Error')));
+    ctx.waitUntil(cronTick(env).then(r => console.log('RC-4 cron:', JSON.stringify(r)), e => console.error('RC-4 cron failed:', e.code || e.name || 'Error')));
   },
   async fetch(request, env) {
     try {

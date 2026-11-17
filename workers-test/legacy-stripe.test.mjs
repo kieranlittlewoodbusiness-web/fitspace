@@ -71,6 +71,8 @@ describe('ported tests/stripe-netlify.test.mjs (gaps)', () => {
     const declined = { id: 'evt_' + nodeCrypto.randomBytes(8).toString('hex'), type: 'payment_intent.payment_failed', livemode: false, account: s.account, data: { object: { id: 'pi_' + nodeCrypto.randomBytes(6).toString('hex'), amount: 1500, currency: 'gbp', livemode: false, metadata: { booking_id: a.body.booking_id } } } };
     expect((await deliver(declined)).status).toBe(200);
     expect(await db().get('SELECT status,paid_at FROM bookings WHERE id=?', a.body.booking_id)).toEqual({ status: 'pending', paid_at: null });
+    // CR 5941600057: stripe-netlify #4 asserts the decline is recorded for the customer.
+    expect((await db().get('SELECT payment_error FROM bookings WHERE id=?', a.body.booking_id)).payment_error).toMatch(/card payment failed/i);
     expect(await available(s)).toBe(0);
     expect((await deliver(sessionEvent(s, a.body.booking_id, csA, 'checkout.session.expired', { payment_status: 'unpaid' }))).status).toBe(200);
     expect((await db().get('SELECT status FROM bookings WHERE id=?', a.body.booking_id)).status).toBe('expired');
@@ -100,6 +102,42 @@ describe('ported tests/stripe-netlify.test.mjs (gaps)', () => {
     expect(await db().get('SELECT status,refund_status,refunded_pence FROM bookings WHERE id=?', bk)).toEqual({ status: 'cancelled', refund_status: 'succeeded', refunded_pence: 1500 });
     expect(await available(s)).toBe(2);
     expect(await revenue()).toBe(0);
+  });
+
+  // CR 5941600057 M6: platform.mjs:48-49 readiness, before any Stripe call or write.
+  it('Stripe mode without a webhook secret, with an http APP_URL, or without/with an empty key: 503 before Stripe and before any row', async () => {
+    const s = await pt();
+    const admin = await seedUser({ role: 'admin' });
+    const calls = mockStripe();
+    const cases = {
+      no_webhook_secret: stripeEnv({ STRIPE_WEBHOOK_SECRET: undefined }),
+      empty_webhook_secret: stripeEnv({ STRIPE_WEBHOOK_SECRET: '' }),
+      http_app_url: stripeEnv({ APP_URL: 'http://example.test' }),
+      app_url_with_path: stripeEnv({ APP_URL: 'https://example.test/app' }),
+      no_app_url: stripeEnv({ APP_URL: undefined }),
+      no_key: stripeEnv({ STRIPE_SECRET_KEY: undefined }),
+      empty_key: stripeEnv({ STRIPE_SECRET_KEY: '' })
+    };
+    for (const [name, e] of Object.entries(cases)) {
+      const r = await checkout(s, s.users[0], e);
+      expect(r.status, name).toBe(503);
+      expect(JSON.stringify(r.body), name).not.toMatch(/sk_|whsec_/);
+      // diagnostic routes stay reachable so the owner can see what is missing
+      expect((await worker.fetch(getRequest(admin, '/api/me'), e)).status, name).toBe(200);
+      expect((await worker.fetch(getRequest(admin, '/api/dashboard'), e)).status, name).toBe(200);
+    }
+    expect(calls).toHaveLength(0);
+    expect(await db().get('SELECT count(*) n FROM bookings WHERE block_id=?', s.blockId)).toEqual({ n: 0 });
+    expect(await db().get('SELECT count(*) n FROM stripe_jobs j JOIN bookings b ON b.id=j.target_id WHERE b.block_id=?', s.blockId)).toEqual({ n: 0 });
+    // the PT webhook route is diagnostic; the platform webhook is not
+    expect((await worker.fetch(new Request('http://example.test/api/stripe/webhook', { method: 'POST', body: '{}' }), cases.no_webhook_secret)).status).toBe(503);
+    // control: the same checkout with a ready configuration reaches Stripe
+    expect((await checkout(s, s.users[1])).status).toBe(200);
+    expect(calls).toHaveLength(1);
+    // pt_direct in Stripe mode needs the credential encryption key instead of a platform key/secret
+    const direct = await checkout(s, s.users[2], stripeEnv({ STRIPE_INTEGRATION: 'pt_direct', CREDENTIAL_ENCRYPTION_KEY: 'short' }));
+    expect(direct.status).toBe(503);
+    expect(calls).toHaveLength(1);
   });
 
   it('invalid modes and mismatched keys are rejected; setup stays readable without webhook secrets', async () => {

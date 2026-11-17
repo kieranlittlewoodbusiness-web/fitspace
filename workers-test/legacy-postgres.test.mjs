@@ -201,6 +201,33 @@ describe('ported tests/password-reset.test.mjs (gaps)', () => {
     expect((await reset(one, 'SecondShouldFail123!')).status).toBe(400);
   });
 
+  // CR 5941600057: password-reset #6 in full (limits persist with an identical answer; reset off
+  // is explicit via /api/me and sends nothing; back on is reported again).
+  it('request limits persist with an identical generic answer; unavailable configuration is explicit and sends nothing', async () => {
+    await db().run('DELETE FROM password_reset_limits');
+    await client().signup('limits@example.com');
+    await client().signup('reset-off@example.com');
+    const jobs = async email => (await db().get('SELECT count(*) n FROM auth_mail_jobs WHERE recipient=?', email)).n;
+    const ask = (email, e) => client(e).request('/api/auth/forgot-password', 'POST', { email });
+    const first = await ask('limits@example.com');
+    expect(first.status).toBe(200);
+    await ask('limits@example.com'); await ask('limits@example.com');
+    expect(await jobs('limits@example.com')).toBe(3);
+    const limited = await ask('limits@example.com');
+    expect(limited.status).toBe(200);
+    expect(limited.data).toEqual(first.data);
+    expect(await jobs('limits@example.com')).toBe(3);
+    const off = prodEnv({ RESET_EMAIL_MODE: 'off' });
+    expect((await client(off).request('/api/me')).data.password_reset_available).toBe(false);
+    const quiet = await ask('reset-off@example.com', off);
+    expect(quiet.status).toBe(200);
+    expect(quiet.data).toEqual(first.data);
+    expect(await jobs('reset-off@example.com')).toBe(0);
+    expect(await db().get("SELECT count(*) n FROM password_resets r JOIN users u ON u.id=r.user_id WHERE u.email='reset-off@example.com'")).toEqual({ n: 0 });
+    expect((await client().request('/api/me')).data.password_reset_available).toBe(true);
+    await db().run("DELETE FROM auth_mail_jobs WHERE recipient IN ('limits@example.com','reset-off@example.com')"); // keep later cron tests independent
+  });
+
   it('email failures stay private: a Resend failure is retried by cron, never shown to the requester', async () => {
     await db().run('DELETE FROM password_reset_limits');
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ message: 'provider exploded: secret detail' }), { status: 500 }));
