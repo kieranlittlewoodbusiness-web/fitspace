@@ -1,0 +1,10 @@
+# Local-only files (RC-1 spike). Never commit credentials.
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+node_modules/
+.wrangler/
+.netlify/
+dist-spike/
