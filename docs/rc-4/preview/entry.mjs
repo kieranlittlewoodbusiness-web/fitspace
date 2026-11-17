@@ -18,7 +18,7 @@ const ASSETS = {
   async fetch(request) {
     const path = new URL(request.url).pathname;
     const [body, type] = FILES[path === '/' ? '/index.html' : path] || FILES['/index.html'];
-    return new Response(request.method === 'HEAD' ? null : body, { status: 200, headers: { 'content-type': type, 'cache-control': 'no-cache' } });
+    return new Response(request.method === 'HEAD' ? null : body, { status: 200, headers: { 'content-type': type, 'cache-control': 'no-store' } });
   }
 };
 export default {

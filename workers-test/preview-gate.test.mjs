@@ -302,3 +302,31 @@ describe('preview gate: return path and fragment', () => {
     expect((await me.json()).preview_pt_email).toBe('preview-trainer@example.com');
   });
 });
+
+
+describe('preview assets and reset-password document', () => {
+  it('unlocked GET /reset-password?token= returns 200 HTML (not a 30x) with no-store and versioned assets', async () => {
+    const unlocked = await worker.fetch(req(GATE_PATH, { method: 'POST', password: PASSWORD }), gated());
+    const cookie = cookieOf(unlocked);
+    const path = '/reset-password?token=' + SAMPLE_TOKEN;
+    const r = await worker.fetch(req(path, { cookie }), gated());
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type')).toMatch(/text\/html/);
+    expect(r.headers.get('cache-control')).toMatch(/no-store/);
+    expect(r.headers.get('location')).toBeNull();
+    const html = await r.text();
+    expect(html).toMatch(/\/app\.js\?v=[a-f0-9]+/);
+    expect(html).toMatch(/\/styles\.css\?v=[a-f0-9]+/);
+    expect(html).not.toMatch(/This preview is locked/);
+  });
+
+  it('unlocked GET / and /app.js send Cache-Control: no-store', async () => {
+    const unlocked = await worker.fetch(req(GATE_PATH, { method: 'POST', password: PASSWORD }), gated());
+    const cookie = cookieOf(unlocked);
+    for (const path of ['/', '/app.js', '/styles.css', '/api/me']) {
+      const r = await worker.fetch(req(path, { cookie }), gated());
+      expect(r.status, path).toBe(200);
+      expect(r.headers.get('cache-control'), path).toMatch(/no-store/);
+    }
+  });
+});

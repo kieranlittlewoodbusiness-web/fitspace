@@ -179,6 +179,32 @@ test('rendered auth views do not contain a stray } or uninterpolated ${}',()=>{
 });
 
 test('reset-password accepts a ?token= query and strips it from the URL',()=>{
-  assert.match(appJs,/URLSearchParams\(location\.search\)\.get\('token'\)/);
-  assert.match(appJs,/history\.replaceState\(null,'',location\.pathname\)/);
+  assert.match(appJs,/function readResetToken\(loc\)\{const query=new URLSearchParams\(loc\.search\)\.get\('token'\)/);
+  assert.match(appJs,/history\.replaceState\(null,'','\/reset-password'\)/);
+});
+
+test('readResetToken takes ?token= on any path and the hash only on /reset-password',()=>{
+  const start=appJs.indexOf('function readResetToken');
+  const end=appJs.indexOf('function captureResetToken');
+  assert.ok(start>=0&&end>start);
+  const readResetToken=new Function(appJs.slice(start,end)+';return readResetToken;')();
+  assert.equal(readResetToken({pathname:'/reset-password',search:'?token=from-query',hash:'#from-hash'}),'from-query');
+  assert.equal(readResetToken({pathname:'/',search:'?token=from-query',hash:''}),'from-query');
+  assert.equal(readResetToken({pathname:'/login',search:'?token=from-query',hash:'#ignored'}),'from-query');
+  assert.equal(readResetToken({pathname:'/reset-password',search:'',hash:'#from-hash'}),'from-hash');
+  assert.equal(readResetToken({pathname:'/',search:'',hash:'#from-hash'}),'');
+  assert.equal(readResetToken({pathname:'/reset-password',search:'',hash:''}),'');
+});
+
+test('the reset token is captured before popstate routing, and /reset-password is handled first',()=>{
+  const boot=appJs.indexOf("window.addEventListener('popstate',renderRoute)");
+  const capture=appJs.lastIndexOf('captureResetToken();', boot);
+  assert.ok(boot>=0&&capture>=0&&capture<boot,'captureResetToken must run before the popstate listener is attached');
+  assert.match(appJs,/captureResetToken\(\);if\(location\.pathname==='\/reset-password'\)\{await refreshMe\(\)/);
+});
+
+test('index.html requests versioned app.js and styles.css',()=>{
+  const html=fs.readFileSync(path.join(__dirname,'../public/index.html'),'utf8');
+  assert.match(html,/\/styles\.css\?v=[a-f0-9]{12}/);
+  assert.match(html,/\/app\.js\?v=[a-f0-9]{12}/);
 });
