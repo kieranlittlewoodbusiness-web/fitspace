@@ -1,7 +1,7 @@
 # RC-4: storage port to Cloudflare D1
 
 Status: **phase 2 of 4, local only** (phase 2 + CR review 5940135102 fixes). Decision: Kieran chose D1 (17 Nov 2026). Base `main` 7cebef2, branch `rc-4-d1`.
-Nothing here has touched a Cloudflare account. No database was created, nothing was deployed, and no Stripe call was made.
+Phases 1–4 were local only. Cloudflare was touched only in the approved steps recorded in §12 (real D1 created, empty; remote rehearsal) and §13 (preview Worker, parked behind a disabled workers.dev route). No Stripe call was made.
 
 ## 1. Architecture
 
@@ -140,7 +140,21 @@ PT-owned and per-tenant tables (`blocks`, `bookings`, `class_sessions`, `attenda
 
 **Guard mutations (CR 5940914487 M5).** `node scripts/guard-mutations.mjs` disables one guard at a time, runs the Workers suite without the scope lint and restores the file. All 16 (11 `db.guard`s, the auth-mail claim, the two `create_key` unique indexes, the PT webhook event-match check, the `PT_INVITE_SECRET` length check) are killed by a behavioural test. Tests in `workers-test/guards-direct.test.mjs` call the ops directly on D1 (Writer bypassed) with concurrent callers, or interleave a competing commit between an op's reads and its batch.
 
-## 8. Admin bootstrap (outside the request path)
+
+**CR 5941600057 M4 (structural guarantee, plus lint).** Static checks kept losing, so the main defence is now structural.
+- **Structural:**
+  - `createDb()` returns a frozen wrapper that does not expose the raw binding (no `.d1`).
+  - `handle()`, the Writer (`appEnv`) and the cron (`cronTick`) hand routes, ops and views an env built by `withoutDb()`, which is frozen and has no `DB`. So `env.DB`, `const { DB: x } = env` and `env['DB']` downstream are `undefined`, and the only D1 handle there is the wrapper.
+- **Lint additions:**
+  - `\xHH`, `\uHHHH` and `\u{…}` escapes and line continuations are decoded.
+  - `,` is a table lead-in (comma joins).
+  - `get/all/run/stmt/exec/prepare/batch/guard` calls on any receiver other than `db` (or a statement from `prepare`/`stmt`) are reported and must be in `RECEIVERS`. There are 4 today: two node:sqlite calls in the import CLI, and the Durable Object `get`/RPC `run`.
+  - Banned: `db` aliases (`= db`, `: db`, `=> db`, `? db`); the identifier `DB` except in `createDb(env.DB)`; destructured or computed `env`; `this.env`; `Reflect`; any `cloudflare:workers` import except the Writer's `DurableObject`.
+- **Tests:**
+  - 15 new lint bypass cases (CR's 6 plus neighbours).
+  - `workers-test/scope-runtime.test.mjs`: one runtime test per CR case. It runs `GET /api/dashboard` as each of two PTs: exactly its own bookings, and no id of the other PT. It also checks the structure (frozen wrapper without `d1`; `DB` read exactly twice per request, both at the entry point; the Writer's `appEnv` has no `DB`).
+- **Mutation run:** `node workers-test/scope-bypass-mutations.mjs` injects each CR case into `views.mjs` and `index.mjs`. 12/12 are killed (the lint and the runtime test both fail). With the env case in `index`, the request fails closed (503); removing `withoutDb` turns the same injection into a cross-PT leak (paired case, killed).
+- `Reflect.get` stays the documented residual risk, and is now banned by the lint as well.
 ```
 ADMIN_EMAIL=you@example.com ADMIN_NAME="Site Admin" node scripts/bootstrap-admin.mjs --local [--persist-to <dir>]
 # password from ADMIN_PASSWORD or stdin; never printed or written in plain text
@@ -262,3 +276,34 @@ Everything was done through the Cloudflare connector's API (no wrangler login, n
   - Planned policy once the owner enables Zero Trust: a self-hosted app on the workers.dev hostname, Allow, include owner email (1 address), login method One-time PIN only, session 24h.
 - **CPU check (scrypt, about 27 ms): NOT RUN.** There's no way to invoke the deployed Worker without the public route, other than an edge-preview session, which needs a preview token and so isn't used.
   - It will run after Access is in place and the route is on: the owner signs in once, then the Worker's telemetry is read for `exceededCpu` / 1102.
+
+## 14. CR 5941600057 fixes (on top of c386472)
+
+- **M4:** see §7 (structural guarantee, lint, runtime tests, bypass mutations 13/13).
+- **M6, Stripe readiness** (`worker/index.mjs` `paymentReadiness`, legacy `platform.mjs:47-49`).
+  - Every non-diagnostic API route in Stripe mode needs:
+    - a key matching the mode (pt_direct: `CREDENTIAL_ENCRYPTION_KEY`);
+    - `STRIPE_WEBHOOK_SECRET` (Connect);
+    - an https origin-only `APP_URL`.
+  - It answers 503 before rate limits, Stripe or any row. This also closes the "missing or empty key writes a `stripe_jobs` row" gap.
+  - Diagnostic routes are unchanged: `/api/me`, `/api/auth/*`, `/api/dashboard`, `/api/admin/*`, `/api/public/*`, `/api/pt/stripe/*` and the PT webhook.
+  - Test: 7 misconfigurations, then 0 Stripe calls, 0 bookings and 0 jobs; diagnostics return 200; the control reaches Stripe; pt_direct is covered too.
+- **Cron:** off unless `CRON_ENABLED` is exactly `"true"` (`cronTick`). Only `env.preview` sets it. Production sets it at the approved go-live step, so a deploy of the default env (real D1 id) runs nothing on a schedule. Tests: `cron-guard` (3), `tests/remote-guards` (3).
+- **Generators:** `generate.mjs` (its step 2 runs down migrations) and `preview-apply.mjs` refuse the production id and non-uuids.
+- **Snapshot import:**
+  - `run()` is exported, with an injectable wrangler; the real one refuses anything without `--local`.
+  - Freshness (no tables at all) is checked first, before migrations or reading the snapshot.
+  - The persist dir is 0700.
+  - A count mismatch deletes the imported rows again.
+  - `.rc4-import/` and `import.sql` are gitignored.
+  - 5 new tests; mutating out each of the 5 refusals fails a test.
+- **Route parity:** (method, route) pairs are parsed from `app/server.cjs`, in all four forms. Changing a legacy method (POST→PUT, POST→GET) fails the test; 3 mutations were checked.
+- **Weak ports strengthened:**
+  - password-reset #6: the request limit persists with an identical answer; with reset off, `password_reset_available=false`, the generic 200 is returned and nothing is written (the route no longer calls the Writer when reset is off).
+  - stripe-netlify #4: `payment_error` is asserted after a decline.
+- **Guard mutations:** 22/22 killed (16 earlier plus 6 new: payment readiness ×2, reset-off, cron gate, Writer env, wrapper). The route env one is an equivalent mutant on its own and is covered by the paired bypass case above.
+- **Preview (parked, not redeployed):** the next upload must carry `CRON_ENABLED` (added to `gen-upload.mjs`). With M6, its Stripe-mode payment routes answer 503 by design, because there's no key or webhook secret.
+- **Follow-ups (not fixed here):**
+  - Minors 2–4 (mail backoff and attempt cap, the Resend key after an error, a refund-validation failure after the Stripe refund).
+  - `bootstrap-admin --remote --confirm-remote` can reach the real id (owner-only by design).
+  - A browser test of `app.js` `create_key`.

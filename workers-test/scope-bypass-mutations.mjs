@@ -8,6 +8,12 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
+// If the run is interrupted, put the mutated file back before exiting.
+let pending = null; // [file, original]
+const restore = () => { if (pending) { writeFileSync(pending[0], pending[1]); pending = null; } };
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { restore(); process.exit(130); });
+process.on('exit', restore);
+
 const SPLIT = "['SELECT b.* FROM', 'bookings b'].join(' ')";
 const CASES = {
   db_alias: `(() => { const h = db; return h.all(${SPLIT}); })()`,
@@ -37,13 +43,25 @@ for (const [where, [file, from, to, prep]] of Object.entries(TARGETS)) {
     if (original.split(from).length !== 2) { rows.push({ where, name, result: 'ERROR: anchor not found once' }); continue; }
     let mutated = original.replace(from, to(code));
     if (name === 'env_destructuring') mutated = prep(mutated);
-    writeFileSync(file, mutated);
+    pending = [file, original]; writeFileSync(file, mutated);
     try {
       const lint = summary(vitest('workers-test/scope-lint.test.mjs'));
       const rt = summary(vitest('workers-test/scope-runtime.test.mjs'));
       rows.push({ where, name, lint: lint.failed ? 'FAIL' : 'pass', runtime: rt.failed ? 'FAIL' : 'pass', runtimeDetail: rt.tests + (rt.first ? ' | ' + rt.first : ''), result: lint.failed && rt.failed ? 'KILLED' : 'SURVIVED' });
-    } finally { writeFileSync(file, original); }
+    } finally { writeFileSync(file, original); pending = null; }
   }
+}
+// Paired case: CR's env-destructuring bypass in index WITHOUT the structural guard (withoutDb)
+// must LEAK (cross-PT rows, not a 503), proving withoutDb is what makes it fail closed.
+if (!only.length || only.includes('env_destructuring_without_withoutDb')) {
+  const file = 'worker/index.mjs', original = readFileSync(file, 'utf8');
+  const mutated = original.replace(INDEX_FROM, TARGETS.index[2](CASES.env_destructuring)).replace('  env = withoutDb(env);\n', '  env = { ...env };\n');
+  pending = [file, original]; writeFileSync(file, mutated);
+  try {
+    const rt = summary(vitest('workers-test/scope-runtime.test.mjs'));
+    const leaked = /expected \[ …\(4\) \] to deeply equal \[ …\(2\) \]/.test(rt.first);
+    rows.push({ where: 'index', name: 'env_destr_no_withoutDb', lint: '-', runtime: rt.failed ? 'FAIL' : 'pass', runtimeDetail: rt.tests + ' | ' + rt.first, result: leaked ? 'KILLED' : 'SURVIVED' });
+  } finally { writeFileSync(file, original); pending = null; }
 }
 for (const r of rows) console.log(`${r.result.padEnd(8)} ${r.where.padEnd(5)} ${r.name.padEnd(22)} lint=${r.lint} runtime=${r.runtime}  ${r.runtimeDetail || ''}`);
 const killed = rows.filter(r => r.result === 'KILLED').length;

@@ -22,7 +22,9 @@ const metadata = {
     { type: 'plain_text', name: 'EMAIL_MODE', text: 'preview' },
     { type: 'plain_text', name: 'PAYMENT_MODE', text: 'stripe_test' },
     { type: 'plain_text', name: 'STRIPE_INTEGRATION', text: 'connect' },
-    { type: 'plain_text', name: 'APP_URL', text: 'https://resiliencecoaching-preview.littlk.workers.dev' }
+    { type: 'plain_text', name: 'APP_URL', text: 'https://resiliencecoaching-preview.littlk.workers.dev' },
+    // CR 5941600057: scheduled() is a no-op without it (the parked 15:45 upload predates the gate).
+    { type: 'plain_text', name: 'CRON_ENABLED', text: 'true' }
   ],
   migrations: { new_tag: 'v1', new_sqlite_classes: ['Writer'] },
   keep_bindings: ['secret_text', 'secret_key'],

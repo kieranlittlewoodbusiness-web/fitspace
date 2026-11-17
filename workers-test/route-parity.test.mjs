@@ -41,7 +41,40 @@ const ROUTES = [
   ['POST', '/api/pt/stripe/status', '/api/pt/stripe/status']
 ];
 
+// CR 5941600057: (method, route) pairs parsed from app/server.cjs, so a changed legacy METHOD
+// fails too. Forms: `req.method==='X'&&route==='/p'`, `route==='/p'&&req.method==='X'`,
+// `route==='/p'` (any method), and `const n=route.match(/re/)` + `req.method==='X'&&n` / `n&&req.method==='X'`.
+export function legacyPairs(src) {
+  const pairs = [];
+  for (const m of src.matchAll(/req\.method==='([A-Z]+)'&&route==='([^']+)'/g)) pairs.push([m[1], m[2]]);
+  for (const m of src.matchAll(/route==='([^']+)'&&req\.method==='([A-Z]+)'/g)) pairs.push([m[2], m[1]]);
+  for (const m of src.matchAll(/route==='([^']+)'(?!&&req\.method)/g)) if (!pairs.some(p => p[1] === m[1]) && !new RegExp("req\\.method==='[A-Z]+'&&route==='" + m[1].replace(/[/.]/g, '\\$&') + "'").test(src)) pairs.push(['ANY', m[1]]);
+  for (const m of src.matchAll(/const (\w+)=route\.match\(\/(.+?)\/\)/g)) {
+    const [, name, re] = m;
+    const methods = [...src.matchAll(new RegExp("(?:req\\.method==='([A-Z]+)'&&" + name + "\\b|\\b" + name + "&&req\\.method==='([A-Z]+)')", 'g'))].map(x => x[1] || x[2]);
+    if (!methods.length) pairs.push(['?', '/' + re + '/']);
+    for (const method of methods) pairs.push([method, '/' + re + '/']);
+  }
+  return pairs.map(([method, r]) => method + ' ' + r).sort();
+}
+const matches = (legacyRoute, path) => legacyRoute.startsWith('/^') ? new RegExp(legacyRoute.slice(1, -1).replace(/\\\//g, '/')).test(path) : legacyRoute === path;
+
 describe('legacy route parity', () => {
+  it('methods: every (method, route) pair in app/server.cjs is in the table with the SAME method, and vice versa', () => {
+    const pairs = legacyPairs(legacy);
+    expect(pairs.length).toBe(ROUTES.length);
+    for (const pair of pairs) {
+      const [method, r] = [pair.slice(0, pair.indexOf(' ')), pair.slice(pair.indexOf(' ') + 1)];
+      const hit = ROUTES.filter(([m, path]) => matches(r, path) && (method === 'ANY' || m === method));
+      expect(hit.length, pair).toBeGreaterThan(0);
+    }
+    for (const [m, path] of ROUTES) expect(pairs.some(p => { const [method, r] = [p.slice(0, p.indexOf(' ')), p.slice(p.indexOf(' ') + 1)]; return matches(r, path) && (method === 'ANY' || method === m); }), m + ' ' + path).toBe(true);
+    // the parser must actually see methods: a changed legacy method (POST -> PUT) fails above
+    const mutated = legacyPairs(legacy.replace("req.method==='POST'&&cancelRoute", "req.method==='PUT'&&cancelRoute"));
+    expect(mutated).toContain('PUT /^\\/api\\/bookings\\/([^/]+)\\/cancel$/');
+    expect(mutated).not.toContain('POST /^\\/api\\/bookings\\/([^/]+)\\/cancel$/');
+  });
+
   it('the table covers every literal route in app/server.cjs', () => {
     const literals = [...legacy.matchAll(/route==='([^']+)'/g)].map(m => m[1]);
     expect(literals.length).toBeGreaterThan(20);
