@@ -1,7 +1,8 @@
-// RC-4 (Cloudflare D1 port): LOCAL ONLY. Used by `wrangler dev` (local mode) and the
-// Vitest Workers integration. Not approved for deploy: no account_id, routes, workers.dev
-// or preview URLs, and the D1 database_id below is a PLACEHOLDER that matches no real
-// database. Creating the real D1 database (and swapping in its id) needs Kieran's approval.
+// RC-4 (Cloudflare D1 port). Used by `wrangler dev` (local mode) and the Vitest Workers
+// integration. Not approved for deploy: no account_id, routes, workers.dev or preview URLs.
+// The D1 database below is the REAL database (created 17 Nov 2026 with Kieran's approval,
+// location hint weur). It is EMPTY: migrations are applied only at the approved go-live step
+// (`wrangler d1 migrations apply DB --remote`). Local runs never touch it (no --remote).
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "resiliencecoaching",
@@ -27,9 +28,9 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "resiliencecoaching-local",
-      // PLACEHOLDER for local development only (wrangler dev / vitest). Not a real database.
-      "database_id": "00000000-0000-4000-8000-000000000000",
+      "database_name": "resiliencecoaching",
+      // Real D1 database (weur). Local dev/tests use a local copy; nothing here runs remotely.
+      "database_id": "fd8a613f-4dd4-462b-83e0-d7673031a6fc",
       "migrations_dir": "migrations"
     }
   ],

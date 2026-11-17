@@ -19,7 +19,7 @@ Nothing here has touched a Cloudflare account. No database was created, nothing 
 | Rate limits | `src/ratelimit.mjs` | One D1 upsert … `RETURNING count` per attempt, key `scope:sha256(ip)`. Used on forgot/reset password now; login/signup when ported (phase 3). |
 | Validation | `src/validate.mjs` | email/text/password (auth.cjs), toEpoch (db.cjs), num/blockData/colours/branding (server.cjs); errors are 400s. |
 | Admin bootstrap | `scripts/bootstrap-admin.mjs` | One-off, outside the request path (§8). |
-| Local config | `wrangler.jsonc` | D1 binding `DB` with **placeholder `database_id` `00000000-0000-4000-8000-000000000000` (local only)**. DO binding `WRITER` (SQLite-backed class, Free-plan compatible). `workers_dev:false`, `preview_urls:false`, no account_id, no routes. |
+| Local config | `wrangler.jsonc` | D1 binding `DB` → **real database `resiliencecoaching`, id `fd8a613f-4dd4-462b-83e0-d7673031a6fc`, location hint `weur` (created 17 Nov 2026, approved by Kieran; EMPTY until go-live, see §12)**. Local dev/tests still use a local copy. DO binding `WRITER` (SQLite-backed class, Free-plan compatible). `workers_dev:false`, `preview_urls:false`, no account_id, no routes. |
 
 ### CR items from spike PR #1
 - **import.meta.url define removed.** The Worker path no longer uses `createRequire`, runtime `require(\`${runtimeRoot}/…\`)`, `import.meta.url`, `LAMBDA_TASK_ROOT` or `node:fs` reads of `app/public`. esbuild bundles only what is imported, so the nested v4 `fitspace/` tree is never reached and no CommonJS upload rules are needed. Dry-run bundle: 22.79 KiB / 7.30 KiB gzip at phase 1; **58.84 KiB / 16.54 KiB gzip** at phase 2. `netlify/functions/platform.mjs` is untouched; it stays the live Netlify path until cutover and is deleted then.
@@ -218,3 +218,21 @@ The old suites still run in `npm test` (they test the Netlify path, which stays 
 | `tests/migration-v6.test.mjs` (1) | Not ported: D1 starts at the current schema (0001 = `app/db.cjs` at 7cebef2, parity in `migrations-rollback`). Older snapshots are upgraded by `app/db.cjs connect()` inside the import, and this test keeps running in `npm test` |
 
 Also new: `route-parity.test.mjs` (every `app/server.cjs` route reaches a Worker handler while signed in; no 501 in `src/` or `worker/`).
+
+## 12. Real D1 database and remote rehearsal (17 Nov 2026, approved by Kieran 15:27 UK)
+
+Done through the Cloudflare connector's API (wrangler is not logged in). Scope was exactly the three approved items; no Worker, deploy, preview, secrets, Access, bootstrap, Stripe, Resend, DNS or Netlify.
+
+1. **Real database**: `resiliencecoaching`, uuid `fd8a613f-4dd4-462b-83e0-d7673031a6fc`, `primary_location_hint: weur` (Western Europe, closest to the UK; no `jurisdiction`, because the `eu` jurisdiction excludes the UK and adds placement limits we don't need). Created 15:29 UK, running in WEUR, read replication disabled. **No migrations applied**: `sqlite_master` has no user objects (0 tables). Migrations wait for the go-live step (`wrangler d1 migrations apply DB --remote`).
+2. **Rehearsal** on `resiliencecoaching-rehearsal-20261117` (uuid `23a1910b-7fe8-450d-9e7b-c1d694dc0c67`, WEUR), scripts from `docs/rc-4/d1-rehearsal/generate.mjs` (outside the scope-lint paths on purpose: unscoped rehearsal DDL, not app code):
+   - Applied 0001 (21 statements), 0002 (26), 0003 (2), 0004 (6) and 0005 (2) in order via `/query` batches. Each batch ends with `INSERT INTO d1_migrations(name)` (wrangler's table shape), so 5 rows are recorded. The result is 23 tables and 12 indexes. The schema fingerprint `5610bf7e` is identical to the same migrations in local SQLite.
+   - Synthetic data only (`example.com` users, a `REHEARSAL PT`, one block, session and booking). The `batch_guards` CHECK rejected a failed guard remotely (`batch_guard_failed`).
+   - Down 0005 → 0004 → 0003 → 0002: each removed its own `d1_migrations` row. At the 0001 level there are 17 tables, the column parity with `app-schema-7cebef2.json` has 0 mismatches, and the synthetic rows are kept.
+   - Re-applied 0002 → 0005: 5 migrations recorded again, fingerprint `5610bf7e`, and the `sqlite_master` diff is empty.
+   - Note: the up files contain `--` comments with `;` in them. A line-based splitter breaks 0002, so the generator uses a comment- and string-aware splitter (wrangler handles this itself).
+3. **Time Travel drill**:
+   - Bookmark `00000000-00000028-00005126-dcbfb1dbecb3b686300635beea6025cd`.
+   - Change: the PT brand_name was set to `CHANGED AFTER BOOKMARK` and the synthetic user `tt-drill-user` was added (users 2 → 3).
+   - Restored to the bookmark (previous_bookmark `00000000-ffffffff-00005126-b3a489e1808605e8d65e87bfa054ae7c`). After the restore, brand_name is `REHEARSAL PT`, there are 2 users, the drill user is gone and d1_migrations still has 5 rows.
+   - The rehearsal database was then **deleted**. The account list now shows only `resiliencecoaching`, and GET by id returns 404.
+
