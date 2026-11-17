@@ -1,6 +1,6 @@
 // RC-4 phase 4: snapshot (live app SQLite format) -> D1 import, verified against a SQLite
 // database built from migrations 0001-0004 (D1 is SQLite). Demo data only.
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,11 +8,14 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { makeDemoSnapshot } from '../scripts/demo-snapshot.mjs';
-import { prepareImport, TABLE_ORDER, run } from '../scripts/snapshot-import.mjs';
+import { prepareImport, TABLE_ORDER, run, pinnedWrangler } from '../scripts/snapshot-import.mjs';
 import { CONFIRM_PHRASE } from '../src/cutover.mjs';
 
 const root = path.join(import.meta.dirname, '..');
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'rc4-snap-test-'));
+// CR 5943169048 nit: remove every rc4-snap-test-* folder this file creates.
+const dirs = [];
+const tmp = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'rc4-snap-test-')); dirs.push(d); return d; };
+after(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); });
 const sha = f => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
 function d1Like() {
   const db = new DatabaseSync(':memory:');
@@ -137,3 +140,12 @@ test('run(): a row-count mismatch removes the imported rows and fails; a match s
   assert.deepEqual(ok.calls.map(a => a[0] + (a.includes('--file') ? ':file' : '')), ['execute', 'migrations', 'execute', 'execute:file', 'execute']);
   assert.equal(ok.deleted, undefined);
 });
+
+// CR 5943169048 nit: the backup check inside the pinned wrangler (the primary --remote refusal
+// in run() is tested above). Nothing is executed: every call here is refused before exec.
+test('pinnedWrangler refuses any call without --local (backup to the run() --remote refusal)', () => {
+  for (const args of [['execute', 'DB', '--remote', '--command', 'SELECT 1'], ['execute', 'DB', '--command', 'SELECT 1'], ['migrations', 'apply', 'DB'], []]) {
+    assert.throws(() => pinnedWrangler(...args), /refusing: wrangler without --local/, JSON.stringify(args));
+  }
+});
+

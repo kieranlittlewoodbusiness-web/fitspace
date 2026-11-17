@@ -2,7 +2,7 @@
 // object-property alias, env destructuring, comma join, \u and \x escapes). CR's probes went
 // through GET /api/dashboard (worker/index.mjs -> src/views.mjs dashboard), so each case asserts
 // that route returns only the caller's PT data, plus the structural guarantee behind it.
-// `node scripts/scope-bypass-mutations.mjs` injects each bypass into index and views and
+// `node workers-test/scope-bypass-mutations.mjs` injects each bypass into index and views and
 // requires both this file and the scope lint to fail.
 import { describe, it, expect, beforeAll } from 'vitest';
 import { env, exports } from 'cloudflare:workers';

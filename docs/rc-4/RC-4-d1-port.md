@@ -138,7 +138,7 @@ PT-owned and per-tenant tables (`blocks`, `bookings`, `class_sessions`, `attenda
 
 **M4 hardening (CR 5940914487).** Table names match when quoted (`"x"`, `` `x` ``, `[x]`), schema-qualified (`main.x`) or separated from `FROM/JOIN/UPDATE/INTO` by comments (`FROM/**/x`, `FROM -- c` + newline); literal escapes (`\n`) are decoded before matching. Four more structural rules: (1) `worker/index.mjs` makes **no** SQL calls at all (`db.get/all/run/stmt/guard/exec`, `.prepare/.batch/.exec`); (2) every SQL call whose SQL is not one plain literal (concatenation or any other expression, a template with `${}`, an identifier) is listed in `NONLITERAL` with a reason and argument fingerprint; (3) raw access (`db[...]`, method references, destructuring `all/stmt/guard/batch/prepare/d1`, `.d1`, `env.DB` other than `createDb(env.DB)`) is forbidden outside `src/db.mjs`; (4) any use of a module-level SQL constant outside its own file must be listed in `CONST_USES`. Each CR bypass (concatenated, template, quoted, backtick, schema-qualified, block and line comments, `pt_stripe_credentials`, `users`, `pts`, the allowlisted `DUPLICATE_REPORT_SQL` constant) and each aliasing form has its own failing-case test, injected both into `worker/index.mjs` and into an allowlisted `src` function. Residual limit: JavaScript reflection (e.g. `Reflect.get(db, 'all')`) cannot be linted statically; review plus the cross-tenant route tests cover it.
 
-**Guard mutations (CR 5940914487 M5).** `node scripts/guard-mutations.mjs` disables one guard at a time, runs the Workers suite without the scope lint and restores the file. All 16 (11 `db.guard`s, the auth-mail claim, the two `create_key` unique indexes, the PT webhook event-match check, the `PT_INVITE_SECRET` length check) are killed by a behavioural test. Tests in `workers-test/guards-direct.test.mjs` call the ops directly on D1 (Writer bypassed) with concurrent callers, or interleave a competing commit between an op's reads and its batch.
+**Guard mutations (CR 5940914487 M5).** `node scripts/guard-mutations.mjs` disables one guard at a time, runs the Workers suite without the scope lint and restores the file. The first 16 (11 `db.guard`s, the auth-mail claim, the two `create_key` unique indexes, the PT webhook event-match check, the `PT_INVITE_SECRET` length check) are killed by a behavioural test; with the later additions (6 in §14, 3 in §15) the current run is **25/25**. Tests in `workers-test/guards-direct.test.mjs` call the ops directly on D1 (Writer bypassed) with concurrent callers, or interleave a competing commit between an op's reads and its batch.
 
 
 **CR 5941600057 M4 (structural guarantee, plus lint).** Static checks kept losing, so the main defence is now structural.
@@ -153,7 +153,7 @@ PT-owned and per-tenant tables (`blocks`, `bookings`, `class_sessions`, `attenda
 - **Tests:**
   - 15 new lint bypass cases (CR's 6 plus neighbours).
   - `workers-test/scope-runtime.test.mjs`: one runtime test per CR case. It runs `GET /api/dashboard` as each of two PTs: exactly its own bookings, and no id of the other PT. It also checks the structure (frozen wrapper without `d1`; `DB` read exactly twice per request, both at the entry point; the Writer's `appEnv` has no `DB`).
-- **Mutation run:** `node workers-test/scope-bypass-mutations.mjs` injects each CR case into `views.mjs` and `index.mjs`. 12/12 are killed (the lint and the runtime test both fail). With the env case in `index`, the request fails closed (503); removing `withoutDb` turns the same injection into a cross-PT leak (paired case, killed).
+- **Mutation run:** `node workers-test/scope-bypass-mutations.mjs` injects each CR case into `views.mjs` and `index.mjs`: those 12 are killed (the lint and the runtime test both fail). The current run is **20/20**: these 12, the paired case below, the 6 QA D2 file cases and CR 5943169048's `lib/zzhelper.mjs` repro (§15). With the env case in `index`, the request fails closed (503); removing `withoutDb` turns the same injection into a cross-PT leak (paired case, killed).
 - `Reflect.get` stays the documented residual risk, and is now banned by the lint as well.
 ```
 ADMIN_EMAIL=you@example.com ADMIN_NAME="Site Admin" node scripts/bootstrap-admin.mjs --local [--persist-to <dir>]
@@ -279,7 +279,7 @@ Everything was done through the Cloudflare connector's API (no wrangler login, n
 
 ## 14. CR 5941600057 fixes (on top of c386472)
 
-- **M4:** see §7 (structural guarantee, lint, runtime tests, bypass mutations 13/13).
+- **M4:** see §7 (structural guarantee, lint, runtime tests, bypass mutations 13/13 at the time; 20/20 after §15).
 - **M6, Stripe readiness** (`worker/index.mjs` `paymentReadiness`, legacy `platform.mjs:47-49`).
   - Every non-diagnostic API route in Stripe mode needs:
     - a key matching the mode (pt_direct: `CREDENTIAL_ENCRYPTION_KEY`);
@@ -301,7 +301,7 @@ Everything was done through the Cloudflare connector's API (no wrangler login, n
 - **Weak ports strengthened:**
   - password-reset #6: the request limit persists with an identical answer; with reset off, `password_reset_available=false`, the generic 200 is returned and nothing is written (the route no longer calls the Writer when reset is off).
   - stripe-netlify #4: `payment_error` is asserted after a decline.
-- **Guard mutations:** 22/22 killed (16 earlier plus 6 new: payment readiness ×2, reset-off, cron gate, Writer env, wrapper). The route env one is an equivalent mutant on its own and is covered by the paired bypass case above.
+- **Guard mutations:** 22/22 killed at the time (25/25 after §15) (16 earlier plus 6 new: payment readiness ×2, reset-off, cron gate, Writer env, wrapper). The route env one is an equivalent mutant on its own and is covered by the paired bypass case above.
 - **Preview (parked, not redeployed):** the next upload must carry `CRON_ENABLED` (added to `gen-upload.mjs`). With M6, its Stripe-mode payment routes answer 503 by design, because there's no key or webhook secret.
 - **Merge of `origin/main` (1de6264: #2, #5, #6 RC-20) — normal merge commit `e16be05`:**
   - `package.json`: RC-4's Workers devDependencies and scripts + #5's `@netlify/zip-it-and-ship-it` ^16.6.0 and the `minimatch` ^11.0.1 / `glob` ^14.0.2 overrides. Lockfile = main's + `npm install`; only minimatch and glob moved in the Workers tree. `npm audit` 0, `npm ls --all` exit 0.
@@ -341,3 +341,21 @@ Everything was done through the Cloudflare connector's API (no wrangler login, n
   - Tests (`workers-test/scope-lint.test.mjs`, "file discovery"): QA's two misses, every extension (backstop and graph), a transitive `.js` → `.ts` chain, the `.ts` cases, and each fail-closed rule.
   - Runtime: `workers-test/scope-bypass-mutations.mjs` adds 6 file cases (`src/*.js`, `lib/*.mjs`, `lib/*/index.js`, `src/*.ts`, `lib/*.ts`, and QA's `src/*.js` reading `env.DB` imported from the Worker), each killed by the lint **and** the runtime cross-PT test.
 - **D3, cron on the production config.** The top-level `triggers.crons` is removed: the default env (real D1 id) has no cron trigger and no `CRON_ENABLED`, and only `env.preview` has both. `wrangler deploy --dry-run` does not print schedules, so the check and `tests/remote-guards.test.mjs` read the config through wrangler's own resolver (`unstable_readConfig`, inheritance applied as a deploy would): default `crons=[]`, preview `["* * * * *"]`. The go-live step adds both to production, with approval.
+
+### CR 5943169048 (APPROVE with merge conditions), folded into the same push
+
+- **C1, scope lint and helpers outside the roots.**
+  - CR's repro was `lib/zzhelper.mjs` with `export const q=(db,s)=>db.all(s)`, called from `src/views.mjs`. It is now caught twice:
+    - The D2 graph scans the helper, which fails the non-literal SQL rule.
+    - **Any relative import from the scanned code that resolves outside `src/`, `worker/` and `scripts/` fails** (`import outside the scanned roots`), even with harmless content, unless the edge is listed in `outsideEdges` (none today; a listed file is still scanned).
+  - Tests: the exact repro and the outside-roots rule in `workers-test/scope-lint.test.mjs`. The runtime case `cr_zzhelper` in `scope-bypass-mutations.mjs` is killed: the lint fails, and the runtime test sees PT B's bookings.
+- **C2, normalised production-id guard.**
+  - New shared `docs/rc-4/d1-rehearsal/guard.mjs` (trim + lowercase, then exact id or 8-hex prefix). It is used by `generate.mjs`, `preview-apply.mjs` and `gen-upload.mjs`, and none of them keeps a private copy of the id.
+  - `preview-apply.mjs` used a case-sensitive `startsWith` and, in a checkout with `.secrets/preview.json`, would have written a script for the upper-case production id. It is now refused by the guard itself, before reading secrets or writing.
+  - Tests (`tests/remote-guards.test.mjs`): 7 spellings (upper case, leading/trailing space, tab/newline, mixed case, same prefix) × both generators, plus the guard on its own.
+- **Nits:**
+  - The backup `--local` check in `pinnedWrangler` (`scripts/snapshot-import.mjs`) is exported and tested on its own; removing it fails the test.
+  - `tests/snapshot-import.test.mjs` and `tests/remote-guards.test.mjs` remove their `/tmp/rc4-*` folders in `after()`.
+  - Stale counts fixed (guard mutations 25/25, scope mutations 20/20).
+  - The `scope-runtime.test.mjs` header now points to `workers-test/scope-bypass-mutations.mjs`.
+

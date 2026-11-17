@@ -180,8 +180,9 @@ export async function run(argv, { wrangler = pinnedWrangler, log = console.log, 
   } finally { if (tmp) await rm(tmp, { recursive: true, force: true }); }
 }
 
-// The project's pinned wrangler (never an npx download), local only.
-function pinnedWrangler(...a) {
+// The project's pinned wrangler (never an npx download), local only. Exported so the backup
+// --local check is tested on its own (CR 5943169048 nit).
+export function pinnedWrangler(...a) {
   if (!a.includes('--local')) throw new Error('refusing: wrangler without --local');
   return execFileSync(join(ROOT, 'node_modules/.bin/wrangler'), ['d1', ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], cwd: ROOT });
 }
