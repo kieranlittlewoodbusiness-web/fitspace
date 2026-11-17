@@ -20,7 +20,7 @@ function requestReset(db,value){const address=auth.email(value),now=Date.now(),k
  });
 }
 function resetPassword(db,value,newPassword){
- if(!configured())throw auth.error(503,'Password reset email is not configured. Contact your trainer or platform owner.');
+ if(!configured())throw auth.error(503,'Password reset email is not configured. Contact your coach or the platform owner for help.');
  if(typeof value!=='string'||!/^[-a-f0-9]{36}\.[A-Za-z0-9_-]{43}$/.test(value))throw auth.error(400,'This reset link is invalid or expired. Request a new link.');
  const pass=auth.password(newPassword);
  return tx(db,()=>{
