@@ -24,9 +24,12 @@ const metadata = {
     { type: 'plain_text', name: 'STRIPE_INTEGRATION', text: 'connect' },
     { type: 'plain_text', name: 'APP_URL', text: 'https://resiliencecoaching-preview.littlk.workers.dev' },
     // CR 5941600057: scheduled() is a no-op without it (the parked 15:45 upload predates the gate).
-    { type: 'plain_text', name: 'CRON_ENABLED', text: 'true' }
+    { type: 'plain_text', name: 'CRON_ENABLED', text: 'true' },
+    { type: 'plain_text', name: 'PREVIEW_GATE', text: 'on' }
   ],
-  migrations: { new_tag: 'v1', new_sqlite_classes: ['Writer'] },
+  // v1 / Writer already exists on this Worker (first preview upload). Re-sending
+  // new_sqlite_classes: ['Writer'] as new_tag v1 is a 412 on later uploads.
+  // migrations omitted on purpose.
   keep_bindings: ['secret_text', 'secret_key'],
   observability: { enabled: true }
 };
