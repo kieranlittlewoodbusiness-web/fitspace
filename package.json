@@ -17,6 +17,10 @@
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.11",
     "@electric-sql/pglite-socket": "^0.2.14",
-    "@netlify/zip-it-and-ship-it": "^16.5.0"
+    "@netlify/zip-it-and-ship-it": "^16.6.0"
+  },
+  "overrides": {
+    "minimatch": "^11.0.1",
+    "glob": "^14.0.2"
   }
 }
