@@ -99,7 +99,7 @@ test('preview ASSETS serves /fonts and /images with the right type, body and cac
     assert.equal(head.headers.get('content-type'), type, path + ' HEAD type');
     assert.equal((await head.arrayBuffer()).byteLength, 0, path + ' HEAD body');
   }
-  // ~408 KB of base64 text-module source for the seven binaries.
+  // ~382 KB of base64 text-module source for the seven binaries (pin 370–395 KB).
   assert.ok(inlined > 370 * 1024 && inlined < 395 * 1024, 'unexpected inlined size ' + inlined);
   console.log('preview inlined binary text modules:', (inlined / 1024).toFixed(1), 'KB');
 });
@@ -121,6 +121,7 @@ test('preview ASSETS still serves known text assets and unknown paths as the HTM
   assert.deepEqual(Buffer.from(await js.arrayBuffer()), readFileSync(join(root, 'app/public/app.js')));
   const css = await get(mod, '/styles.css');
   assert.equal(css.headers.get('content-type'), 'text/css; charset=utf-8');
+  assert.equal(css.headers.get('cache-control'), 'no-store');
   assert.deepEqual(Buffer.from(await css.arrayBuffer()), readFileSync(join(root, 'app/public/styles.css')));
 });
 
@@ -131,6 +132,7 @@ test('preview entry serves robots.txt and X-Robots-Tag noindex on every response
   const robots = await get(mod, '/robots.txt');
   assert.equal(robots.status, 200);
   assert.equal(robots.headers.get('content-type'), 'text/plain; charset=utf-8');
+  assert.equal(robots.headers.get('cache-control'), 'no-store');
   assert.equal(robots.headers.get('x-robots-tag'), 'noindex, nofollow');
   assert.equal(await robots.text(), 'User-agent: *\nDisallow: /');
   const robotsHead = await get(mod, '/robots.txt', 'HEAD');
@@ -163,10 +165,14 @@ test('preview entry restores font and image cache after Worker security headers'
   assert.equal(html.headers.get('cache-control'), 'no-store');
   const js = await get(mod, '/app.js');
   assert.equal(js.headers.get('cache-control'), 'no-store');
+  const css = await get(mod, '/styles.css');
+  assert.equal(css.headers.get('cache-control'), 'no-store');
+  const robots = await get(mod, '/robots.txt');
+  assert.equal(robots.headers.get('cache-control'), 'no-store');
   const missing = await get(mod, '/fonts/missing.woff2');
   assert.equal(missing.headers.get('cache-control'), 'no-store');
   const api = await get(mod, '/api/not-a-real-route');
   assert.equal(api.status, 404);
   assert.equal(api.headers.get('cache-control'), 'no-store');
-  await font.arrayBuffer(); await image.arrayBuffer(); await html.arrayBuffer(); await js.arrayBuffer(); await missing.arrayBuffer(); await api.arrayBuffer();
+  await font.arrayBuffer(); await image.arrayBuffer(); await html.arrayBuffer(); await js.arrayBuffer(); await css.arrayBuffer(); await robots.arrayBuffer(); await missing.arrayBuffer(); await api.arrayBuffer();
 });

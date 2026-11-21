@@ -71,9 +71,11 @@
 .header .brand{min-width:0;overflow:hidden;flex:1 1 auto}
 .header .wordmark{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mode-bar{
+  padding-top:max(8px,env(safe-area-inset-top,0px));
   padding-left:max(18px,env(safe-area-inset-left,0px));
   padding-right:max(18px,env(safe-area-inset-right,0px));
 }
+#toast{bottom:max(23px,env(safe-area-inset-bottom,0px))}
 .sidebar{padding-left:max(23px,env(safe-area-inset-left,0px))}
 .sidebar .brand{min-width:0;overflow:hidden}
 .sidebar .wordmark{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
