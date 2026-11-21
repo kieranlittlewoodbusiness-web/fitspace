@@ -6,6 +6,7 @@ import { stripeConnection } from './ops/bookings.mjs';
 import { isStripe } from './util.mjs';
 import { MOTIVATIONS } from './validate.mjs';
 import { parseReviewReason } from './cutover.mjs';
+import { connectStatusView } from './connect-status.mjs';
 
 // D1 allows at most 100 bound parameters per statement: IN-lists are chunked.
 async function inChunks(db, sql, ids, ...before) {
@@ -60,7 +61,7 @@ export async function dashboard(db, user, { paymentMode, integration, now = Date
     const c = await stripeConnection(db, pt.id, paymentMode, integration);
     const noShows = (await db.get("SELECT count(*) n FROM attendance a JOIN bookings b ON b.id=a.booking_id JOIN blocks c ON c.id=b.block_id WHERE c.pt_id=? AND a.status='no_show'", user.pt_id)).n;
     return {
-      pt: { ...publicPt(pt), stripe_account_id: c?.account_id || null, stripe_routing: c?.routing || null, stripe_connected: Boolean(c), stripe_ready: Boolean(c?.ready) },
+      pt: { ...publicPt(pt), stripe_account_id: c?.account_id || null, stripe_routing: c?.routing || null, stripe_connected: Boolean(c), stripe_ready: Boolean(c?.ready), stripe: connectStatusView(c, { mode: paymentMode }) },
       blocks, bookings, outbox,
       stats: {
         confirmed: bookings.filter(b => b.status === 'paid').length,
@@ -75,7 +76,10 @@ export async function dashboard(db, user, { paymentMode, integration, now = Date
   const ptRows = await db.all("SELECT p.*,u.name owner_name,u.email owner_email,u.active owner_active FROM pts p LEFT JOIN users u ON u.pt_id=p.id AND u.role='pt' ORDER BY p.created_at DESC");
   const allBlocks = await viewBlocks(db, await scope.blocks(), now);
   const pts = [];
-  for (const p of ptRows) pts.push({ ...publicPt(p), owner_name: p.owner_name, owner_email: p.owner_email, owner_active: Boolean(p.owner_active), stripe_connected: Boolean(await stripeConnection(db, p.id, paymentMode, integration)), blocks: allBlocks.filter(b => b.pt_id === p.id) });
+  for (const p of ptRows) {
+    const c = await stripeConnection(db, p.id, paymentMode, integration);
+    pts.push({ ...publicPt(p), owner_name: p.owner_name, owner_email: p.owner_email, owner_active: Boolean(p.owner_active), stripe_connected: Boolean(c), stripe_ready: Boolean(c?.ready), stripe_account_id: c?.account_id || null, stripe: connectStatusView(c, { mode: paymentMode }), blocks: allBlocks.filter(b => b.pt_id === p.id) });
+  }
   const bookings = await withSessions(db, await scope.bookings(), { reasons: true });
   return {
     pts, bookings, outbox: await scope.outbox(100),

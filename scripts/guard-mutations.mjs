@@ -45,7 +45,9 @@ const MUTATIONS = {
   // downstream); workers-test/scope-bypass-mutations.mjs pairs it with CR's injected
   // env-destructuring bypass and shows it turns a 503 into a cross-PT leak.
   writer_env_without_db: ['src/writer.mjs', 'this.appEnv = withoutDb(env);', 'this.appEnv = env;'],
-  wrapper_hides_binding: ['src/db.mjs', 'return Object.freeze({', 'return Object.freeze({ d1,']
+  wrapper_hides_binding: ['src/db.mjs', 'return Object.freeze({', 'return Object.freeze({ d1,'],
+  // RC-14 / RC-5: at most one Connect account when MULTI_PT_ENABLED is not "true".
+  single_connect: ['src/ops/stripe-jobs.mjs', ...always('single_connect')]
 };
 
 const only = process.argv.slice(2);
