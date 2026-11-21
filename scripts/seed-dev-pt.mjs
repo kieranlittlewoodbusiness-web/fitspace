@@ -10,7 +10,7 @@
 import { email as validEmail, password as validPassword, text, branding } from '../src/validate.mjs';
 import { hashPassword, uid } from '../src/util.mjs';
 import { pathToFileURL } from 'node:url';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const quote = value => "'" + String(value).replaceAll("'", "''") + "'";
 
@@ -87,8 +87,10 @@ async function main(argv) {
     await writeFile(file, sql, { mode: 0o600 });
     const p = argv.indexOf('--persist-to');
     const extra = p >= 0 && argv[p + 1] ? ['--persist-to', argv[p + 1]] : [];
-    execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', ...extra, '--file', file], { stdio: ['ignore', 'ignore', 'inherit'] });
-    const out = execFileSync('npx', ['wrangler', 'd1', 'execute', 'DB', '--local', ...extra, '--json', '--command', "SELECT count(*) AS pts FROM pts"], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+    const wrangler = join(import.meta.dirname, '..', 'node_modules', '.bin', 'wrangler');
+    const cwd = join(import.meta.dirname, '..');
+    execFileSync(wrangler, ['d1', 'execute', 'DB', '--local', ...extra, '--file', file], { stdio: ['ignore', 'ignore', 'inherit'], cwd });
+    const out = execFileSync(wrangler, ['d1', 'execute', 'DB', '--local', ...extra, '--json', '--command', "SELECT count(*) AS pts FROM pts"], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], cwd });
     console.log(`Dev PT seed (local): pts now = ${JSON.parse(out)[0].results[0].pts}. (Unchanged if one already existed.)`);
   } finally {
     await rm(dir, { recursive: true, force: true });

@@ -2,6 +2,8 @@
 
 Resilience Coaching runs as one published coach by default. Multi-trainer features stay in the tree (schema, tests and route code) but are hidden until `MULTI_PT_ENABLED` is exactly `"true"`.
 
+Single-PT mode applies on the Worker only, and legacy Netlify is unchanged until cutover.
+
 ## Environment
 
 | Name | Type | Default | Meaning |

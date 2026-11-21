@@ -192,6 +192,13 @@ describe('Stripe Connect: at most one account, direct charges, no application fe
     expect(id).toMatch(/^link:/);
   });
 
+  it('omitting multiPt is fail-closed (same as false)', async () => {
+    const s = await seedBlock({ customers: 0 });
+    const admin = await seedUser({ role: 'admin' });
+    await expect(prepareLink(db(), { userId: admin.id, ptId: s.ptId, mode: 'stripe_test' }))
+      .rejects.toMatchObject({ status: 409, code: 'PLATFORM_LINK_DISABLED' });
+  });
+
   it('single_connect: a second PT cannot bind another account when single-PT mode is on', async () => {
     const a = await seedBlock({ customers: 0, blockId: 'conn-a' });
     const b = await seedBlock({ customers: 0, blockId: 'conn-b' });

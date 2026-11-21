@@ -96,6 +96,13 @@ test('wrangler.jsonc resolved by wrangler: no cron trigger on the default (produ
   }
 });
 
+test('wrangler.jsonc: MULTI_PT_ENABLED is "false" on the default and preview envs', async () => {
+  const { unstable_readConfig: readConfig } = await import('wrangler');
+  const resolve = (env) => readConfig({ config: 'wrangler.jsonc', env });
+  assert.equal(resolve(undefined).vars?.MULTI_PT_ENABLED, 'false');
+  assert.equal(resolve('preview').vars?.MULTI_PT_ENABLED, 'false');
+});
+
 test('seed-dev-pt.mjs refuses --remote (even with --confirm-remote) and requires --local', () => {
   for (const args of [['--remote'], ['--remote', '--confirm-remote']]) {
     const r = run('scripts/seed-dev-pt.mjs', args);
