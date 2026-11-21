@@ -267,3 +267,24 @@ test('rendered login, signup, forgot and reset views have no stray } or ${',()=>
   assert.ok(renderAuthViews(appJs).login.includes('Forgot your password?'));
 });
 
+
+test('readResetToken takes ?token= on any path and the hash only on /reset-password',()=>{
+  const start=appJs.indexOf('function readResetToken');
+  const end=appJs.indexOf('function captureResetToken');
+  assert.ok(start>=0&&end>start);
+  const readResetToken=new Function(appJs.slice(start,end)+';return readResetToken;')();
+  assert.equal(readResetToken({pathname:'/reset-password',search:'?token=from-query',hash:'#from-hash'}),'from-query');
+  assert.equal(readResetToken({pathname:'/',search:'?token=from-query',hash:''}),'from-query');
+  assert.equal(readResetToken({pathname:'/login',search:'?token=from-query',hash:'#ignored'}),'from-query');
+  assert.equal(readResetToken({pathname:'/reset-password',search:'',hash:'#from-hash'}),'from-hash');
+  assert.equal(readResetToken({pathname:'/',search:'',hash:'#from-hash'}),'');
+  assert.equal(readResetToken({pathname:'/reset-password',search:'',hash:''}),'');
+});
+
+test('the reset token is captured before popstate routing, and /reset-password is handled first',()=>{
+  const boot=appJs.indexOf("window.addEventListener('popstate',renderRoute)");
+  const capture=appJs.lastIndexOf('captureResetToken();', boot);
+  assert.ok(boot>=0&&capture>=0&&capture<boot,'captureResetToken must run before the popstate listener is attached');
+  assert.match(appJs,/captureResetToken\(\);if\(location\.pathname==='\/reset-password'\)\{await refreshMe\(\)/);
+  assert.match(appJs,/history\.replaceState\(null,'','\/reset-password'\)/);
+});

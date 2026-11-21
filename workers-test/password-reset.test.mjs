@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { env, exports } from 'cloudflare:workers';
 import crypto from 'node:crypto';
 import { write } from '../src/writer.mjs';
-import { requestReset, resetPassword, resetToken } from '../src/ops/password-reset.mjs';
+import { requestReset, resetPassword, resetToken, previewOutOfBandAllowed, resetSigningSecret, RESET_TTL_MS, PREVIEW_APP_URL, PREVIEW_DB } from '../src/ops/password-reset.mjs';
+import { digest } from '../src/util.mjs';
+import { PRODUCTION_DB } from '../docs/rc-4/d1-rehearsal/guard.mjs';
 import { db, seedUser, jsonRequest, tally } from './helpers.mjs';
 
 async function userWithEmail() {
@@ -73,5 +75,123 @@ describe('password reset (Writer)', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('set-cookie')).toMatch(/fit_session=;.*Max-Age=0/);
     expect((await exports.default.fetch(new Request('http://example.test/api/bookings/x', { headers: { cookie: 'fit_session=' + u.token } }))).status).toBe(401);
+  });
+});
+
+
+function previewEnv(over = {}) {
+  return Object.assign(Object.create(null), env, {
+    EMAIL_MODE: 'preview',
+    APP_URL: PREVIEW_APP_URL,
+    AUTH_RESET_SECRET: '',
+    RESET_EMAIL_MODE: 'off',
+    RESEND_API_KEY: '',
+    MAIL_FROM: '',
+    D1_DATABASE_ID: PREVIEW_DB
+  }, over);
+}
+
+async function issueOutOfBand(user, signEnv, { expiresAt, now = Date.now() } = {}) {
+  const id = crypto.randomUUID();
+  const token = resetToken(signEnv, id);
+  const row = await db().get('SELECT password_hash FROM users WHERE id=?', user.id);
+  await db().run(
+    'INSERT INTO password_resets(id,user_id,token_hash,password_hash,expires_at,created_at) VALUES(?,?,?,?,?,?)',
+    id, user.id, digest(token), row.password_hash, expiresAt ?? (now + RESET_TTL_MS), now
+  );
+  return { id, token };
+}
+
+describe('preview out-of-band reset (EMAIL_MODE=preview, non-prod)', () => {
+  it('allows only EMAIL_MODE=preview plus the preview env markers, and never a production D1 id', () => {
+    expect(previewOutOfBandAllowed(env)).toBe(false);
+    expect(previewOutOfBandAllowed(previewEnv())).toBe(true);
+    expect(previewOutOfBandAllowed(previewEnv({ EMAIL_MODE: 'send' }))).toBe(false);
+    expect(previewOutOfBandAllowed(previewEnv({ APP_URL: 'https://example.test' }))).toBe(false);
+    expect(previewOutOfBandAllowed(previewEnv({ APP_URL: '' }))).toBe(false);
+    expect(previewOutOfBandAllowed(previewEnv({ D1_DATABASE_ID: PRODUCTION_DB }))).toBe(false);
+    expect(previewOutOfBandAllowed(previewEnv({ D1_DATABASE_ID: ' ' + PRODUCTION_DB.toUpperCase() + ' ' }))).toBe(false);
+    expect(previewOutOfBandAllowed(previewEnv({ D1_DATABASE_ID: PRODUCTION_DB.slice(0, 8) + '-0000-4000-8000-000000000000' }))).toBe(false);
+    expect(previewOutOfBandAllowed(previewEnv({ D1_DATABASE_ID: crypto.randomUUID() }))).toBe(false);
+    expect(resetSigningSecret(previewEnv()).length).toBe(32);
+    expect(resetSigningSecret(previewEnv({ AUTH_RESET_SECRET: 'a'.repeat(32) }))).toBe('a'.repeat(32));
+    expect(resetSigningSecret(previewEnv({ EMAIL_MODE: 'send', AUTH_RESET_SECRET: 'a'.repeat(32) }))).toBe('');
+    expect(resetSigningSecret(previewEnv({ PT_INVITE_SECRET: '', AUTH_RESET_SECRET: '' }))).toBe('');
+  });
+
+  it('forgot-password is unchanged on preview: generic message, no row, no mail', async () => {
+    const u = await userWithEmail();
+    const mailId = await requestReset(db(), { email: u.address }, previewEnv());
+    expect(mailId).toBeNull();
+    expect((await db().get('SELECT count(*) n FROM password_resets WHERE user_id=?', u.id)).n).toBe(0);
+    expect((await db().get("SELECT count(*) n FROM auth_mail_jobs WHERE user_id=?", u.id)).n).toBe(0);
+  });
+
+  it('consumes a hashed HKDF token once, skips change-mail, then refuses replay', async () => {
+    const u = await seedUser({ role: 'pt' });
+    const sign = previewEnv();
+    const { id, token } = await issueOutOfBand(u, sign);
+    const mailId = await resetPassword(db(), { token, newPassword: 'Preview long password' }, sign);
+    expect(mailId).toBeNull();
+    expect((await db().get('SELECT used_at FROM password_resets WHERE id=?', id)).used_at).toBeTruthy();
+    expect((await db().get('SELECT count(*) n FROM sessions WHERE user_id=?', u.id)).n).toBe(0);
+    expect((await db().get("SELECT count(*) n FROM auth_mail_jobs WHERE user_id=? AND kind='changed'", u.id)).n).toBe(0);
+    await expect(resetPassword(db(), { token, newPassword: 'Another long password' }, sign)).rejects.toMatchObject({ status: 400, code: 'RESET_LINK_INVALID' });
+  });
+
+  it('wrong token, expired token, and a used token are refused with {error, code}', async () => {
+    const u = await seedUser({ role: 'pt' });
+    const sign = previewEnv();
+    const forged = crypto.randomUUID() + '.' + 'A'.repeat(43);
+    await expect(resetPassword(db(), { token: forged, newPassword: 'Whatever long password' }, sign)).rejects.toMatchObject({ status: 400, code: 'RESET_LINK_INVALID' });
+
+    const expired = await issueOutOfBand(u, sign, { expiresAt: Date.now() - 1000 });
+    await expect(resetPassword(db(), { token: expired.token, newPassword: 'Whatever long password' }, sign)).rejects.toMatchObject({ status: 400, code: 'RESET_LINK_INVALID' });
+    expect((await db().get('SELECT used_at FROM password_resets WHERE id=?', expired.id)).used_at).toBeNull();
+
+    const live = await issueOutOfBand(u, sign);
+    await resetPassword(db(), { token: live.token, newPassword: 'First long password' }, sign);
+    await expect(resetPassword(db(), { token: live.token, newPassword: 'Second long password' }, sign)).rejects.toMatchObject({ status: 400, code: 'RESET_LINK_INVALID' });
+  });
+
+  it('concurrent double-submit of one preview token: exactly one succeeds', async () => {
+    const u = await seedUser({ role: 'pt' });
+    const sign = previewEnv();
+    const { token, id } = await issueOutOfBand(u, sign);
+    const results = await Promise.allSettled(Array.from({ length: 5 }, (_, i) => resetPassword(db(), { token, newPassword: 'Preview race ' + i + ' xxx' }, sign)));
+    const outcome = results.map(r => (r.status === 'fulfilled' ? 'reset' : r.reason.status));
+    expect(tally(outcome)).toEqual({ reset: 1, 400: 4 });
+    expect((await db().get('SELECT used_at FROM password_resets WHERE id=?', id)).used_at).toBeTruthy();
+  });
+
+  it('fail-closed: prod or any non-preview config returns 503 and does not consume', async () => {
+    const u = await seedUser({ role: 'pt' });
+    const sign = previewEnv();
+    const { id, token } = await issueOutOfBand(u, sign);
+    const closed = [
+      previewEnv({ EMAIL_MODE: 'send' }),
+      previewEnv({ APP_URL: 'https://resiliencecoaching.example' }),
+      previewEnv({ D1_DATABASE_ID: PRODUCTION_DB }),
+      previewEnv({ PT_INVITE_SECRET: '', AUTH_RESET_SECRET: '' }),
+      Object.assign(Object.create(null), env, { RESET_EMAIL_MODE: 'off', AUTH_RESET_SECRET: '', EMAIL_MODE: 'preview', APP_URL: 'https://example.test' })
+    ];
+    for (const bad of closed) {
+      await expect(resetPassword(db(), { token, newPassword: 'Should not apply xx' }, bad)).rejects.toMatchObject({ status: 503, code: 'RESET_NOT_CONFIGURED' });
+    }
+    expect((await db().get('SELECT used_at FROM password_resets WHERE id=?', id)).used_at).toBeNull();
+    expect((await db().get('SELECT password_hash FROM users WHERE id=?', u.id)).password_hash).toBe('x');
+  });
+
+  it('on preview, AUTH_RESET_SECRET is used when set; an HKDF token does not verify against it', async () => {
+    const u = await seedUser({ role: 'pt' });
+    const hkdf = previewEnv();
+    const auth = previewEnv({ AUTH_RESET_SECRET: 'b'.repeat(32) });
+    const { token, id } = await issueOutOfBand(u, hkdf);
+    await expect(resetPassword(db(), { token, newPassword: 'Should not apply xx' }, auth)).rejects.toMatchObject({ status: 400, code: 'RESET_LINK_INVALID' });
+    const issued = await issueOutOfBand(u, auth);
+    const mailId = await resetPassword(db(), { token: issued.token, newPassword: 'Auth secret password' }, auth);
+    expect(mailId).toBeNull();
+    expect((await db().get('SELECT used_at FROM password_resets WHERE id=?', id)).used_at).toBeTruthy();
+    expect((await db().get('SELECT used_at FROM password_resets WHERE id=?', issued.id)).used_at).toBeTruthy();
   });
 });

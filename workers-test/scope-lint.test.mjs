@@ -22,8 +22,9 @@ export const GRAPH = {
   aliases: { '../docs/rc-4/preview/entry.mjs::./index.js': WORKER_MAIN },
   // Node CLI scripts that read the legacy Netlify app's SQLite/Postgres code (never D1). Each edge
   // into app/ or netlify/ is listed; a new one, or any from Worker code, fails.
-  // CR 5943169048 C1: relative imports out of src/worker/scripts must be listed here (none today).
-  outsideEdges: [],
+  // CR 5943169048 C1: relative imports out of src/worker/scripts must be listed here.
+  // Preview out-of-band reset reuses the shared normalised production-id guard.
+  outsideEdges: ['../src/ops/password-reset.mjs -> ../docs/rc-4/d1-rehearsal/guard.mjs'],
   legacyEdges: [
     '../scripts/demo-snapshot.mjs -> ../app/db.cjs',
     '../scripts/dev.mjs -> ../netlify/functions/platform.mjs',
@@ -760,7 +761,7 @@ describe('scope lint file discovery (import graph + backstop)', () => {
     const harmless = lint({ '../lib/qa-pure.mjs': 'export const add = (a, b) => a + b;\n' }, importInto('../src/util.mjs', '../lib/qa-pure.mjs'));
     expect(harmless.v).toEqual(['graph ../src/util.mjs -> ../lib/qa-pure.mjs::import outside the scanned roots (src/, worker/, scripts/)']);
     const listed = lintSet({ ...REPO, '../lib/qa-pure.mjs': 'export const add = (a, b) => a + b;\n', '../src/util.mjs': "import '../lib/qa-pure.mjs';\n" + REPO['../src/util.mjs'] },
-      { ...GRAPH, outsideEdges: ['../src/util.mjs -> ../lib/qa-pure.mjs'], entries: Object.keys(REPO).filter(f => f.startsWith('../scripts/')) });
+      { ...GRAPH, outsideEdges: [...GRAPH.outsideEdges, '../src/util.mjs -> ../lib/qa-pure.mjs'], entries: Object.keys(REPO).filter(f => f.startsWith('../scripts/')) });
     expect(violations(listed.sources, listed.problems)).toEqual([]);
     expect(Object.keys(listed.sources)).toContain('../lib/qa-pure.mjs'); // listed, but still scanned
   });
