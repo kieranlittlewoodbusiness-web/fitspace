@@ -95,3 +95,17 @@ test('wrangler.jsonc resolved by wrangler: no cron trigger on the default (produ
     if ((c.triggers?.crons ?? []).length) assert.notEqual(c.d1_databases?.[0]?.database_id, PRODUCTION_DB, name);
   }
 });
+
+test('seed-dev-pt.mjs refuses --remote (even with --confirm-remote) and requires --local', () => {
+  for (const args of [['--remote'], ['--remote', '--confirm-remote']]) {
+    const r = run('scripts/seed-dev-pt.mjs', args);
+    assert.notEqual(r.status, 0, JSON.stringify(args) + '\n' + (r.stderr || r.stdout));
+    assert.match(r.stderr, /local-only|--remote is refused/);
+  }
+  const missing = run('scripts/seed-dev-pt.mjs', ['--persist-to', '/tmp']);
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /Pass --local/);
+  const help = run('scripts/seed-dev-pt.mjs', ['--help']);
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /--remote +refused/);
+});

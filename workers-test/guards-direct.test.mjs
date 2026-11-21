@@ -60,7 +60,7 @@ describe('guards with the Writer bypassed (direct D1, concurrent)', () => {
     const admin = await seedUser({ role: 'admin' });
     const slug = 'guard-' + nodeCrypto.randomBytes(4).toString('hex');
     const body = { create_key: crypto.randomUUID(), owner_name: 'Guard Trainer', email: slug + '@example.com', brand_name: 'GUARD CLUB', slug, tagline: 'Guards hold.', description: 'Commit-time checks.', about: 'Train with guards.', accent: '#ffd43b', background: '#ffffff', foreground: '#111111', features: ['One'], published: true };
-    const out = await settle(Array.from({ length: 5 }, () => createPt(db(), { userId: admin.id, body, temporaryHash: 'x', temporary: 'TempPass123!' })));
+    const out = await settle(Array.from({ length: 5 }, () => createPt(db(), { userId: admin.id, body, temporaryHash: 'x', temporary: 'TempPass123!', multiPt: true })));
     const rows = await db().all('SELECT id FROM pts WHERE slug=?', slug);
     console.log('pts_create_key direct x5:', JSON.stringify(tally(out.map(o => (o.pt_id ? (o.replay ? 'replay' : 'created') : 'err:' + o.error)))));
     expect(rows).toHaveLength(1);

@@ -103,6 +103,7 @@ Schema rule that keeps B possible: no `REFERENCES` on columns added with `ALTER 
 | `ASSETS` | assets binding | — | `worker/index.mjs` | local | same |
 | `APP_URL` | var | server.cjs, payments.cjs (redirects), password-reset.cjs | phases 2–3 | `http://127.0.0.1:8787` | `https://resiliencecoaching.app` |
 | `PAYMENT_MODE` | var | platform.mjs, server.cjs | yes | `demo` (wrangler vars) | `stripe_test` until RC-OPS-2 |
+| `MULTI_PT_ENABLED` | var | — | yes (`src/multi-pt.mjs`; RC-14) | `false` (wrangler vars; only the string `"true"` turns the marketplace on) | `false` until a multi-trainer go-live |
 | `STRIPE_INTEGRATION` | var | pt-stripe.cjs | yes | `connect` | `connect` (Kieran's decision) |
 | `EMAIL_MODE` | var | emails.cjs (forced `preview` in platform.mjs) | yes | `preview` | `preview` until RC-10 approval |
 | `RESET_EMAIL_MODE` | var | password-reset.cjs | yes (reset is "configured" only when `send` + key + from + secret + https APP_URL) | `preview` (vitest: `send` with dummies) | per RC-10 |
