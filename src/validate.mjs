@@ -35,4 +35,24 @@ export const MOTIVATIONS=Object.freeze([
 'A little movement and a little encouragement can be a good place to restart.'
 ]);
 
-export { email, text, password, toEpoch, num, blockData, colours, branding };
+export const THEME_DEFAULTS=Object.freeze({accent:'#ffd43b',background:'#ffffff',foreground:'#111111'});
+const THEME_COPY_KEYS=['slug','published','brand_name','tagline','description','about','features'];
+// Same luminance threshold as app/public/app.js, so button text matches what the pages render.
+function accentInk(hex){const rgb=hex.slice(1).match(/../g).map(v=>parseInt(v,16)/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4);return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722>.179?'#000000':'#ffffff';}
+/** PT theme payload: colours only, or {reset:true} for the default yellow/black. */
+function theme(body){
+  if(!body||typeof body!=='object'||Array.isArray(body))throw httpError(400,'Choose valid six-digit colours.');
+  if(THEME_COPY_KEYS.some(key=>Object.prototype.hasOwnProperty.call(body,key)))throw httpError(400,'Theme settings only accept colours.');
+  if(body.reset===true)return {accent:THEME_DEFAULTS.accent,background:THEME_DEFAULTS.background,foreground:THEME_DEFAULTS.foreground};
+  const out={};
+  for(const key of ['accent','background','foreground']){
+    const value=String(body[key]??'').trim();
+    if(!/^#[0-9a-f]{6}$/i.test(value))throw httpError(400,'Choose valid six-digit colours.');
+    out[key]=value.toLowerCase();
+  }
+  if(colours(out.background,out.foreground)<4.5)throw httpError(400,'Choose text and background colours with clearer contrast.');
+  if(colours(out.accent,accentInk(out.accent))<4.5)throw httpError(400,'Choose an accent colour with clearer contrast.');
+  return out;
+}
+
+export { email, text, password, toEpoch, num, blockData, colours, branding, accentInk, theme };
