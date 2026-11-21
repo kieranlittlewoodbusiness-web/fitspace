@@ -24,7 +24,7 @@
     "PAYMENT_MODE": "demo",
     // Explicit on purpose: overrides the code default (pt_direct, same as app/pt-stripe.cjs).
     "STRIPE_INTEGRATION": "connect",
-    // RC-14 / RC-5: off by default. Set to "true" only to re-enable the multi-trainer marketplace.
+    // RC-14: off by default. Set to "true" only to re-enable the multi-trainer marketplace.
     "MULTI_PT_ENABLED": "false"
   },
   "d1_databases": [

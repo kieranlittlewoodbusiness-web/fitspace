@@ -87,8 +87,8 @@ export async function prepareRefund(db, { bookingId, userId, token, mode, now = 
 
 const onboardPayload = (mode, account, origin) => ({ mode, path: '/v2/core/account_links', v2: true, data: { account, use_case: { type: 'account_onboarding', account_onboarding: { configurations: ['merchant'], refresh_url: origin + '/dashboard?tab=payments&connect=refresh', return_url: origin + '/dashboard?tab=payments&connect=return', collection_options: { fields: 'eventually_due' } } } } });
 
-/** POST /api/pt/stripe/connect: the PT owner or admin. */
-export async function prepareConnect(db, { userId, origin, mode, integration = 'connect', multiPt = true, ptId = null, now = Date.now() }) {
+/** POST /api/pt/stripe/connect: the PT owner or admin. multiPt defaults false (fail-closed). */
+export async function prepareConnect(db, { userId, origin, mode, integration = 'connect', multiPt = false, ptId = null, now = Date.now() }) {
   const user = await actor(db, userId);
   if (user.must_change_password) throw httpError(403, 'Change your temporary password first.', { code: 'PASSWORD_CHANGE_REQUIRED' });
   if (integration === 'pt_direct') throw httpError(409, 'Use Payments setup to save your own restricted key and webhook secret.', { code: 'USE_PAYMENTS_SETUP' });
@@ -106,8 +106,8 @@ export async function prepareConnect(db, { userId, origin, mode, integration = '
   return job(db, 'account:' + (live(mode) ? 'live:' : '') + pt.id, 'account', pt.id, user.id, { mode, origin, multiPt, path: '/v2/core/accounts', v2: true, data: { contact_email: user.email, display_name: pt.brand_name, dashboard: 'full', identity: { country: 'gb' }, configuration: { merchant: { capabilities: { card_payments: { requested: true } } } }, defaults: { currency: 'gbp', responsibilities: { fees_collector: 'stripe', losses_collector: 'stripe' }, locales: ['en-GB'] }, include: ['configuration.merchant'] } }, now);
 }
 
-/** POST /api/admin/stripe/link (admin only). Disabled in single-PT mode. */
-export async function prepareLink(db, { userId, ptId, mode, integration = 'connect', multiPt = true, now = Date.now() }) {
+/** POST /api/admin/stripe/link (admin only). Disabled in single-PT mode. multiPt defaults false (fail-closed). */
+export async function prepareLink(db, { userId, ptId, mode, integration = 'connect', multiPt = false, now = Date.now() }) {
   const user = await actor(db, userId);
   if (user.role !== 'admin') throw httpError(403, 'Your account does not have access to this action.', { code: 'FORBIDDEN' });
   if (integration === 'pt_direct') throw httpError(403, 'Owner account linking is disabled. Each PT must configure their own account.', { code: 'USE_PAYMENTS_SETUP' });
@@ -116,7 +116,7 @@ export async function prepareLink(db, { userId, ptId, mode, integration = 'conne
   return job(db, 'link:' + uid(), 'link_platform', ptId, user.id, { mode, multiPt, path: '/v1/account', method: 'GET' }, now);
 }
 
-const bindStmts = (db, ptId, mode, account, routing, ready, { multiPt = true } = {}) => [
+const bindStmts = (db, ptId, mode, account, routing, ready, { multiPt = false } = {}) => [
   db.guard('account_not_other_pt', 'NOT EXISTS(SELECT 1 FROM stripe_connections WHERE mode=? AND account_id=? AND pt_id<>?)', mode, account, ptId),
   // RC-14: at most one Connect account on the site when single-PT mode is on.
   multiPt ? null : db.guard('single_connect', 'NOT EXISTS(SELECT 1 FROM stripe_connections WHERE NOT (pt_id=? AND mode=?))', ptId, mode),
@@ -130,7 +130,7 @@ export async function completeJob(db, { id, result, now = Date.now() }) {
   if (!row) throw httpError(404, 'Payment operation not found.');
   if (row.status === 'done') return JSON.parse(row.result);
   const p = JSON.parse(row.payload);
-  const multiPt = p.multiPt !== false;
+  const multiPt = p.multiPt === true;
   const writes = [db.guard('job_not_done', "EXISTS(SELECT 1 FROM stripe_jobs WHERE id=? AND status<>'done')", id)];
   let out;
   if (row.kind === 'link_platform') {
@@ -162,7 +162,7 @@ export async function completeJob(db, { id, result, now = Date.now() }) {
     if (!isGuardFailure(error)) throw error;
     const again = await db.get('SELECT status,result FROM stripe_jobs WHERE id=?', id);
     if (again?.status === 'done') return JSON.parse(again.result); // a concurrent run committed first
-    if ((row.kind === 'account' || row.kind === 'link_platform') && p.multiPt === false) throw singleConnectExistsError();
+    if ((row.kind === 'account' || row.kind === 'link_platform') && p.multiPt !== true) throw singleConnectExistsError();
     throw httpError(409, error.message.includes('account_not_other_pt') || row.kind === 'account' || row.kind === 'link_platform' ? 'This Stripe account is already assigned to another trainer in this payment mode.' : 'Checkout Session mismatch.', { code: error.message.includes('account_not_other_pt') || row.kind === 'account' || row.kind === 'link_platform' ? 'ACCOUNT_ASSIGNED' : 'CHECKOUT_SESSION_MISMATCH' });
   }
   return out;

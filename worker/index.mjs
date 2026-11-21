@@ -18,12 +18,12 @@ import { stripe, validatePlatformKey } from '../src/stripe.mjs';
 import { credentialStatus, open as openCredential, loadCredential, encryptionConfigured } from '../src/pt-credentials.mjs';
 import { dashboard } from '../src/views.mjs';
 import { login, signup, logout, safeUser, sessionCookie, clearCookie } from '../src/sessions.mjs';
-import { defaultSlug, publishedPts, publishedPtPage, expireHolds, adminSetupStatus, credentialById, markWebhookSeen } from '../src/public.mjs';
+import { defaultSlug, publishedPts, publishedPtPage, publicSite, publishedCoach, expireHolds, adminSetupStatus, credentialById, markWebhookSeen } from '../src/public.mjs';
+import { bookingPathFor, isHiddenMultiPtRoute, multiPtDisabledError, multiPtEnabled } from '../src/multi-pt.mjs';
 import { configured as resetConfigured, MESSAGE as RESET_MESSAGE } from '../src/ops/password-reset.mjs';
 import { runScheduled } from '../src/mail.mjs';
 import { stripeConnection } from '../src/ops/bookings.mjs';
 import { accountSnapshot, connectStatusView, resolveConnectPtId } from '../src/connect-status.mjs';
-import { multiPtEnabled } from '../src/multi-pt.mjs';
 import { password as validPassword } from '../src/validate.mjs';
 import { rateLimit } from '../src/ratelimit.mjs';
 import { errorExtras, hashPassword, httpError, isStripe, live, verifyPassword } from '../src/util.mjs';
@@ -89,6 +89,7 @@ export async function handle(request, env) {
   const paymentOrigin = env.APP_URL ? new URL(env.APP_URL).origin : url.origin;
   const secure = url.protocol === 'https:';
   const emailMode = env.EMAIL_MODE || 'preview';
+  if (!multiPt && isHiddenMultiPtRoute(method, route)) throw multiPtDisabledError();
   const requireStripeMode = () => { if (!isStripe(paymentMode)) throw httpError(409, 'Stripe sandbox mode is not enabled.', { code: 'STRIPE_MODE_DISABLED' }); };
   const operation = async jobId => { const o = await paymentOperation(env, db, jobId, stripeOpts); return json(o.status, o.body); };
 
@@ -130,7 +131,7 @@ export async function handle(request, env) {
   }
 
   // ---- account ----
-  if (method === 'GET' && route === '/api/me') return json(200, { user: safeUser(user), csrf: user?.csrf || null, demo, payment_mode: paymentMode, stripe_integration: integration, password_reset_available: resetConfigured(env), email_mode: emailMode, default_slug: await defaultSlug(db) });
+  if (method === 'GET' && route === '/api/me') return json(200, { user: safeUser(user), csrf: user?.csrf || null, demo, payment_mode: paymentMode, stripe_integration: integration, password_reset_available: resetConfigured(env), email_mode: emailMode, default_slug: await defaultSlug(db), multi_pt_enabled: multiPt });
   if (method === 'POST' && route === '/api/auth/login') {
     await rateLimit(db, 'login', client, { max: 15 });
     const r = await login(db, request, body, { demo });
@@ -168,9 +169,12 @@ export async function handle(request, env) {
   }
 
   // ---- public ----
+  if (method === 'GET' && route === '/api/public/site') {
+    return json(200, await publicSite(db, { multiPt }), { 'Cache-Control': 'public, max-age=60' });
+  }
   if (method === 'GET' && route === '/api/public/pts') return json(200, { pts: await publishedPts(db) });
   const ptPublic = route.match(/^\/api\/public\/pts\/([a-z0-9-]+)$/);
-  if (method === 'GET' && ptPublic) return json(200, await publishedPtPage(db, ptPublic[1]));
+  if (method === 'GET' && ptPublic) return json(200, await publishedPtPage(db, ptPublic[1], Date.now(), { multiPt }));
 
   // ---- dashboard (scoped per role) ----
   if (method === 'GET' && route === '/api/dashboard') {
@@ -250,7 +254,7 @@ export async function handle(request, env) {
     requireUser(user);
     const booking = await viewBooking(db, user, bookingId);
     if (isStripe(booking.mode)) {
-      if (booking.status !== 'pending') throw httpError(409, 'Contact the trainer to refund a completed payment.');
+      if (booking.status !== 'pending') throw httpError(409, 'Contact your coach to refund a completed payment.');
       if (!isStripe(paymentMode)) throw httpError(409, 'Enable Stripe sandbox mode to cancel this checkout.');
       return operation(await write(env, 'prepareCancel', { bookingId, userId: user.id, mode: paymentMode }));
     }
@@ -303,6 +307,11 @@ export async function handle(request, env) {
   }
 
   if (route.startsWith('/api/')) return json(404, { error: 'This action is not available.' });
+  // RC-14: in single-PT mode, /trainers goes to the one coach's booking page (or home if none).
+  if (!multiPt && ['GET', 'HEAD'].includes(method) && (route === '/trainers' || route === '/trainers/')) {
+    const location = bookingPathFor(await publishedCoach(db)) || '/';
+    return new Response(null, { status: 302, headers: { ...securityHeaders, Location: location } });
+  }
   return null;
 }
 
@@ -336,7 +345,7 @@ export function paymentReadiness(env, route, paymentMode, integration) {
  *  while it is still unused. scrypt runs here, not in the Writer. */
 async function createPtRoute(env, user, body) {
   const temporary = temporaryPassword(env, body.create_key);
-  return write(env, 'createPt', { userId: user.id, body, temporaryHash: hashPassword(temporary), temporary });
+  return write(env, 'createPt', { userId: user.id, body, temporaryHash: hashPassword(temporary), temporary, multiPt: multiPtEnabled(env) });
 }
 function temporaryPassword(env, key) {
   if (typeof key !== 'string' || !/^[a-zA-Z0-9-]{12,80}$/.test(key)) throw httpError(400, 'Refresh the page and try again.', { code: 'CREATE_KEY_REQUIRED' });
