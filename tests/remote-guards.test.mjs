@@ -71,6 +71,8 @@ test('wrangler.jsonc: the default env does not enable the cron; only env.preview
   assert.doesNotMatch(top, /"CRON_ENABLED"/);
   assert.match(preview, /"CRON_ENABLED": "true"/);
   assert.match(preview, /"database_id": "81379d2e-c718-48b7-870d-1d189feea966"/);
+  assert.match(preview, /"D1_DATABASE_ID": "81379d2e-c718-48b7-870d-1d189feea966"/);
+  assert.doesNotMatch(top, /"D1_DATABASE_ID"/);
   assert.doesNotMatch(preview, new RegExp(PRODUCTION));
 });
 
@@ -87,6 +89,8 @@ test('wrangler.jsonc resolved by wrangler: no cron trigger on the default (produ
   assert.equal(prod.vars?.CRON_ENABLED, undefined);
   assert.deepEqual(preview.triggers?.crons, ['* * * * *']);
   assert.equal(preview.vars?.CRON_ENABLED, 'true');
+  assert.equal(preview.vars?.D1_DATABASE_ID, '81379d2e-c718-48b7-870d-1d189feea966');
+  assert.equal(prod.vars?.D1_DATABASE_ID, undefined);
   assert.notEqual(preview.d1_databases[0].database_id, PRODUCTION_DB);
   // Any other env that ever gets a schedule must not be bound to the production database.
   const raw = (await import('wrangler')).experimental_readRawConfig({ config: 'wrangler.jsonc' }).rawConfig;
