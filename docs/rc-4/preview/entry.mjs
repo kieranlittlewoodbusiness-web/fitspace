@@ -4,7 +4,7 @@
 // wrapper gives the unchanged Worker an env.ASSETS with the same behaviour as wrangler.jsonc's
 // assets config: exact file, "/" -> index.html, otherwise index.html (single-page-application).
 // Production keeps the real assets binding via `wrangler deploy`.
-// RC-28: fonts and images are shipped as base64 text modules (~408 KB of module source) and
+// RC-28: fonts and images are shipped as base64 text modules (~382 KB of module source) and
 // decoded here so /fonts/* and /images/* are served with the correct types.
 import worker, { Writer } from './index.js';
 import indexHtml from './public/index.html.txt';
@@ -57,6 +57,12 @@ export default {
         headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' }
       }));
     }
-    return withRobots(await worker.fetch(request, { ...env, ASSETS }, ctx));
+    const res = withRobots(await worker.fetch(request, { ...env, ASSETS }, ctx));
+    // Worker securityHeaders set Cache-Control: no-store on every response. Restore
+    // the long-lived cache only for the preview-inlined font and image paths.
+    if (FILES[path]?.[2] && (path.startsWith('/fonts/') || path.startsWith('/images/'))) {
+      res.headers.set('Cache-Control', FILES[path][2]);
+    }
+    return res;
   }
 };

@@ -59,3 +59,60 @@
 
 .limit-label{color:var(--accent-ink);}
 .booking-hero .limit-label,.landing-hero .limit-label{color:var(--accent-ink);background:var(--accent);border-color:var(--accent);}
+
+/* RC-25: iPhone Safari header inset, long brand names, and class-form overflow. */
+/* viewport-fit=cover is set on the document so env(safe-area-inset-*) can apply. */
+.header,.brand-shell>.header,.landing-hero .header,.booking-hero .header,.header .container{
+  padding-left:max(20px,env(safe-area-inset-left,0px));
+  padding-right:max(20px,env(safe-area-inset-right,0px));
+  box-sizing:border-box;
+}
+.header .nav{flex-shrink:0}
+.header .brand{min-width:0;overflow:hidden;flex:1 1 auto}
+.header .wordmark{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mode-bar{
+  padding-top:max(8px,env(safe-area-inset-top,0px));
+  padding-left:max(18px,env(safe-area-inset-left,0px));
+  padding-right:max(18px,env(safe-area-inset-right,0px));
+}
+#toast{bottom:max(23px,env(safe-area-inset-bottom,0px))}
+.sidebar{padding-left:max(23px,env(safe-area-inset-left,0px))}
+.sidebar .brand{min-width:0;overflow:hidden}
+.sidebar .wordmark{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.work-header .breadcrumb{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.session-generator,.session-editor,.session-generator>*,.session-editor>div{min-width:0}
+.session-generator input,.session-editor input{
+  width:100%;max-width:100%;box-sizing:border-box;display:block
+}
+input[type=datetime-local],input[type=date],input[type=time]{
+  -webkit-appearance:none;appearance:none;min-height:44px;line-height:1.25;display:block;width:100%;max-width:100%;box-sizing:border-box
+}
+input[type=datetime-local]::-webkit-date-and-time-value,
+input[type=date]::-webkit-date-and-time-value,
+input[type=time]::-webkit-date-and-time-value{text-align:left}
+@media(max-width:1050px){.sidebar{padding-left:max(18px,env(safe-area-inset-left,0px))}}
+@media(max-width:760px){
+  .sidebar{
+    padding-left:max(22px,env(safe-area-inset-left,0px));
+    padding-right:max(22px,env(safe-area-inset-right,0px))
+  }
+  .workspace{
+    padding-left:max(20px,env(safe-area-inset-left,0px));
+    padding-right:max(20px,env(safe-area-inset-right,0px))
+  }
+}
+@media(max-width:480px){
+  .session-generator{grid-template-columns:minmax(0,1fr)}
+  .session-editor>div{grid-template-columns:24px minmax(0,1fr)}
+  .session-editor input[name=session_date]{grid-column:2}
+  .session-editor .duration-label{grid-column:2;max-width:none;width:100%}
+}
+@media(max-width:420px){
+  .header .brand{white-space:nowrap;max-width:none;line-height:inherit}
+}
+@media(min-width:900px){
+  .header .container,.brand-shell>.header,.landing-hero .header,.booking-hero .header{
+    padding-left:max(40px,env(safe-area-inset-left,0px));
+    padding-right:max(40px,env(safe-area-inset-right,0px))
+  }
+}
