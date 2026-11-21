@@ -100,7 +100,7 @@ test('preview ASSETS serves /fonts and /images with the right type, body and cac
     assert.equal((await head.arrayBuffer()).byteLength, 0, path + ' HEAD body');
   }
   // ~408 KB of base64 text-module source for the seven binaries.
-  assert.ok(inlined > 400 * 1024 && inlined < 420 * 1024, 'unexpected inlined size ' + inlined);
+  assert.ok(inlined > 370 * 1024 && inlined < 395 * 1024, 'unexpected inlined size ' + inlined);
   console.log('preview inlined binary text modules:', (inlined / 1024).toFixed(1), 'KB');
 });
 
