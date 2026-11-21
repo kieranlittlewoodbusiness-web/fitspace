@@ -1,0 +1,151 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { registerHooks } from 'node:module';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const entrySrc = readFileSync(join(root, 'docs/rc-4/preview/entry.mjs'), 'utf8');
+const genSrc = readFileSync(join(root, 'docs/rc-4/preview/gen-upload.mjs'), 'utf8');
+
+// Workers treat .txt (and .b64.txt) imports as text modules; Node does not.
+registerHooks({
+  load(url, context, nextLoad) {
+    if (url.endsWith('.txt')) {
+      const source = readFileSync(fileURLToPath(url), 'utf8');
+      return { format: 'module', shortCircuit: true, source: `export default ${JSON.stringify(source)};` };
+    }
+    return nextLoad(url, context);
+  }
+});
+
+const TEXT = {
+  '/index.html': 'index.html',
+  '/app.js': 'app.js',
+  '/styles.css': 'styles.css'
+};
+const BINARY = {
+  '/fonts/sora-latin-wght.woff2': ['fonts/sora-latin-wght.woff2', 'font/woff2', 'public, max-age=31536000, immutable'],
+  '/images/hero.webp': ['images/hero.webp', 'image/webp', 'public, max-age=86400'],
+  '/images/booking-hero.webp': ['images/booking-hero.webp', 'image/webp', 'public, max-age=86400'],
+  '/images/class-strength.webp': ['images/class-strength.webp', 'image/webp', 'public, max-age=86400'],
+  '/images/class-conditioning.webp': ['images/class-conditioning.webp', 'image/webp', 'public, max-age=86400'],
+  '/images/empty-classes.webp': ['images/empty-classes.webp', 'image/webp', 'public, max-age=86400'],
+  '/images/empty-bookings.webp': ['images/empty-bookings.webp', 'image/webp', 'public, max-age=86400']
+};
+
+async function loadPreviewEntry() {
+  const dir = mkdtempSync(join(tmpdir(), 'rc28-preview-assets-'));
+  writeFileSync(join(dir, 'index.js'), `export class Writer {}
+export default {
+  scheduled(){},
+  fetch(request, env, ctx){
+    const path = new URL(request.url).pathname;
+    if (path.startsWith('/api/')) {
+      return new Response(JSON.stringify({ error: 'This action is not available.' }), {
+        status: 404,
+        headers: { 'content-type': 'application/json; charset=utf-8' }
+      });
+    }
+    return env.ASSETS.fetch(request, env, ctx);
+  }
+};
+`);
+  mkdirSync(join(dir, 'public/fonts'), { recursive: true });
+  mkdirSync(join(dir, 'public/images'), { recursive: true });
+  for (const file of Object.values(TEXT)) {
+    writeFileSync(join(dir, 'public', file + '.txt'), readFileSync(join(root, 'app/public', file)));
+  }
+  for (const [file] of Object.values(BINARY)) {
+    const dest = join(dir, 'public', file + '.b64.txt');
+    mkdirSync(dirname(dest), { recursive: true });
+    writeFileSync(dest, readFileSync(join(root, 'app/public', file)).toString('base64'));
+  }
+  writeFileSync(join(dir, 'entry.mjs'), entrySrc);
+  return import(pathToFileURL(join(dir, 'entry.mjs')).href);
+}
+
+async function get(mod, path, method = 'GET') {
+  return mod.default.fetch(new Request('https://resiliencecoaching-preview.example' + path, { method }), {}, {});
+}
+
+test('gen-upload and the preview entry both list the font and image modules', () => {
+  for (const file of Object.values(BINARY).map(([f]) => f)) {
+    assert.ok(entrySrc.includes(`./public/${file}.b64.txt`), 'entry missing import for ' + file);
+    assert.ok(genSrc.includes(file), 'gen-upload missing ' + file);
+  }
+});
+
+test('preview ASSETS serves /fonts and /images with the right type, body and cache headers', async () => {
+  const mod = await loadPreviewEntry();
+  let inlined = 0;
+  for (const [path, [file, type, cache]] of Object.entries(BINARY)) {
+    const raw = readFileSync(join(root, 'app/public', file));
+    inlined += Buffer.from(raw.toString('base64')).length;
+    const res = await get(mod, path);
+    assert.equal(res.status, 200, path + ' status');
+    assert.equal(res.headers.get('content-type'), type, path + ' type');
+    assert.equal(res.headers.get('cache-control'), cache, path + ' cache');
+    const body = Buffer.from(await res.arrayBuffer());
+    assert.ok(body.length > 0, path + ' empty body');
+    assert.deepEqual(body, raw, path + ' bytes');
+    const head = await get(mod, path, 'HEAD');
+    assert.equal(head.status, 200, path + ' HEAD status');
+    assert.equal(head.headers.get('content-type'), type, path + ' HEAD type');
+    assert.equal((await head.arrayBuffer()).byteLength, 0, path + ' HEAD body');
+  }
+  // ~408 KB of base64 text-module source for the seven binaries.
+  assert.ok(inlined > 400 * 1024 && inlined < 420 * 1024, 'unexpected inlined size ' + inlined);
+  console.log('preview inlined binary text modules:', (inlined / 1024).toFixed(1), 'KB');
+});
+
+test('preview ASSETS still serves known text assets and unknown paths as the HTML shell', async () => {
+  const mod = await loadPreviewEntry();
+  const html = readFileSync(join(root, 'app/public/index.html'));
+  for (const path of ['/', '/index.html', '/no-such-page', '/fonts/missing.woff2', '/images/not-there.webp']) {
+    const res = await get(mod, path);
+    assert.equal(res.status, 200, path + ' status');
+    assert.equal(res.headers.get('content-type'), 'text/html; charset=utf-8', path + ' type');
+    assert.equal(res.headers.get('cache-control'), 'no-cache', path + ' cache');
+    const body = Buffer.from(await res.arrayBuffer());
+    assert.ok(body.length > 0, path + ' empty body');
+    assert.deepEqual(body, html, path + ' should be the index shell');
+  }
+  const js = await get(mod, '/app.js');
+  assert.equal(js.headers.get('content-type'), 'application/javascript; charset=utf-8');
+  assert.deepEqual(Buffer.from(await js.arrayBuffer()), readFileSync(join(root, 'app/public/app.js')));
+  const css = await get(mod, '/styles.css');
+  assert.equal(css.headers.get('content-type'), 'text/css; charset=utf-8');
+  assert.deepEqual(Buffer.from(await css.arrayBuffer()), readFileSync(join(root, 'app/public/styles.css')));
+});
+
+test('preview entry serves robots.txt and X-Robots-Tag noindex on every response', async () => {
+  assert.ok(entrySrc.includes("docs/rc-4/preview/entry.mjs") || entrySrc.includes('preview-upload entry') || entrySrc.includes('Preview-only noindex'), 'entry should document preview-only scope');
+  assert.ok(!readFileSync(join(root, 'worker/index.mjs'), 'utf8').includes('X-Robots-Tag'), 'noindex must not live in the shared Worker');
+  const mod = await loadPreviewEntry();
+  const robots = await get(mod, '/robots.txt');
+  assert.equal(robots.status, 200);
+  assert.equal(robots.headers.get('content-type'), 'text/plain; charset=utf-8');
+  assert.equal(robots.headers.get('x-robots-tag'), 'noindex, nofollow');
+  assert.equal(await robots.text(), 'User-agent: *\nDisallow: /');
+  const robotsHead = await get(mod, '/robots.txt', 'HEAD');
+  assert.equal(robotsHead.status, 200);
+  assert.equal(robotsHead.headers.get('x-robots-tag'), 'noindex, nofollow');
+  assert.equal((await robotsHead.arrayBuffer()).byteLength, 0);
+  for (const [path, status, typePrefix] of [
+    ['/', 200, 'text/html'],
+    ['/fonts/sora-latin-wght.woff2', 200, 'font/woff2'],
+    ['/images/hero.webp', 200, 'image/webp'],
+    ['/app.js', 200, 'application/javascript'],
+    ['/no-such-page', 200, 'text/html'],
+    ['/api/not-a-real-route', 404, 'application/json']
+  ]) {
+    const res = await get(mod, path);
+    assert.equal(res.status, status, path + ' status');
+    assert.equal((res.headers.get('content-type') || '').startsWith(typePrefix), true, path + ' type ' + res.headers.get('content-type'));
+    assert.equal(res.headers.get('x-robots-tag'), 'noindex, nofollow', path + ' robots tag');
+    await res.arrayBuffer();
+  }
+});

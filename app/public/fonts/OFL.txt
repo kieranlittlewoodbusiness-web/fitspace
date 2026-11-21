@@ -1,0 +1,4 @@
+Sora is a trademark of the Sora Type project.
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+License: https://openfontlicense.org/open-font-license-official-text/
+This repository includes a Latin variable subset (weights 400-700) as sora-latin-wght.woff2, self-hosted for Resilience Coaching.

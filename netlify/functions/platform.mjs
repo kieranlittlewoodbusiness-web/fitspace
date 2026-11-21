@@ -36,9 +36,30 @@ export function createHandler({ getStorage = storage } = {}) {
     try {
       if (!json) {
         if (!['GET', 'HEAD'].includes(request.method)) return failure('Method not allowed.', 405);
-        const asset = url.pathname === '/app.js' ? ['app.js', 'text/javascript'] : url.pathname === '/styles.css' ? ['styles.css', 'text/css'] : ['index.html', 'text/html'];
-        const bytes = await readFile(`${runtimeRoot}/app/public/${asset[0]}`);
-        return new Response(request.method === 'HEAD' ? null : bytes, { headers: { ...securityHeaders, 'Content-Type': asset[1] + '; charset=utf-8' } });
+        const pathName = url.pathname;
+        const publicFiles = {
+          '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
+          '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
+          '/fonts/sora-latin-wght.woff2': ['fonts/sora-latin-wght.woff2', 'font/woff2', 'public, max-age=31536000, immutable'],
+          '/images/hero.webp': ['images/hero.webp', 'image/webp', 'public, max-age=86400'],
+          '/images/booking-hero.webp': ['images/booking-hero.webp', 'image/webp', 'public, max-age=86400'],
+          '/images/class-strength.webp': ['images/class-strength.webp', 'image/webp', 'public, max-age=86400'],
+          '/images/class-conditioning.webp': ['images/class-conditioning.webp', 'image/webp', 'public, max-age=86400'],
+          '/images/empty-classes.webp': ['images/empty-classes.webp', 'image/webp', 'public, max-age=86400'],
+          '/images/empty-bookings.webp': ['images/empty-bookings.webp', 'image/webp', 'public, max-age=86400']
+        };
+        const asset = publicFiles[pathName] || ((pathName.startsWith('/fonts/') || pathName.startsWith('/images/')) ? null : ['index.html', 'text/html; charset=utf-8']);
+        if (!asset) return failure('Not found.', 404);
+        const filePath = `${runtimeRoot}/app/public/${asset[0]}`;
+        try {
+          const bytes = await readFile(filePath);
+          const headers = { ...securityHeaders, 'Content-Type': asset[1] };
+          if (asset[2]) headers['Cache-Control'] = asset[2];
+          return new Response(request.method === 'HEAD' ? null : bytes, { headers });
+        } catch (error) {
+          if (asset[0].startsWith('fonts/') || asset[0].startsWith('images/')) return failure('Not found.', 404);
+          throw error;
+        }
       }
       const paymentMode=process.env.PAYMENT_MODE||'demo';
       if(!['demo','stripe_test','stripe_live'].includes(paymentMode))return failure('Use PAYMENT_MODE=demo, stripe_test or stripe_live.',503,true);
