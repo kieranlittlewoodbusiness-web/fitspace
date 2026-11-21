@@ -67,6 +67,12 @@ export const ALLOWED = {
       '4b8c0975', // SELECT slug FROM pts WHERE published=1 ORDER BY created_at LIMIT 1
     ]
   },
+  '../src/public.mjs::publishedCoach': {
+    why: 'public: first published PT row for /api/public/site, slug routing and /trainers',
+    queries: [
+      'edb283f0', // SELECT * FROM pts WHERE published=1 ORDER BY created_at LIMIT 1
+    ]
+  },
   '../src/public.mjs::credentialById': {
     why: "PT webhook: credential by the id in the URL, verified by that credential's own signing secret",
     queries: [
@@ -96,12 +102,14 @@ export const ALLOWED = {
     why: "PT op: pts row for the caller's own pt_id",
     queries: [
       'abf4ec84', // SELECT * FROM pts WHERE id=?
+      'd8aa094b', // SELECT pt_id FROM stripe_connections WHERE NOT (pt_id=? AND mode=?) LI
     ]
   },
   '../src/ops/stripe-jobs.mjs::bindStmts': {
     why: "system: binds the account from a verified Stripe job to the job's pt_id",
     queries: [
       '4b9fd779', // NOT EXISTS(SELECT 1 FROM stripe_connections WHERE mode=? AND account_i
+      '7b61835a', // NOT EXISTS(SELECT 1 FROM stripe_connections WHERE NOT (pt_id=? AND mod
       'b2681801', // UPDATE pts SET stripe_account=?,stripe_ready=? WHERE id=?
       'c50e14e5', // INSERT INTO stripe_connections(pt_id,mode,account_id,routing,ready) VA
     ]
@@ -137,6 +145,7 @@ export const ALLOWED = {
     queries: [
       '33751c95', // INSERT INTO users(id,name,email,password_hash,role,pt_id,must_change_p
       '93b0bb8a', // INSERT INTO pts(id,slug,brand_name,tagline,description,about,accent,ba
+      'd6691f19', // NOT EXISTS(SELECT 1 FROM pts)
     ]
   },
   '../src/ops/manage.mjs::actor': {
@@ -197,6 +206,18 @@ export const ALLOWED = {
     why: 'owner-only CLI: one-off admin bootstrap SQL (no tenant)',
     queries: [
       'cf8a91d8', // INSERT INTO users(id,name,email,password_hash,role,created_at) SELECT 
+    ]
+  },
+  '../scripts/seed-dev-pt.mjs::main': {
+    why: 'local-only CLI: counts pts after a dev seed; never run with --remote',
+    queries: [
+      '593c9201', // SELECT count(*) AS pts FROM pts
+    ]
+  },
+  '../scripts/seed-dev-pt.mjs::seedDevPtSql': {
+    why: 'local-only CLI: one published PT and its user if none exist (no tenant; no admin change)',
+    queries: [
+      '4635d793', // INSERT INTO pts(...) SELECT ... WHERE NOT EXISTS(SELECT 1 FROM pts); INSERT INTO users(...)
     ]
   },
   '../src/cutover.mjs::DUPLICATE_REPORT_SQL': {

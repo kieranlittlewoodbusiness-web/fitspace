@@ -32,6 +32,8 @@ export default defineConfig({
           TEST_MIGRATIONS: await readD1Migrations(path.join(import.meta.dirname, 'migrations')),
           DEMO_SNAPSHOT_SQL: await demoSnapshotStatements(),
           PAYMENT_MODE: 'demo',
+          // Production/wrangler default is false. Tests opt into the marketplace unless a case passes false.
+          MULTI_PT_ENABLED: 'true',
           // Throwaway per-run value so tests can sign webhook payloads. Never a real secret,
           // never written to disk or printed.
           STRIPE_WEBHOOK_SECRET: crypto.randomBytes(32).toString('hex'),
