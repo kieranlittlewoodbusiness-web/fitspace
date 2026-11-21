@@ -8,6 +8,7 @@
 import { scopeFor } from '../scope.mjs';
 import { isGuardFailure } from '../db.mjs';
 import { httpError, isStripe, live, uid } from '../util.mjs';
+import { platformLinkDisabledError, singleConnectExistsError } from '../multi-pt.mjs';
 import { stripeConnection } from './bookings.mjs';
 import { refundWrites } from './webhooks.mjs';
 
@@ -86,7 +87,7 @@ export async function prepareRefund(db, { bookingId, userId, token, mode, now = 
 const onboardPayload = (mode, account, origin) => ({ mode, path: '/v2/core/account_links', v2: true, data: { account, use_case: { type: 'account_onboarding', account_onboarding: { configurations: ['merchant'], refresh_url: origin + '/dashboard?tab=payments&connect=refresh', return_url: origin + '/dashboard?tab=payments&connect=return', collection_options: { fields: 'eventually_due' } } } } });
 
 /** POST /api/pt/stripe/connect: the caller's OWN pt only. */
-export async function prepareConnect(db, { userId, origin, mode, integration = 'connect', now = Date.now() }) {
+export async function prepareConnect(db, { userId, origin, mode, integration = 'connect', multiPt = false, now = Date.now() }) {
   const user = await actor(db, userId);
   if (user.role !== 'pt' || !user.pt_id) throw httpError(403, 'Your account does not have access to this action.');
   if (user.must_change_password) throw httpError(403, 'Change your temporary password first.');
@@ -95,22 +96,29 @@ export async function prepareConnect(db, { userId, origin, mode, integration = '
   const c = await stripeConnection(db, pt.id, mode, integration);
   if (c) {
     if (c.routing === 'platform') throw httpError(409, 'The admin has linked the platform Stripe account. Check its status instead.');
-    return job(db, 'onboard:' + uid(), 'onboard', pt.id, user.id, onboardPayload(mode, c.account_id, origin), now);
+    return job(db, 'onboard:' + uid(), 'onboard', pt.id, user.id, { ...onboardPayload(mode, c.account_id, origin), multiPt }, now);
   }
-  return job(db, 'account:' + (live(mode) ? 'live:' : '') + pt.id, 'account', pt.id, user.id, { mode, origin, path: '/v2/core/accounts', v2: true, data: { contact_email: user.email, display_name: pt.brand_name, dashboard: 'full', identity: { country: 'gb' }, configuration: { merchant: { capabilities: { card_payments: { requested: true } } } }, defaults: { currency: 'gbp', responsibilities: { fees_collector: 'stripe', losses_collector: 'stripe' }, locales: ['en-GB'] }, include: ['configuration.merchant'] } }, now);
+  if (!multiPt) {
+    const other = await db.get('SELECT pt_id FROM stripe_connections WHERE NOT (pt_id=? AND mode=?) LIMIT 1', pt.id, mode);
+    if (other) throw singleConnectExistsError();
+  }
+  return job(db, 'account:' + (live(mode) ? 'live:' : '') + pt.id, 'account', pt.id, user.id, { mode, origin, multiPt, path: '/v2/core/accounts', v2: true, data: { contact_email: user.email, display_name: pt.brand_name, dashboard: 'full', identity: { country: 'gb' }, configuration: { merchant: { capabilities: { card_payments: { requested: true } } } }, defaults: { currency: 'gbp', responsibilities: { fees_collector: 'stripe', losses_collector: 'stripe' }, locales: ['en-GB'] }, include: ['configuration.merchant'] } }, now);
 }
 
 /** POST /api/admin/stripe/link (admin only). */
-export async function prepareLink(db, { userId, ptId, mode, integration = 'connect', now = Date.now() }) {
+export async function prepareLink(db, { userId, ptId, mode, integration = 'connect', multiPt = false, now = Date.now() }) {
   const user = await actor(db, userId);
   if (user.role !== 'admin') throw httpError(403, 'Your account does not have access to this action.');
   if (integration === 'pt_direct') throw httpError(403, 'Owner account linking is disabled. Each PT must configure their own account.');
+  if (!multiPt) throw platformLinkDisabledError();
   if (typeof ptId !== 'string' || !(await db.get('SELECT id FROM pts WHERE id=?', ptId))) throw httpError(404, 'Trainer not found.');
-  return job(db, 'link:' + uid(), 'link_platform', ptId, user.id, { mode, path: '/v1/account', method: 'GET' }, now);
+  return job(db, 'link:' + uid(), 'link_platform', ptId, user.id, { mode, multiPt, path: '/v1/account', method: 'GET' }, now);
 }
 
-const bindStmts = (db, ptId, mode, account, routing, ready) => [
+const bindStmts = (db, ptId, mode, account, routing, ready, { multiPt = false } = {}) => [
   db.guard('account_not_other_pt', 'NOT EXISTS(SELECT 1 FROM stripe_connections WHERE mode=? AND account_id=? AND pt_id<>?)', mode, account, ptId),
+  // RC-14: at most one Connect account on the site when single-PT mode is on.
+  multiPt ? null : db.guard('single_connect', 'NOT EXISTS(SELECT 1 FROM stripe_connections WHERE NOT (pt_id=? AND mode=?))', ptId, mode),
   db.stmt('INSERT INTO stripe_connections(pt_id,mode,account_id,routing,ready) VALUES(?,?,?,?,?) ON CONFLICT(pt_id,mode) DO UPDATE SET account_id=excluded.account_id,routing=excluded.routing,ready=excluded.ready', ptId, mode, account, routing, ready ? 1 : 0),
   mode === 'stripe_test' && routing === 'connected' ? db.stmt('UPDATE pts SET stripe_account=?,stripe_ready=? WHERE id=?', account, ready ? 1 : 0, ptId) : null
 ];
@@ -121,15 +129,16 @@ export async function completeJob(db, { id, result, now = Date.now() }) {
   if (!row) throw httpError(404, 'Payment operation not found.');
   if (row.status === 'done') return JSON.parse(row.result);
   const p = JSON.parse(row.payload);
+  const multiPt = p.multiPt === true;
   const writes = [db.guard('job_not_done', "EXISTS(SELECT 1 FROM stripe_jobs WHERE id=? AND status<>'done')", id)];
   let out;
   if (row.kind === 'link_platform') {
-    writes.push(...bindStmts(db, row.target_id, p.mode, result.id, 'platform', Boolean(result.charges_enabled)));
+    writes.push(...bindStmts(db, row.target_id, p.mode, result.id, 'platform', Boolean(result.charges_enabled), { multiPt }));
     out = { ok: true, account_id: result.id, ready: Boolean(result.charges_enabled), mode: p.mode };
   } else if (row.kind === 'account') {
     const next = 'onboard:' + uid();
-    writes.push(...bindStmts(db, row.target_id, p.mode, result.id, 'connected', false));
-    writes.push(jobStmt(db, next, 'onboard', row.target_id, row.actor_id, onboardPayload(p.mode, result.id, p.origin), now));
+    writes.push(...bindStmts(db, row.target_id, p.mode, result.id, 'connected', false, { multiPt }));
+    writes.push(jobStmt(db, next, 'onboard', row.target_id, row.actor_id, { ...onboardPayload(p.mode, result.id, p.origin), multiPt }, now));
     out = { stripe_next: next };
   } else if (row.kind === 'onboard') {
     out = { url: result.url };
@@ -152,7 +161,8 @@ export async function completeJob(db, { id, result, now = Date.now() }) {
     if (!isGuardFailure(error)) throw error;
     const again = await db.get('SELECT status,result FROM stripe_jobs WHERE id=?', id);
     if (again?.status === 'done') return JSON.parse(again.result); // a concurrent run committed first
-    throw httpError(409, error.message.includes('account_not_other_pt') ? 'This Stripe account is already assigned to another trainer in this payment mode.' : 'Checkout Session mismatch.');
+    if ((row.kind === 'account' || row.kind === 'link_platform') && p.multiPt !== true) throw singleConnectExistsError();
+    throw httpError(409, error.message.includes('account_not_other_pt') || row.kind === 'account' || row.kind === 'link_platform' ? 'This Stripe account is already assigned to another trainer in this payment mode.' : 'Checkout Session mismatch.');
   }
   return out;
 }

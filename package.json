@@ -12,7 +12,8 @@
     "test:bundle": "node scripts/test-bundle.mjs",
     "test:workers": "vitest run --config vitest.workers.config.mjs",
     "dev:workers": "wrangler dev --local",
-    "db:migrate:local": "wrangler d1 migrations apply DB --local"
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:seed:local": "node scripts/seed-dev-pt.mjs --local"
   },
   "dependencies": {
     "pg": "8.16.3"

@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { scopeFor } from '../scope.mjs';
 import { isGuardFailure, isUniqueViolation } from '../db.mjs';
 import { httpError, uid } from '../util.mjs';
+import { singlePtExistsError } from '../multi-pt.mjs';
 import { viewBlocks } from '../views.mjs';
 import { blockData, branding, email as validEmail, text, MOTIVATIONS } from '../validate.mjs';
 import { noShowInsert } from '../emails.mjs';
@@ -32,7 +33,7 @@ const createKey = key => {
  *  pts.create_key is UNIQUE; a retry or concurrent duplicate returns the SAME PT, and the
  *  same temporary password while it is still unused (the route derives it from the key, so
  *  it is never stored; scrypt runs in the Worker, not here). */
-export async function createPt(db, { userId, body, temporaryHash, temporary, now = Date.now() }) {
+export async function createPt(db, { userId, body, temporaryHash, temporary, multiPt = false, now = Date.now() }) {
   const user = await actor(db, userId);
   requireRole(user, ['admin']);
   const key = createKey(body.create_key);
@@ -49,11 +50,14 @@ export async function createPt(db, { userId, body, temporaryHash, temporary, now
   const id = uid();
   try {
     await db.batch([
+      // RC-14: commit-time lock so two concurrent creates in single-PT mode yield exactly one PT.
+      multiPt ? null : db.guard('single_pt_free', 'NOT EXISTS(SELECT 1 FROM pts)'),
       db.stmt('INSERT INTO pts(id,slug,brand_name,tagline,description,about,accent,background,foreground,features,published,created_at,create_key,create_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)', id, b.slug, b.name, b.tagline, b.description, b.about, b.accent, b.background, b.foreground, JSON.stringify(b.features), b.published, now, key, hash),
       db.stmt("INSERT INTO users(id,name,email,password_hash,role,pt_id,must_change_password,created_at) VALUES(?,?,?,?,'pt',?,1,?)", uid(), name, address, temporaryHash, id, now),
       audit(db, user.id, 'pt_created', id, now)
     ]);
   } catch (error) {
+    if (isGuardFailure(error)) { const again = await replay(); if (again) return again; throw singlePtExistsError(); }
     if (isUniqueViolation(error, 'pts.create_key')) { const again = await replay(); if (again) return again; }
     if (isUniqueViolation(error, 'pts.slug')) throw httpError(409, 'That page address is already in use.');
     if (isUniqueViolation(error, 'users.email')) throw httpError(409, 'An account already exists for this email.');

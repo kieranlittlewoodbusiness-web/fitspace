@@ -1,14 +1,32 @@
 // Public (unauthenticated) and platform-level reads: published PTs only, never PT-private data.
 import { httpError } from './util.mjs';
 import { publicPt, viewBlocks } from './views.mjs';
+import { bookingPathFor } from './multi-pt.mjs';
 
 export async function defaultSlug(db) {
   return (await db.get('SELECT slug FROM pts WHERE published=1 ORDER BY created_at LIMIT 1'))?.slug || null;
 }
+/** The single published PT used in single-PT mode (first published by created_at), or null. */
+export async function publishedCoach(db) {
+  return (await db.get('SELECT * FROM pts WHERE published=1 ORDER BY created_at LIMIT 1')) || null;
+}
 export async function publishedPts(db) {
   return (await db.all('SELECT * FROM pts WHERE published=1 ORDER BY created_at')).map(publicPt);
 }
-export async function publishedPtPage(db, slug, now = Date.now()) {
+/** Public site payload for GET /api/public/site. pt is the first published PT, or null. */
+export async function publicSite(db, { multiPt }) {
+  const row = await publishedCoach(db);
+  return {
+    multi_pt_enabled: Boolean(multiPt),
+    pt: row ? { ...publicPt(row), booking_path: bookingPathFor(row) } : null,
+    default_slug: row?.slug || null
+  };
+}
+export async function publishedPtPage(db, slug, now = Date.now(), { multiPt = true } = {}) {
+  if (!multiPt) {
+    const only = await publishedCoach(db);
+    if (!only || only.slug !== slug) throw httpError(404, 'This page is not available.', { code: 'PT_NOT_FOUND' });
+  }
   const pt = await db.get('SELECT * FROM pts WHERE slug=? AND published=1', slug);
   if (!pt) throw httpError(404, 'This page is not available.');
   const blocks = (await viewBlocks(db, await db.all('SELECT * FROM blocks WHERE pt_id=? AND published=1 AND closed=0', pt.id), now))

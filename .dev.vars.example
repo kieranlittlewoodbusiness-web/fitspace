@@ -3,6 +3,8 @@
 APP_URL=http://127.0.0.1:8787
 PAYMENT_MODE=demo
 STRIPE_INTEGRATION=connect
+# RC-14: "true" enables the multi-trainer marketplace. Default is off.
+MULTI_PT_ENABLED=false
 EMAIL_MODE=preview
 RESET_EMAIL_MODE=preview
 # Secrets (test-mode values only in dev):

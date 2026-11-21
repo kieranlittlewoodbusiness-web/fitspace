@@ -31,7 +31,7 @@ describe('guards with the Writer bypassed (direct D1, concurrent)', () => {
   it('job_not_done (account kind): 5 concurrent completeJob calls bind once and chain exactly 1 onboarding job', async () => {
     const s = await seedBlock({ customers: 0 });
     const pt = await seedUser({ role: 'pt', ptId: s.ptId });
-    const jobId = await prepareConnect(db(), { userId: pt.id, origin: ORIGIN, mode: 'stripe_test' });
+    const jobId = await prepareConnect(db(), { userId: pt.id, origin: ORIGIN, mode: 'stripe_test', multiPt: true });
     expect(jobId).toMatch(/^account:/);
     const account = 'acct_test_' + nodeCrypto.randomBytes(6).toString('hex');
     const out = await settle(Array.from({ length: 5 }, () => completeJob(db(), { id: jobId, result: { id: account } })));
@@ -60,7 +60,7 @@ describe('guards with the Writer bypassed (direct D1, concurrent)', () => {
     const admin = await seedUser({ role: 'admin' });
     const slug = 'guard-' + nodeCrypto.randomBytes(4).toString('hex');
     const body = { create_key: crypto.randomUUID(), owner_name: 'Guard Trainer', email: slug + '@example.com', brand_name: 'GUARD CLUB', slug, tagline: 'Guards hold.', description: 'Commit-time checks.', about: 'Train with guards.', accent: '#ffd43b', background: '#ffffff', foreground: '#111111', features: ['One'], published: true };
-    const out = await settle(Array.from({ length: 5 }, () => createPt(db(), { userId: admin.id, body, temporaryHash: 'x', temporary: 'TempPass123!' })));
+    const out = await settle(Array.from({ length: 5 }, () => createPt(db(), { userId: admin.id, body, temporaryHash: 'x', temporary: 'TempPass123!', multiPt: true })));
     const rows = await db().all('SELECT id FROM pts WHERE slug=?', slug);
     console.log('pts_create_key direct x5:', JSON.stringify(tally(out.map(o => (o.pt_id ? (o.replay ? 'replay' : 'created') : 'err:' + o.error)))));
     expect(rows).toHaveLength(1);
@@ -208,7 +208,7 @@ describe('guards against a commit between read and write (no Writer)', () => {
     const ptA = await seedUser({ role: 'pt', ptId: a.ptId });
     const account = 'acct_test_' + nodeCrypto.randomBytes(6).toString('hex');
     await db().run("INSERT INTO stripe_connections(pt_id,mode,account_id,routing,ready) VALUES(?,'stripe_test',?,'connected',1)", b.ptId, account);
-    const jobId = await prepareConnect(db(), { userId: ptA.id, origin: ORIGIN, mode: 'stripe_test' });
+    const jobId = await prepareConnect(db(), { userId: ptA.id, origin: ORIGIN, mode: 'stripe_test', multiPt: true });
     await expect(completeJob(db(), { id: jobId, result: { id: account } })).rejects.toMatchObject({ status: 409 });
     expect(await db().get('SELECT * FROM stripe_connections WHERE pt_id=?', a.ptId)).toBeNull();
     expect(await db().get("SELECT count(*) n FROM stripe_jobs WHERE target_id=? AND kind='onboard'", a.ptId)).toEqual({ n: 0 });
