@@ -70,7 +70,10 @@
         "STRIPE_INTEGRATION": "connect",
         "MULTI_PT_ENABLED": "false",
         "APP_URL": "https://resiliencecoaching-preview.littlk.workers.dev",
-        "CRON_ENABLED": "true"
+        "CRON_ENABLED": "true",
+        // Runtime preview marker: Workers cannot read a D1 binding's id, so the
+        // out-of-band reset gate checks this var and fails closed when it is absent.
+        "D1_DATABASE_ID": "81379d2e-c718-48b7-870d-1d189feea966"
       },
       "d1_databases": [
         {

@@ -374,6 +374,7 @@ export default {
       const asset = await env.ASSETS.fetch(request);
       const out = new Response(asset.body, asset);
       for (const [name, value] of Object.entries(securityHeaders)) out.headers.set(name, value);
+      if (new URL(request.url).pathname === '/reset-password') out.headers.set('Referrer-Policy', 'no-referrer');
       return out;
     } catch (error) {
       if (error.status) return json(error.status, { error: error.message, ...errorExtras(error) });
