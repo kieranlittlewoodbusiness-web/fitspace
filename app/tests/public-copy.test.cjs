@@ -174,6 +174,18 @@ test('the served /app.js and / includes the approved public wording',async()=>{
   assertNoVisibleFitspace(html,'served /');
 });
 
+const PUBLIC_STATIC=[
+  ['/app.js','text/javascript','no-cache'],
+  ['/styles.css','text/css','no-cache'],
+  ['/fonts/sora-latin-wght.woff2','font/woff2','public, max-age=31536000, immutable'],
+  ['/images/hero.webp','image/webp','public, max-age=86400'],
+  ['/images/booking-hero.webp','image/webp','public, max-age=86400'],
+  ['/images/class-strength.webp','image/webp','public, max-age=86400'],
+  ['/images/class-conditioning.webp','image/webp','public, max-age=86400'],
+  ['/images/empty-classes.webp','image/webp','public, max-age=86400'],
+  ['/images/empty-bookings.webp','image/webp','public, max-age=86400']
+];
+
 test('brand fonts and images are served from /fonts and /images',async()=>{
   const font=await fetch(base+'/fonts/sora-latin-wght.woff2');
   assert.equal(font.status,200);
@@ -183,6 +195,37 @@ test('brand fonts and images are served from /fonts and /images',async()=>{
   assert.match(hero.headers.get('content-type')||'',/image\/webp/);
   const missing=await fetch(base+'/images/not-a-real-image.webp');
   assert.equal(missing.status,404);
+});
+
+test('the public static allowlist is an exact, case-sensitive list of files',async()=>{
+  assert.equal(serverSrc.includes("route==='/app.js'"),false);
+  assert.equal(serverSrc.includes("route==='/styles.css'"),false);
+  assert.equal(serverSrc.includes('.woff2)$/i'),false);
+  assert.equal(serverSrc.includes('.webp)$/i'),false);
+  for(const [path,type,cache] of PUBLIC_STATIC){
+    const res=await fetch(base+path);
+    assert.equal(res.status,200,path+' status');
+    assert.ok((res.headers.get('content-type')||'').includes(type),path+' type');
+    assert.equal(res.headers.get('cache-control'),cache,path+' cache');
+    assert.ok((await res.arrayBuffer()).byteLength>0,path+' empty');
+  }
+  const html=await (await fetch(base+'/')).text();
+  for(const path of ['/IMAGES/hero.webp','/FONTS/sora-latin-wght.woff2']){
+    const res=await fetch(base+path);
+    assert.equal(res.status,200,path+' status');
+    assert.match(res.headers.get('content-type')||'',/text\/html/);
+    assert.equal(await res.text(),html,path+' should be the HTML shell');
+  }
+  for(const path of ['/fonts/OFL.txt','/images/not-a-real-image.webp','/fonts/missing.woff2','/images/%2fsecret.webp','/fonts/%5csecret.woff2','/images/..%2fapp.js','/images/%2e%2e%2fapp.js']){
+    const res=await fetch(base+path);
+    assert.equal(res.status,404,path+' should 404');
+  }
+  for(const path of ['/images/../etc/passwd','/fonts/%2e%2e/%2e%2e/package.json','/images/%2e%2e/%2e%2e/package.json']){
+    const res=await fetch(base+path);
+    assert.equal(res.status,200,path+' status');
+    assert.match(res.headers.get('content-type')||'',/text\/html/);
+    assert.equal(await res.text(),html,path+' should be the HTML shell');
+  }
 });
 
 // RC-4: the sign-in modal rendered a literal "}" after </form> (typo in the uploaded app.js,
