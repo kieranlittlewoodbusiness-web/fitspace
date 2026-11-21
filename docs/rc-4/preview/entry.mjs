@@ -38,7 +38,25 @@ const ASSETS = {
     return new Response(request.method === 'HEAD' ? null : body, { status: 200, headers: { 'content-type': type, 'cache-control': cache } });
   }
 };
+// Preview-only noindex: this wrapper is the preview-upload entry (docs §13). Production
+// deploys wrangler.jsonc's worker/index.mjs directly, so these headers cannot leak there.
+const ROBOTS_TAG = 'noindex, nofollow';
+const ROBOTS_TXT = 'User-agent: *\nDisallow: /';
+const withRobots = (response) => {
+  const out = new Response(response.body, response);
+  out.headers.set('X-Robots-Tag', ROBOTS_TAG);
+  return out;
+};
 export default {
   scheduled: (controller, env, ctx) => worker.scheduled(controller, env, ctx),
-  fetch: (request, env, ctx) => worker.fetch(request, { ...env, ASSETS }, ctx)
+  async fetch(request, env, ctx) {
+    const path = new URL(request.url).pathname;
+    if (path === '/robots.txt' && (request.method === 'GET' || request.method === 'HEAD')) {
+      return withRobots(new Response(request.method === 'HEAD' ? null : ROBOTS_TXT, {
+        status: 200,
+        headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' }
+      }));
+    }
+    return withRobots(await worker.fetch(request, { ...env, ASSETS }, ctx));
+  }
 };

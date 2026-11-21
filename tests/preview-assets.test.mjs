@@ -38,7 +38,21 @@ const BINARY = {
 
 async function loadPreviewEntry() {
   const dir = mkdtempSync(join(tmpdir(), 'rc28-preview-assets-'));
-  writeFileSync(join(dir, 'index.js'), "export class Writer {}\nexport default { scheduled(){}, fetch(request, env, ctx){ return env.ASSETS.fetch(request, env, ctx); } };\n");
+  writeFileSync(join(dir, 'index.js'), `export class Writer {}
+export default {
+  scheduled(){},
+  fetch(request, env, ctx){
+    const path = new URL(request.url).pathname;
+    if (path.startsWith('/api/')) {
+      return new Response(JSON.stringify({ error: 'This action is not available.' }), {
+        status: 404,
+        headers: { 'content-type': 'application/json; charset=utf-8' }
+      });
+    }
+    return env.ASSETS.fetch(request, env, ctx);
+  }
+};
+`);
   mkdirSync(join(dir, 'public/fonts'), { recursive: true });
   mkdirSync(join(dir, 'public/images'), { recursive: true });
   for (const file of Object.values(TEXT)) {
@@ -105,4 +119,33 @@ test('preview ASSETS still serves known text assets and unknown paths as the HTM
   const css = await get(mod, '/styles.css');
   assert.equal(css.headers.get('content-type'), 'text/css; charset=utf-8');
   assert.deepEqual(Buffer.from(await css.arrayBuffer()), readFileSync(join(root, 'app/public/styles.css')));
+});
+
+test('preview entry serves robots.txt and X-Robots-Tag noindex on every response', async () => {
+  assert.ok(entrySrc.includes("docs/rc-4/preview/entry.mjs") || entrySrc.includes('preview-upload entry') || entrySrc.includes('Preview-only noindex'), 'entry should document preview-only scope');
+  assert.ok(!readFileSync(join(root, 'worker/index.mjs'), 'utf8').includes('X-Robots-Tag'), 'noindex must not live in the shared Worker');
+  const mod = await loadPreviewEntry();
+  const robots = await get(mod, '/robots.txt');
+  assert.equal(robots.status, 200);
+  assert.equal(robots.headers.get('content-type'), 'text/plain; charset=utf-8');
+  assert.equal(robots.headers.get('x-robots-tag'), 'noindex, nofollow');
+  assert.equal(await robots.text(), 'User-agent: *\nDisallow: /');
+  const robotsHead = await get(mod, '/robots.txt', 'HEAD');
+  assert.equal(robotsHead.status, 200);
+  assert.equal(robotsHead.headers.get('x-robots-tag'), 'noindex, nofollow');
+  assert.equal((await robotsHead.arrayBuffer()).byteLength, 0);
+  for (const [path, status, typePrefix] of [
+    ['/', 200, 'text/html'],
+    ['/fonts/sora-latin-wght.woff2', 200, 'font/woff2'],
+    ['/images/hero.webp', 200, 'image/webp'],
+    ['/app.js', 200, 'application/javascript'],
+    ['/no-such-page', 200, 'text/html'],
+    ['/api/not-a-real-route', 404, 'application/json']
+  ]) {
+    const res = await get(mod, path);
+    assert.equal(res.status, status, path + ' status');
+    assert.equal((res.headers.get('content-type') || '').startsWith(typePrefix), true, path + ' type ' + res.headers.get('content-type'));
+    assert.equal(res.headers.get('x-robots-tag'), 'noindex, nofollow', path + ' robots tag');
+    await res.arrayBuffer();
+  }
 });
