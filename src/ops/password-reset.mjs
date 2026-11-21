@@ -26,18 +26,22 @@ export const PREVIEW_RESET_INFO = 'reset-v1';
 export const PREVIEW_APP_URL = 'https://resiliencecoaching-preview.littlk.workers.dev';
 export const PREVIEW_DB = '81379d2e-c718-48b7-870d-1d189feea966';
 
-function boundDatabaseId(env) {
-  const raw = env.D1_DATABASE_ID ?? env.DATABASE_ID;
-  return raw == null || raw === '' ? null : raw;
+function boundDatabaseIds(env) {
+  // Check every provided id (trim). D1_DATABASE_ID ?? DATABASE_ID would hide a
+  // production DATABASE_ID when both are set.
+  return [env.D1_DATABASE_ID, env.DATABASE_ID]
+    .map(value => (value == null ? '' : String(value).trim()))
+    .filter(value => value !== '');
 }
 
 /** True only for the preview Worker env: EMAIL_MODE=preview, preview APP_URL, non-prod D1. */
 export function previewOutOfBandAllowed(env) {
-  if (env.EMAIL_MODE !== 'preview') return false;
-  const url = String(env.APP_URL || '').replace(/\/$/, '');
+  if (String(env.EMAIL_MODE ?? '').trim().toLowerCase() !== 'preview') return false;
+  const url = String(env.APP_URL || '').trim().replace(/\/$/, '');
   if (url !== PREVIEW_APP_URL) return false;
-  const raw = boundDatabaseId(env);
-  if (raw != null) {
+  const ids = boundDatabaseIds(env);
+  if (!ids.length) return false;
+  for (const raw of ids) {
     if (isProduction(raw)) return false;
     try {
       if (safeDatabaseId(raw) !== PREVIEW_DB) return false;

@@ -107,12 +107,22 @@ describe('preview out-of-band reset (EMAIL_MODE=preview, non-prod)', () => {
     expect(previewOutOfBandAllowed(env)).toBe(false);
     expect(previewOutOfBandAllowed(previewEnv())).toBe(true);
     expect(previewOutOfBandAllowed(previewEnv({ EMAIL_MODE: 'send' }))).toBe(false);
+    expect(previewOutOfBandAllowed(previewEnv({ EMAIL_MODE: 'Preview' }))).toBe(true);
+    expect(previewOutOfBandAllowed(previewEnv({ EMAIL_MODE: ' preview' }))).toBe(true);
     expect(previewOutOfBandAllowed(previewEnv({ APP_URL: 'https://example.test' }))).toBe(false);
     expect(previewOutOfBandAllowed(previewEnv({ APP_URL: '' }))).toBe(false);
     expect(previewOutOfBandAllowed(previewEnv({ D1_DATABASE_ID: PRODUCTION_DB }))).toBe(false);
     expect(previewOutOfBandAllowed(previewEnv({ D1_DATABASE_ID: ' ' + PRODUCTION_DB.toUpperCase() + ' ' }))).toBe(false);
     expect(previewOutOfBandAllowed(previewEnv({ D1_DATABASE_ID: PRODUCTION_DB.slice(0, 8) + '-0000-4000-8000-000000000000' }))).toBe(false);
     expect(previewOutOfBandAllowed(previewEnv({ D1_DATABASE_ID: crypto.randomUUID() }))).toBe(false);
+    expect(previewOutOfBandAllowed(previewEnv({ D1_DATABASE_ID: PREVIEW_DB, DATABASE_ID: PRODUCTION_DB }))).toBe(false);
+    expect(previewOutOfBandAllowed(previewEnv({ D1_DATABASE_ID: '', DATABASE_ID: PREVIEW_DB }))).toBe(true);
+    expect(previewOutOfBandAllowed(previewEnv({ D1_DATABASE_ID: undefined }))).toBe(false);
+    expect(previewOutOfBandAllowed(previewEnv({ D1_DATABASE_ID: '' }))).toBe(false);
+    expect(previewOutOfBandAllowed(previewEnv({ D1_DATABASE_ID: '   ' }))).toBe(false);
+    // Default/prod wrangler shape: EMAIL_MODE=preview, no preview APP_URL, no runtime id.
+    expect(previewOutOfBandAllowed({ EMAIL_MODE: 'preview' })).toBe(false);
+    expect(previewOutOfBandAllowed({ EMAIL_MODE: 'preview', APP_URL: PREVIEW_APP_URL })).toBe(false);
     expect(resetSigningSecret(previewEnv()).length).toBe(32);
     expect(resetSigningSecret(previewEnv({ AUTH_RESET_SECRET: 'a'.repeat(32) }))).toBe('a'.repeat(32));
     expect(resetSigningSecret(previewEnv({ EMAIL_MODE: 'send', AUTH_RESET_SECRET: 'a'.repeat(32) }))).toBe('');
@@ -193,5 +203,13 @@ describe('preview out-of-band reset (EMAIL_MODE=preview, non-prod)', () => {
     expect(mailId).toBeNull();
     expect((await db().get('SELECT used_at FROM password_resets WHERE id=?', id)).used_at).toBeTruthy();
     expect((await db().get('SELECT used_at FROM password_resets WHERE id=?', issued.id)).used_at).toBeTruthy();
+  });
+
+  it('GET /reset-password sends Referrer-Policy: no-referrer', async () => {
+    const reset = await exports.default.fetch(new Request('http://example.test/reset-password'));
+    expect(reset.status).toBe(200);
+    expect(reset.headers.get('referrer-policy')).toBe('no-referrer');
+    const home = await exports.default.fetch(new Request('http://example.test/'));
+    expect(home.headers.get('referrer-policy')).toBe('same-origin');
   });
 });

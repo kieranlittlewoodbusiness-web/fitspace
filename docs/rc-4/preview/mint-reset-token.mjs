@@ -10,11 +10,11 @@
 //     --out /tmp/preview-reset-link.txt \
 //     --sql /tmp/preview-reset.sql
 // then applies ONLY the written SQL to the preview D1 database (never production).
-// The link file is mode 0600 and is the ?token= URL to send. TTL is 30 minutes.
+// The link file is mode 0600 and is the /reset-password#<token> URL to send. TTL is 30 minutes.
 //
 // --secrets must be a JSON file with PT_INVITE_SECRET, or AUTH_RESET_SECRET if that
 // is set on the Worker. The script never logs those values.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, chmodSync } from 'node:fs';
 import { resolve } from 'node:path';
 import crypto from 'node:crypto';
 import { isProduction, safeDatabaseId } from '../d1-rehearsal/guard.mjs';
@@ -33,13 +33,13 @@ if (!rawId) {
   console.error('usage: mint-reset-token.mjs --database-id <preview-d1-uuid> --user-id <id> --secrets <json> --out <link-file> --sql <sql-file>');
   process.exit(2);
 }
-if (isProduction(rawId)) {
-  console.error('refusing: that is the production database');
-  process.exit(2);
-}
-const databaseId = safeDatabaseId(rawId);
-if (databaseId !== PREVIEW_DB) {
-  console.error('refusing: not the preview database');
+let databaseId;
+try {
+  if (isProduction(rawId)) throw new Error('refusing: that is the production database');
+  databaseId = safeDatabaseId(rawId);
+  if (databaseId !== PREVIEW_DB) throw new Error('refusing: not the preview database');
+} catch (error) {
+  console.error(error.message || 'refusing: not a database uuid');
   process.exit(2);
 }
 
@@ -74,7 +74,7 @@ const token = resetToken(env, id);
 const now = Date.now();
 const expires = now + RESET_TTL_MS;
 const tokenHash = digest(token);
-const link = `${PREVIEW_APP_URL}/reset-password?token=${token}`;
+const link = `${PREVIEW_APP_URL}/reset-password#${token}`;
 
 // The SQL reads the live password_hash so the link matches the current account password.
 const sql = `INSERT INTO password_resets(id,user_id,token_hash,password_hash,expires_at,created_at)
@@ -82,8 +82,12 @@ SELECT '${id}', '${userId}', '${tokenHash}', password_hash, ${expires}, ${now}
 FROM users WHERE id = '${userId}';
 `;
 
-writeFileSync(resolve(outPath), link + '\n', { mode: 0o600 });
-writeFileSync(resolve(sqlPath), sql, { mode: 0o600 });
+const linkFile = resolve(outPath);
+const sqlFile = resolve(sqlPath);
+writeFileSync(linkFile, link + '\n', { mode: 0o600 });
+writeFileSync(sqlFile, sql, { mode: 0o600 });
+chmodSync(linkFile, 0o600);
+chmodSync(sqlFile, 0o600);
 
 const expiry = new Date(expires).toISOString();
 console.log(JSON.stringify({
@@ -93,6 +97,6 @@ console.log(JSON.stringify({
   reset_id: id,
   expires_at: expiry,
   ttl_minutes: RESET_TTL_MS / 60000,
-  link_file: resolve(outPath),
-  sql_file: resolve(sqlPath)
+  link_file: linkFile,
+  sql_file: sqlFile
 }));
