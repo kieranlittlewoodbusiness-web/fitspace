@@ -99,6 +99,25 @@ test('blockForm and brandForm remain the class and brand form functions',()=>{
   assert.match(appJs,/^function brandForm\(/m);
 });
 
+test('PT theme settings and single-PT landing helpers are present',()=>{
+  assert.match(appJs,/^function applyLandingTheme\(/m);
+  assert.match(appJs,/^function themeSettings\(/m);
+  assert.match(appJs,/^function updateThemePreview\(/m);
+  assert.match(appJs,/^async function saveTheme\(/m);
+  assert.ok(appJs.includes('if(!isMultiPt()&&site?.pt)theme(site.pt);else resetTheme();'));
+  assert.ok(appJs.includes('applyLandingTheme();'));
+  assert.ok(appJs.includes('<h2>Theme</h2>'));
+  assert.ok(appJs.includes('<label for="theme-accent">Accent'));
+  assert.ok(appJs.includes('<label for="theme-background">Background'));
+  assert.ok(appJs.includes('<label for="theme-foreground">Text'));
+  assert.ok(appJs.includes('Reset to default yellow/black'));
+  assert.ok(appJs.includes('id="themeSave">Save'));
+  assert.ok(appJs.includes('aria-live="polite"'));
+  assert.ok(appJs.includes("api('/api/pt/theme',{method:'PUT'"));
+  assert.ok(appJs.includes("me.role==='pt'?themeSettings():''"));
+  assert.ok(appJs.includes('Choose text and background colours with clearer contrast.'));
+});
+
 test('landing and site helpers are anchored by function name',()=>{
   assert.match(appJs,/^function bookingPath\(/m);
   assert.match(appJs,/^function isMultiPt\(/m);

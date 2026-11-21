@@ -116,3 +116,15 @@ input[type=time]::-webkit-date-and-time-value{text-align:left}
     padding-right:max(40px,env(safe-area-inset-right,0px))
   }
 }
+
+/* RC-29: PT theme settings. Colour inputs and actions stay at least 44px tall. */
+.theme-settings .triple label{font-size:12px}
+.theme-settings input[type=color]{min-height:44px;width:100%}
+.theme-settings .form-buttons .btn{min-height:44px}
+.theme-settings .brand-preview .btn{margin-top:12px;pointer-events:none}
+.theme-settings .theme-contrast{color:#7c2520;font-weight:600}
+.theme-settings #themeStatus[data-state=error]{color:#7c2520}
+.theme-settings #themeStatus[data-state=success]{color:#0f5c32}
+@media(max-width:480px){
+  .theme-settings .triple{grid-template-columns:1fr}
+}
