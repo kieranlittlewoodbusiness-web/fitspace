@@ -62,6 +62,7 @@ describe('QA D1: Stripe actions fail closed before any write or Stripe call', ()
       for (const route of ['connect', 'status', 'adminLink']) {
         const r = await worker.fetch(f[route](), stripeEnv(over));
         expect(r.status, route).toBe(503);
+        expect(await r.json(), route).toMatchObject({ error: expect.any(String), code: 'PAYMENTS_NOT_READY' });
         expect(calls, route).toEqual([]);
         expect(await counts(), route).toEqual(before);
       }

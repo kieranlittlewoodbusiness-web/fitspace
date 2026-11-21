@@ -53,7 +53,7 @@ export async function updatePtBranding(db, { userId, ptId, body }) {
 }
 
 /** POST /api/pt/stripe/status result: persist the full Connect snapshot for the PT owner or admin. */
-export async function bindConnection(db, { userId, mode, accountId, routing, ready, charges_enabled, payouts_enabled, details_submitted, requirements, ptId = null, multiPt = true, now = Date.now() }) {
+export async function bindConnection(db, { userId, mode, accountId, routing, ready, charges_enabled, payouts_enabled, details_submitted, requirements, ptId = null, multiPt = false, now = Date.now() }) {
   const user = await db.get('SELECT id,role,pt_id FROM users WHERE id=? AND active=1', userId);
   const targetId = await resolveConnectPtId(db, user, ptId, { multiPt });
   const snap = {
