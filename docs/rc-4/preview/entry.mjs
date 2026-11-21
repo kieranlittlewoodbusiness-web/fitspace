@@ -57,6 +57,12 @@ export default {
         headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' }
       }));
     }
-    return withRobots(await worker.fetch(request, { ...env, ASSETS }, ctx));
+    const res = withRobots(await worker.fetch(request, { ...env, ASSETS }, ctx));
+    // Worker securityHeaders set Cache-Control: no-store on every response. Restore
+    // the long-lived cache only for the preview-inlined font and image paths.
+    if (FILES[path]?.[2] && (path.startsWith('/fonts/') || path.startsWith('/images/'))) {
+      res.headers.set('Cache-Control', FILES[path][2]);
+    }
+    return res;
   }
 };

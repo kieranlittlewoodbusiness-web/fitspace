@@ -41,15 +41,18 @@ async function loadPreviewEntry() {
   writeFileSync(join(dir, 'index.js'), `export class Writer {}
 export default {
   scheduled(){},
-  fetch(request, env, ctx){
+  async fetch(request, env, ctx){
     const path = new URL(request.url).pathname;
     if (path.startsWith('/api/')) {
       return new Response(JSON.stringify({ error: 'This action is not available.' }), {
         status: 404,
-        headers: { 'content-type': 'application/json; charset=utf-8' }
+        headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }
       });
     }
-    return env.ASSETS.fetch(request, env, ctx);
+    const res = await env.ASSETS.fetch(request, env, ctx);
+    const out = new Response(res.body, res);
+    out.headers.set('cache-control', 'no-store');
+    return out;
   }
 };
 `);
@@ -108,7 +111,7 @@ test('preview ASSETS still serves known text assets and unknown paths as the HTM
     const res = await get(mod, path);
     assert.equal(res.status, 200, path + ' status');
     assert.equal(res.headers.get('content-type'), 'text/html; charset=utf-8', path + ' type');
-    assert.equal(res.headers.get('cache-control'), 'no-cache', path + ' cache');
+    assert.equal(res.headers.get('cache-control'), 'no-store', path + ' cache');
     const body = Buffer.from(await res.arrayBuffer());
     assert.ok(body.length > 0, path + ' empty body');
     assert.deepEqual(body, html, path + ' should be the index shell');
@@ -148,4 +151,22 @@ test('preview entry serves robots.txt and X-Robots-Tag noindex on every response
     assert.equal(res.headers.get('x-robots-tag'), 'noindex, nofollow', path + ' robots tag');
     await res.arrayBuffer();
   }
+});
+
+test('preview entry restores font and image cache after Worker security headers', async () => {
+  const mod = await loadPreviewEntry();
+  const font = await get(mod, '/fonts/sora-latin-wght.woff2');
+  assert.equal(font.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+  const image = await get(mod, '/images/hero.webp');
+  assert.equal(image.headers.get('cache-control'), 'public, max-age=86400');
+  const html = await get(mod, '/');
+  assert.equal(html.headers.get('cache-control'), 'no-store');
+  const js = await get(mod, '/app.js');
+  assert.equal(js.headers.get('cache-control'), 'no-store');
+  const missing = await get(mod, '/fonts/missing.woff2');
+  assert.equal(missing.headers.get('cache-control'), 'no-store');
+  const api = await get(mod, '/api/not-a-real-route');
+  assert.equal(api.status, 404);
+  assert.equal(api.headers.get('cache-control'), 'no-store');
+  await font.arrayBuffer(); await image.arrayBuffer(); await html.arrayBuffer(); await js.arrayBuffer(); await missing.arrayBuffer(); await api.arrayBuffer();
 });
