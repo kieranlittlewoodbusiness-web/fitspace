@@ -2,7 +2,7 @@
 
 This is the config and command reference for `env.production` in `wrangler.jsonc`. **Do not deploy, set secrets, or touch prod D1 from this document.** Those steps need Kieran's yes and are in the launch runbook.
 
-The default env stays safe: no cron, no `CRON_ENABLED`, `PAYMENT_MODE=demo`, `EMAIL_MODE=preview`, no routes, and no `D1_DATABASE_ID` var. Its DB binding is the local placeholder (`00000000-0000-4000-8000-000000000000`). The production D1 id appears only under `env.production`. A production target is allowed only with an explicit `--env production`.
+The default env stays safe: Worker name `resiliencecoaching-local` (only `env.production` is named `resiliencecoaching`), no cron, no `CRON_ENABLED`, `PAYMENT_MODE=demo`, `EMAIL_MODE=preview`, no routes or custom domains, and no `D1_DATABASE_ID` var. Its DB binding is the local placeholder (`00000000-0000-4000-8000-000000000000`). The production D1 id appears only under `env.production`. A production target is allowed only with an explicit `--env production`.
 
 ## Deploy and bootstrap (after approval)
 
@@ -70,4 +70,4 @@ Do not grant Billing, Application fees, or payouts. `event_read` is only used by
 
 ## Domain
 
-The apex `resiliencecoaching.app` is the canonical address (`APP_URL`). `www.resiliencecoaching.app` is attached as a second Worker custom domain in `wrangler.jsonc`. The Worker responds to `www` with a **301** to the matching apex path and query (`wwwToApexRedirect` in `worker/index.mjs`). This does not change files under `app/public`. There is no Netlify fallback.
+The apex `resiliencecoaching.app` is the canonical address (`APP_URL`). `www.resiliencecoaching.app` is attached as a second Worker custom domain in `wrangler.jsonc`. The Worker responds to `www` with a **301** to the matching apex path and query (`wwwToApexRedirect` in `worker/index.mjs`). This does not change files under `app/public`. There is no Netlify fallback. HSTS is accepted because the `.app` TLD is HSTS-preloaded, so browsers already require HTTPS for the apex and www; the Worker does not set a `Strict-Transport-Security` header.

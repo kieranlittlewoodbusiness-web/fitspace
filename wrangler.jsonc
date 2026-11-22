@@ -4,7 +4,9 @@
 // production D1 is bound only under env.production (selected with `--env production`).
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "resiliencecoaching",
+  // Local/dev only. A bare `wrangler deploy` must not target the production Worker.
+  // env.production is the only env named "resiliencecoaching".
+  "name": "resiliencecoaching-local",
   "main": "worker/index.mjs",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],

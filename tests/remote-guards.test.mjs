@@ -153,6 +153,28 @@ test('wrangler.jsonc: MULTI_PT_ENABLED is "false" on the default, preview and pr
   assert.equal(resolve('production').vars?.MULTI_PT_ENABLED, 'false');
 });
 
+test('wrangler.jsonc: only env.production is named resiliencecoaching', async () => {
+  const { unstable_readConfig: readConfig } = await import('wrangler');
+  const resolve = (env) => readConfig({ config: 'wrangler.jsonc', env });
+  const def = resolve(undefined), preview = resolve('preview'), production = resolve('production');
+  assert.equal(def.name, 'resiliencecoaching-local');
+  assert.equal(preview.name, 'resiliencecoaching-preview');
+  assert.equal(production.name, 'resiliencecoaching');
+  assert.notEqual(def.name, production.name, 'default Worker name must never equal the production name');
+});
+
+test('wrangler.jsonc: default has no routes or custom domains; preview has none for the prod zone', async () => {
+  const { unstable_readConfig: readConfig } = await import('wrangler');
+  const resolve = (env) => readConfig({ config: 'wrangler.jsonc', env });
+  const patterns = (cfg) => [...(cfg.routes || []), ...(cfg.custom_domains || []), cfg.route].filter(Boolean).map(r => String(r.pattern || r));
+  const def = resolve(undefined), preview = resolve('preview');
+  assert.deepEqual(patterns(def), [], 'default env must have no routes or custom domains');
+  const prodZone = /(^|\.)resiliencecoaching\.app$/i;
+  for (const pattern of patterns(preview)) {
+    assert.doesNotMatch(pattern, prodZone, 'preview must not route the production zone: ' + pattern);
+  }
+});
+
 
 test('gen-upload writes a script from the preview bundle and refuses a prod-bound config', async () => {
   const { assertSafePreviewUpload, PREVIEW_DB } = await import('../docs/rc-4/preview/gen-upload.mjs');

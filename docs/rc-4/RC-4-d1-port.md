@@ -19,7 +19,7 @@ Phases 1–4 were local only. Cloudflare was touched only in the approved steps 
 | Rate limits | `src/ratelimit.mjs` | One D1 upsert … `RETURNING count` per attempt, key `scope:sha256(ip)`. Used on forgot/reset password now; login/signup when ported (phase 3). |
 | Validation | `src/validate.mjs` | email/text/password (auth.cjs), toEpoch (db.cjs), num/blockData/colours/branding (server.cjs); errors are 400s. |
 | Admin bootstrap | `scripts/bootstrap-admin.mjs` | One-off, outside the request path (§8). |
-| Local config | `wrangler.jsonc` | D1 binding `DB` → **real database `resiliencecoaching`, id `fd8a613f-4dd4-462b-83e0-d7673031a6fc`, location hint `weur` (created 17 Nov 2026, approved by Kieran; EMPTY until go-live, see §12)**. Local dev/tests still use a local copy. DO binding `WRITER` (SQLite-backed class, Free-plan compatible). `workers_dev:false`, `preview_urls:false`, no account_id, no routes. |
+| Local config | `wrangler.jsonc` | Default Worker name `resiliencecoaching-local`. D1 binding `DB` → **local placeholder** `resiliencecoaching-local`, id `00000000-0000-4000-8000-000000000000`. The real production database `resiliencecoaching` (`fd8a613f-4dd4-462b-83e0-d7673031a6fc`, weur, created 17 Nov 2026, approved by Kieran; EMPTY until go-live, see §12) is bound only under `env.production`, selected with `--env production`. Local dev/tests use a local copy. DO binding `WRITER` (SQLite-backed class, Free-plan compatible). `workers_dev:false`, `preview_urls:false`, no account_id, no routes. |
 
 ### CR items from spike PR #1
 - **import.meta.url define removed.** The Worker path no longer uses `createRequire`, runtime `require(\`${runtimeRoot}/…\`)`, `import.meta.url`, `LAMBDA_TASK_ROOT` or `node:fs` reads of `app/public`. esbuild bundles only what is imported, so the nested v4 `fitspace/` tree is never reached and no CommonJS upload rules are needed. Dry-run bundle: 22.79 KiB / 7.30 KiB gzip at phase 1; **58.84 KiB / 16.54 KiB gzip** at phase 2. `netlify/functions/platform.mjs` is untouched; it stays the live Netlify path until cutover and is deleted then.
@@ -254,7 +254,7 @@ Done through the Cloudflare connector's API (wrangler is not logged in). Scope w
 
 ## 13. workers.dev preview (17 Nov 2026, item 6 approved 15:27/15:36 UK; Access approved 15:37 UK)
 
-Everything was done through the Cloudflare connector's API (no wrangler login, no API tokens). Only the `preview` env was uploaded. The top-level/default env, which is bound to the production database `fd8a613f-…`, has **not** been deployed, and no Worker or cron is bound to the production database.
+Everything was done through the Cloudflare connector's API (no wrangler login, no API tokens). Only the `preview` env was uploaded. The top-level/default env was not deployed then, and still has not been. As of L1 it is named `resiliencecoaching-local` and binds `DB` to the local placeholder (`00000000-0000-4000-8000-000000000000`); the production D1 is bound only under `env.production`.
 
 - **Plan check: NOT RUN through the API.** `GET /accounts/{id}/subscriptions`, `GET /user/subscriptions` and `GET /accounts/{id}/billing/profile` all return HTTP 403: the connector's OAuth scopes don't cover billing. Per the PM ruling (15:38 UK), Kieran's word that Workers Paid ($5/month) is active stands in for the check.
 - **Preview D1:** `resiliencecoaching-preview`, uuid `81379d2e-c718-48b7-870d-1d189feea966`, WEUR.
@@ -289,7 +289,7 @@ Everything was done through the Cloudflare connector's API (no wrangler login, n
   - It answers 503 before rate limits, Stripe or any row. This also closes the "missing or empty key writes a `stripe_jobs` row" gap.
   - Diagnostic routes are unchanged: `/api/me`, `/api/auth/*`, `/api/dashboard`, `/api/admin/*`, `/api/public/*`, `/api/pt/stripe/*` and the PT webhook.
   - Test: 7 misconfigurations, then 0 Stripe calls, 0 bookings and 0 jobs; diagnostics return 200; the control reaches Stripe; pt_direct is covered too.
-- **Cron:** off unless `CRON_ENABLED` is exactly `"true"` (`cronTick`). Only `env.preview` sets it. Production sets it at the approved go-live step, so a deploy of the default env (real D1 id) runs nothing on a schedule. Tests: `cron-guard` (3), `tests/remote-guards` (3).
+- **Cron:** off unless `CRON_ENABLED` is exactly `"true"` (`cronTick`). `env.preview` and `env.production` set it; the default env does not. A deploy of the default env (local placeholder, Worker name `resiliencecoaching-local`) has no cron, and `cronTick` is a no-op. Tests: `cron-guard` (3), `tests/remote-guards`.
 - **Generators:** `generate.mjs` (its step 2 runs down migrations) and `preview-apply.mjs` refuse the production id and non-uuids.
 - **Snapshot import:**
   - `run()` is exported, with an injectable wrangler; the real one refuses anything without `--local`.
@@ -341,7 +341,7 @@ Everything was done through the Cloudflare connector's API (no wrangler login, n
     - a script importing legacy code through an edge that isn't listed (4 are listed, all Node CLIs on legacy SQLite/Postgres, never D1).
   - Tests (`workers-test/scope-lint.test.mjs`, "file discovery"): QA's two misses, every extension (backstop and graph), a transitive `.js` → `.ts` chain, the `.ts` cases, and each fail-closed rule.
   - Runtime: `workers-test/scope-bypass-mutations.mjs` adds 6 file cases (`src/*.js`, `lib/*.mjs`, `lib/*/index.js`, `src/*.ts`, `lib/*.ts`, and QA's `src/*.js` reading `env.DB` imported from the Worker), each killed by the lint **and** the runtime cross-PT test.
-- **D3, cron on the production config.** The top-level `triggers.crons` is removed: the default env (real D1 id) has no cron trigger and no `CRON_ENABLED`, and only `env.preview` has both. `wrangler deploy --dry-run` does not print schedules, so the check and `tests/remote-guards.test.mjs` read the config through wrangler's own resolver (`unstable_readConfig`, inheritance applied as a deploy would): default `crons=[]`, preview `["* * * * *"]`. The go-live step adds both to production, with approval.
+- **D3, cron on the production config.** The top-level `triggers.crons` is removed: the default env (local placeholder, Worker name `resiliencecoaching-local`) has no cron trigger and no `CRON_ENABLED`. `env.preview` and `env.production` each have both; production is selected only with `--env production`. `wrangler deploy --dry-run` does not print schedules, so the check and `tests/remote-guards.test.mjs` read the config through wrangler's own resolver (`unstable_readConfig`, inheritance applied as a deploy would): default `crons=[]`, preview and production `["* * * * *"]`.
 
 ### CR 5943169048 (APPROVE with merge conditions), folded into the same push
 
