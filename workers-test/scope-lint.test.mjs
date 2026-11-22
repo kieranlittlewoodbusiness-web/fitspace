@@ -216,7 +216,8 @@ export const ALLOWED = {
     why: 'PT owner or admin: persist the Connect snapshot for the resolved pt_id',
     queries: [
       '5f50fda9', // SELECT id,role,pt_id FROM users WHERE id=? AND active=1
-      '704793ed', // UPDATE stripe_connections SET ready=?,charges_enabled=?,payouts_enable
+      '3e5fd513', // UPDATE stripe_connections SET ready=?,charges_enabled=?,payouts_enable
+      'def2c092', // SELECT requirements FROM stripe_connections WHERE pt_id=? AND mode=? A
       'd54e1a4c', // UPDATE pts SET stripe_ready=? WHERE id=? AND stripe_account=?
     ]
   },
