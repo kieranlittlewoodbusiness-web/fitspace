@@ -212,6 +212,24 @@ describe('RC-32 v2 Connect request shapes (2026-09-30.endive)', () => {
   });
 });
 
+describe('RC-32 v2 account retrieve (status)', () => {
+  it('GET /v2/core/accounts/{id} uses the indexed include form include[0]=configuration.merchant', async () => {
+    const s = await seedBlock({ customers: 0 });
+    const pt = await seedUser({ role: 'pt', ptId: s.ptId });
+    const acct = 'acct_test_' + nodeCrypto.randomBytes(6).toString('hex');
+    await db().run("INSERT INTO stripe_connections(pt_id,mode,account_id,routing,ready) VALUES(?,?,?,?,0)", s.ptId, 'stripe_test', acct, 'connected');
+    const urls = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init = {}) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (!url.startsWith('https://api.stripe.com/')) throw new Error('unexpected host in test: ' + url);
+      urls.push({ url, method: init.method || 'GET' });
+      return json(200, { id: acct, livemode: false, configuration: { merchant: { capabilities: { card_payments: { status: 'pending' } } } } });
+    });
+    expect((await call(pt, '/api/pt/stripe/status')).status).toBe(200);
+    expect(urls).toEqual([{ url: 'https://api.stripe.com/v2/core/accounts/' + acct + '?include[0]=configuration.merchant', method: 'GET' }]);
+  });
+});
+
 describe('RC-32 Stripe error logging and PT message', () => {
   it('redacts account ids, emails and keys, and keeps type, code and request id', () => {
     const response = new Response('{}', { status: 400, headers: { 'request-id': 'req_abc123' } });
