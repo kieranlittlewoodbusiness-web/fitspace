@@ -71,4 +71,50 @@ describe('PT theme API', () => {
     expect(page.pt.background).toBe(night.background);
     expect(page.pt.foreground).toBe(night.text);
   });
+
+  it('PUT rejects prototype keys and non-string ids with 400 VALIDATION_FAILED', async () => {
+    const s = await seedTrainer();
+    for (const id of ['__proto__', 'constructor', 'prototype', 1, ['night'], { toString: () => 'night' }]) {
+      const res = await send(jsonRequest(s.pt, 'PUT', '/api/pt/theme', { id }));
+      expect(res.status).toBe(400);
+      const body = await jsonOf(res);
+      expect(body.error).toBe('Choose a theme from the list.');
+      expect(body.code).toBe('VALIDATION_FAILED');
+    }
+    const row = await db().get('SELECT accent,background,foreground FROM pts WHERE id=?', s.ptId);
+    expect(row).toEqual({ accent: '#ffd43b', background: '#ffffff', foreground: '#111111' });
+  });
+
+  it('PUT ignores extra client colour fields and only stores the allowlisted preset', async () => {
+    const s = await seedTrainer();
+    const night = presetById('night');
+    const res = await send(jsonRequest(s.pt, 'PUT', '/api/pt/theme', {
+      id: 'night',
+      accent: '#ff0000',
+      background: '#000000',
+      foreground: '#00ff00',
+      primary: '#0000ff',
+      text: '#abcdef'
+    }));
+    expect(res.status).toBe(200);
+    expect(await jsonOf(res)).toEqual({ id: 'night' });
+    const row = await db().get('SELECT accent,background,foreground FROM pts WHERE id=?', s.ptId);
+    expect(row).toEqual({ accent: night.accent, background: night.background, foreground: night.text });
+  });
+
+  it('PUT does not change another trainer’s colour columns', async () => {
+    const s = await seedTrainer();
+    const other = await seedBlock({ customers: 0 });
+    await db().run("UPDATE pts SET accent='#cc3300',background='#ffffff',foreground='#111111' WHERE id=?", other.ptId);
+    const before = await db().get('SELECT accent,background,foreground FROM pts WHERE id=?', other.ptId);
+
+    const res = await send(jsonRequest(s.pt, 'PUT', '/api/pt/theme', { id: 'night' }));
+    expect(res.status).toBe(200);
+
+    const after = await db().get('SELECT accent,background,foreground FROM pts WHERE id=?', other.ptId);
+    expect(after).toEqual(before);
+    const mine = await db().get('SELECT accent,background,foreground FROM pts WHERE id=?', s.ptId);
+    const night = presetById('night');
+    expect(mine).toEqual({ accent: night.accent, background: night.background, foreground: night.text });
+  });
 });

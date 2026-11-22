@@ -72,6 +72,31 @@ test('themeIdFromBody accepts only allowlisted ids', () => {
   for (const body of [null, 'resilience', { id: 'not-a-theme' }, { id: '' }, {}]) {
     const error = fail(body);
     assert.equal(error.status, 400);
+    assert.equal(error.code, 'VALIDATION_FAILED');
+    assert.equal(error.message, 'Choose a theme from the list.');
+  }
+});
+
+test('presetById and themeIdFromBody reject prototype keys and non-string ids', () => {
+  for (const id of ['__proto__', 'constructor', 'prototype', ['night'], { id: 'night' }, 0, null, undefined]) {
+    assert.equal(presetById(id), null);
+  }
+  assert.ok(presetById('resilience'));
+  const fail = (body) => {
+    try { themeIdFromBody(body); throw new Error('expected throw'); }
+    catch (error) { if (error.message === 'expected throw') throw error; return error; }
+  };
+  for (const body of [
+    { id: '__proto__' },
+    { id: 'constructor' },
+    { id: 'prototype' },
+    { id: 1 },
+    { id: ['night'] },
+    { id: { toString: () => 'night' } }
+  ]) {
+    const error = fail(body);
+    assert.equal(error.status, 400);
+    assert.equal(error.code, 'VALIDATION_FAILED');
     assert.equal(error.message, 'Choose a theme from the list.');
   }
 });
