@@ -24,7 +24,8 @@ registerHooks({
 const TEXT = {
   '/index.html': 'index.html',
   '/app.js': 'app.js',
-  '/styles.css': 'styles.css'
+  '/styles.css': 'styles.css',
+  '/sitemap.xml': 'sitemap.xml'
 };
 const BINARY = {
   '/fonts/sora-latin-wght.woff2': ['fonts/sora-latin-wght.woff2', 'font/woff2', 'public, max-age=31536000, immutable'],
@@ -33,7 +34,10 @@ const BINARY = {
   '/images/class-strength.webp': ['images/class-strength.webp', 'image/webp', 'public, max-age=86400'],
   '/images/class-conditioning.webp': ['images/class-conditioning.webp', 'image/webp', 'public, max-age=86400'],
   '/images/empty-classes.webp': ['images/empty-classes.webp', 'image/webp', 'public, max-age=86400'],
-  '/images/empty-bookings.webp': ['images/empty-bookings.webp', 'image/webp', 'public, max-age=86400']
+  '/images/empty-bookings.webp': ['images/empty-bookings.webp', 'image/webp', 'public, max-age=86400'],
+  '/favicon.ico': ['favicon.ico', 'image/x-icon', 'public, max-age=86400'],
+  '/apple-touch-icon.png': ['apple-touch-icon.png', 'image/png', 'public, max-age=86400'],
+  '/images/og.jpg': ['images/og.jpg', 'image/jpeg', 'public, max-age=86400']
 };
 
 async function loadPreviewEntry() {
@@ -79,6 +83,9 @@ test('gen-upload and the preview entry both list the font and image modules', ()
     assert.ok(entrySrc.includes(`./public/${file}.b64.txt`), 'entry missing import for ' + file);
     assert.ok(genSrc.includes(file), 'gen-upload missing ' + file);
   }
+  assert.ok(entrySrc.includes('./public/sitemap.xml.txt'), 'entry missing sitemap import');
+  assert.ok(genSrc.includes('sitemap.xml'), 'gen-upload missing sitemap.xml');
+  assert.equal(entrySrc.includes('robots.txt.txt') || genSrc.includes('robots.txt.txt') || genSrc.includes("public/robots.txt"), false, 'production robots.txt must not be inlined into the preview upload');
 });
 
 test('preview ASSETS serves /fonts and /images with the right type, body and cache headers', async () => {
@@ -99,8 +106,9 @@ test('preview ASSETS serves /fonts and /images with the right type, body and cac
     assert.equal(head.headers.get('content-type'), type, path + ' HEAD type');
     assert.equal((await head.arrayBuffer()).byteLength, 0, path + ' HEAD body');
   }
-  // ~382 KB of base64 text-module source for the seven binaries (pin 370–395 KB).
-  assert.ok(inlined > 370 * 1024 && inlined < 395 * 1024, 'unexpected inlined size ' + inlined);
+  // ~498 KB of base64 text-module source for the ten binaries (pin 485–515 KB), after
+  // inlining favicon.ico, apple-touch-icon.png and images/og.jpg.
+  assert.ok(inlined > 485 * 1024 && inlined < 515 * 1024, 'unexpected inlined size ' + inlined);
   console.log('preview inlined binary text modules:', (inlined / 1024).toFixed(1), 'KB');
 });
 
@@ -123,6 +131,10 @@ test('preview ASSETS still serves known text assets and unknown paths as the HTM
   assert.equal(css.headers.get('content-type'), 'text/css; charset=utf-8');
   assert.equal(css.headers.get('cache-control'), 'no-store');
   assert.deepEqual(Buffer.from(await css.arrayBuffer()), readFileSync(join(root, 'app/public/styles.css')));
+  const sitemap = await get(mod, '/sitemap.xml');
+  assert.equal(sitemap.headers.get('content-type'), 'application/xml; charset=utf-8');
+  assert.equal(sitemap.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(Buffer.from(await sitemap.arrayBuffer()), readFileSync(join(root, 'app/public/sitemap.xml')));
 });
 
 test('preview entry serves robots.txt and X-Robots-Tag noindex on every response', async () => {
@@ -143,6 +155,10 @@ test('preview entry serves robots.txt and X-Robots-Tag noindex on every response
     ['/', 200, 'text/html'],
     ['/fonts/sora-latin-wght.woff2', 200, 'font/woff2'],
     ['/images/hero.webp', 200, 'image/webp'],
+    ['/images/og.jpg', 200, 'image/jpeg'],
+    ['/favicon.ico', 200, 'image/x-icon'],
+    ['/apple-touch-icon.png', 200, 'image/png'],
+    ['/sitemap.xml', 200, 'application/xml'],
     ['/app.js', 200, 'application/javascript'],
     ['/no-such-page', 200, 'text/html'],
     ['/api/not-a-real-route', 404, 'application/json']
@@ -161,6 +177,14 @@ test('preview entry restores font and image cache after Worker security headers'
   assert.equal(font.headers.get('cache-control'), 'public, max-age=31536000, immutable');
   const image = await get(mod, '/images/hero.webp');
   assert.equal(image.headers.get('cache-control'), 'public, max-age=86400');
+  const og = await get(mod, '/images/og.jpg');
+  assert.equal(og.headers.get('cache-control'), 'public, max-age=86400');
+  const favicon = await get(mod, '/favicon.ico');
+  assert.equal(favicon.headers.get('cache-control'), 'public, max-age=86400');
+  const apple = await get(mod, '/apple-touch-icon.png');
+  assert.equal(apple.headers.get('cache-control'), 'public, max-age=86400');
+  const sitemap = await get(mod, '/sitemap.xml');
+  assert.equal(sitemap.headers.get('cache-control'), 'no-store');
   const html = await get(mod, '/');
   assert.equal(html.headers.get('cache-control'), 'no-store');
   const js = await get(mod, '/app.js');
@@ -174,5 +198,5 @@ test('preview entry restores font and image cache after Worker security headers'
   const api = await get(mod, '/api/not-a-real-route');
   assert.equal(api.status, 404);
   assert.equal(api.headers.get('cache-control'), 'no-store');
-  await font.arrayBuffer(); await image.arrayBuffer(); await html.arrayBuffer(); await js.arrayBuffer(); await css.arrayBuffer(); await robots.arrayBuffer(); await missing.arrayBuffer(); await api.arrayBuffer();
+  await font.arrayBuffer(); await image.arrayBuffer(); await og.arrayBuffer(); await favicon.arrayBuffer(); await apple.arrayBuffer(); await sitemap.arrayBuffer(); await html.arrayBuffer(); await js.arrayBuffer(); await css.arrayBuffer(); await robots.arrayBuffer(); await missing.arrayBuffer(); await api.arrayBuffer();
 });
