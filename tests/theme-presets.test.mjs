@@ -88,14 +88,17 @@ test('app.js ships the same preset ids and colours as the shared allowlist', () 
   );
   assert.ok(appJs.includes('if(!isMultiPt()&&site?.pt)theme(site.pt);else resetTheme();'));
   assert.ok(appJs.includes('applyLandingTheme();'));
-  assert.ok(appJs.includes('role="radiogroup"'));
-  assert.ok(appJs.includes('name="theme-preset"'));
+  assert.ok(appJs.includes('for="themePreset">Theme'));
+  assert.ok(appJs.includes('<select id="themePreset" name="theme-preset">'));
+  assert.ok(appJs.includes('class="theme-swatch-preview"'));
   assert.ok(appJs.includes("api('/api/pt/theme',{method:'PUT'"));
   assert.ok(appJs.includes("me.role==='pt'?profileForm()+themeSettings()"));
   assert.equal(appJs.includes('<label for="theme-accent">Accent'), false);
   // Admin branding still has its own colour presets; PT settings must not add a free picker.
   const themeFn = appJs.slice(appJs.indexOf('function themeSettings()'), appJs.indexOf('async function saveTheme'));
   assert.equal(themeFn.includes('type="color"'), false);
+  assert.equal(themeFn.includes('type="radio"'), false);
+  assert.equal(themeFn.includes('role="radiogroup"'), false);
 });
 
 test('colours helper still reports the Resilience text/background ratio above 4.5', () => {
