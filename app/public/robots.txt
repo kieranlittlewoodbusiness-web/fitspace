@@ -1,5 +1,4 @@
 # Canonical origin: https://resiliencecoaching.app
-# Flagged: production wrangler.jsonc vars do not set APP_URL (only env.preview sets APP_URL, to the preview host).
 User-agent: *
 Allow: /
 
