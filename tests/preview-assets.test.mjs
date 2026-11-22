@@ -36,8 +36,7 @@ const BINARY = {
   '/images/empty-classes.webp': ['images/empty-classes.webp', 'image/webp', 'public, max-age=86400'],
   '/images/empty-bookings.webp': ['images/empty-bookings.webp', 'image/webp', 'public, max-age=86400'],
   '/favicon.ico': ['favicon.ico', 'image/x-icon', 'public, max-age=86400'],
-  '/apple-touch-icon.png': ['apple-touch-icon.png', 'image/png', 'public, max-age=86400'],
-  '/images/og.jpg': ['images/og.jpg', 'image/jpeg', 'public, max-age=86400']
+  '/apple-touch-icon.png': ['apple-touch-icon.png', 'image/png', 'public, max-age=86400']
 };
 
 async function loadPreviewEntry() {
@@ -106,9 +105,9 @@ test('preview ASSETS serves /fonts and /images with the right type, body and cac
     assert.equal(head.headers.get('content-type'), type, path + ' HEAD type');
     assert.equal((await head.arrayBuffer()).byteLength, 0, path + ' HEAD body');
   }
-  // ~498 KB of base64 text-module source for the ten binaries (pin 485–515 KB), after
-  // inlining favicon.ico, apple-touch-icon.png and images/og.jpg.
-  assert.ok(inlined > 485 * 1024 && inlined < 515 * 1024, 'unexpected inlined size ' + inlined);
+  // ~388 KB of base64 text-module source for the nine binaries (pin 370–395 KB), after
+  // inlining favicon.ico and apple-touch-icon.png (the production Open Graph image is not inlined).
+  assert.ok(inlined > 370 * 1024 && inlined < 395 * 1024, 'unexpected inlined size ' + inlined);
   console.log('preview inlined binary text modules:', (inlined / 1024).toFixed(1), 'KB');
 });
 
@@ -155,7 +154,6 @@ test('preview entry serves robots.txt and X-Robots-Tag noindex on every response
     ['/', 200, 'text/html'],
     ['/fonts/sora-latin-wght.woff2', 200, 'font/woff2'],
     ['/images/hero.webp', 200, 'image/webp'],
-    ['/images/og.jpg', 200, 'image/jpeg'],
     ['/favicon.ico', 200, 'image/x-icon'],
     ['/apple-touch-icon.png', 200, 'image/png'],
     ['/sitemap.xml', 200, 'application/xml'],
@@ -177,8 +175,6 @@ test('preview entry restores font and image cache after Worker security headers'
   assert.equal(font.headers.get('cache-control'), 'public, max-age=31536000, immutable');
   const image = await get(mod, '/images/hero.webp');
   assert.equal(image.headers.get('cache-control'), 'public, max-age=86400');
-  const og = await get(mod, '/images/og.jpg');
-  assert.equal(og.headers.get('cache-control'), 'public, max-age=86400');
   const favicon = await get(mod, '/favicon.ico');
   assert.equal(favicon.headers.get('cache-control'), 'public, max-age=86400');
   const apple = await get(mod, '/apple-touch-icon.png');
@@ -198,5 +194,5 @@ test('preview entry restores font and image cache after Worker security headers'
   const api = await get(mod, '/api/not-a-real-route');
   assert.equal(api.status, 404);
   assert.equal(api.headers.get('cache-control'), 'no-store');
-  await font.arrayBuffer(); await image.arrayBuffer(); await og.arrayBuffer(); await favicon.arrayBuffer(); await apple.arrayBuffer(); await sitemap.arrayBuffer(); await html.arrayBuffer(); await js.arrayBuffer(); await css.arrayBuffer(); await robots.arrayBuffer(); await missing.arrayBuffer(); await api.arrayBuffer();
+  await font.arrayBuffer(); await image.arrayBuffer(); await favicon.arrayBuffer(); await apple.arrayBuffer(); await sitemap.arrayBuffer(); await html.arrayBuffer(); await js.arrayBuffer(); await css.arrayBuffer(); await robots.arrayBuffer(); await missing.arrayBuffer(); await api.arrayBuffer();
 });

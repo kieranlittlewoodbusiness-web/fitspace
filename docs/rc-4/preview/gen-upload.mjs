@@ -62,7 +62,7 @@ export function buildPreviewUpload({ bundleDir = '/tmp/rc4-prev', wranglerPath =
     ...['index.html', 'app.js', 'styles.css', 'sitemap.xml'].map(f => ({ name: `public/${f}.txt`, type: 'text/plain', b64: b64(`app/public/${f}`) })),
     // RC-28 / launch-1: binaries as ASCII base64 text modules (same Text-module channel as the HTML/JS/CSS).
     // Production robots.txt is not uploaded; the preview entry intercepts /robots.txt with Disallow-all.
-    ...['fonts/sora-latin-wght.woff2','images/hero.webp','images/booking-hero.webp','images/class-strength.webp','images/class-conditioning.webp','images/empty-classes.webp','images/empty-bookings.webp','favicon.ico','apple-touch-icon.png','images/og.jpg'].map(f => ({ name: `public/${f}.b64.txt`, type: 'text/plain', b64: Buffer.from(readFileSync(`app/public/${f}`).toString('base64'), 'utf8').toString('base64') }))
+    ...['fonts/sora-latin-wght.woff2','images/hero.webp','images/booking-hero.webp','images/class-strength.webp','images/class-conditioning.webp','images/empty-classes.webp','images/empty-bookings.webp','favicon.ico','apple-touch-icon.png'].map(f => ({ name: `public/${f}.b64.txt`, type: 'text/plain', b64: Buffer.from(readFileSync(`app/public/${f}`).toString('base64'), 'utf8').toString('base64') }))
   ];
   const metadata = {
     main_module: 'entry.mjs', compatibility_date: '2026-11-01', compatibility_flags: ['nodejs_compat'],

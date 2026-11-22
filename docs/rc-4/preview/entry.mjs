@@ -5,8 +5,9 @@
 // assets config: exact file, "/" -> index.html, otherwise index.html (single-page-application).
 // Production keeps the real assets binding via `wrangler deploy`.
 // RC-28: fonts and images are shipped as base64 text modules and decoded here so /fonts/*
-// and /images/* are served with the correct types. Launch-1 also inlines favicon, apple-touch,
-// og.jpg and sitemap.xml (~498 KB of binary text-module source). Production robots.txt is not
+// and /images/* are served with the correct types. Launch-1 also inlines favicon, apple-touch
+// and sitemap.xml. The production Open Graph image is not inlined here (it stays in app/public).
+// Production robots.txt is not
 // inlined: this entry still intercepts /robots.txt with Disallow-all.
 import worker, { Writer } from './index.js';
 import indexHtml from './public/index.html.txt';
@@ -21,7 +22,6 @@ import emptyClassesWebp from './public/images/empty-classes.webp.b64.txt';
 import emptyBookingsWebp from './public/images/empty-bookings.webp.b64.txt';
 import faviconIco from './public/favicon.ico.b64.txt';
 import appleTouchIcon from './public/apple-touch-icon.png.b64.txt';
-import ogJpg from './public/images/og.jpg.b64.txt';
 import sitemapXml from './public/sitemap.xml.txt';
 export { Writer };
 const bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
@@ -38,7 +38,6 @@ const FILES = {
   '/images/empty-bookings.webp': [bytes(emptyBookingsWebp), 'image/webp', 'public, max-age=86400'],
   '/favicon.ico': [bytes(faviconIco), 'image/x-icon', 'public, max-age=86400'],
   '/apple-touch-icon.png': [bytes(appleTouchIcon), 'image/png', 'public, max-age=86400'],
-  '/images/og.jpg': [bytes(ogJpg), 'image/jpeg', 'public, max-age=86400'],
   '/sitemap.xml': [sitemapXml, 'application/xml; charset=utf-8', 'no-cache']
 };
 const ASSETS = {
@@ -69,7 +68,7 @@ export default {
     }
     const res = withRobots(await worker.fetch(request, { ...env, ASSETS }, ctx));
     // Worker securityHeaders set Cache-Control: no-store on every response. Restore
-    // the long-lived cache only for preview-inlined font and image (including icon/og) paths.
+    // the long-lived cache only for preview-inlined font and image (including icon) paths.
     if (FILES[path]?.[2]?.startsWith('public')) {
       res.headers.set('Cache-Control', FILES[path][2]);
     }
