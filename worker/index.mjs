@@ -29,6 +29,7 @@ import { rateLimit } from '../src/ratelimit.mjs';
 import { errorExtras, hashPassword, httpError, isStripe, live, verifyPassword } from '../src/util.mjs';
 import { readPtProfile } from '../src/profile.mjs';
 import { readPtTheme } from '../src/ops/theme.mjs';
+import { serveThemedAsset } from '../src/theme-resolve.mjs';
 
 export { Writer } from '../src/writer.mjs';
 
@@ -418,10 +419,7 @@ export default {
       if (response) return response;
       if (!['GET', 'HEAD'].includes(request.method)) return new Response('Method not allowed.', { status: 405, headers: securityHeaders });
       const asset = await env.ASSETS.fetch(request);
-      const out = new Response(asset.body, asset);
-      for (const [name, value] of Object.entries(securityHeaders)) out.headers.set(name, value);
-      if (new URL(request.url).pathname === '/reset-password') out.headers.set('Referrer-Policy', 'no-referrer');
-      return out;
+      return serveThemedAsset(asset, request, env, securityHeaders);
     } catch (error) {
       if (error.status) return json(error.status, { error: error.message, ...errorExtras(error) });
       console.error('RC-4 request failed:', error.code || error.name || 'Error');
