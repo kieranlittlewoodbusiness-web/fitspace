@@ -201,7 +201,12 @@ export async function deletePt(db, { userId, ptId, force = false, now = Date.now
       db.guard('pt_still_present', 'EXISTS(SELECT 1 FROM pts WHERE id=? AND deleted_at IS NULL)', ptId),
       // Keep pts.stripe_account: Connect refunds use bookings.stripe_account_id, and webhook
       // fallback still reads this column. stripe_ready is cleared; connections are removed.
-      db.stmt('UPDATE pts SET slug=?,published=0,deleted_at=?,stripe_ready=0,create_key=NULL,create_hash=NULL WHERE id=? AND deleted_at IS NULL', 'deleted-' + pt.id, now, ptId),
+      // Null contact/profile PII. brand_name/tagline/description/about are NOT NULL, so they
+      // become generic placeholders. Refunds and reconciliation do not read these columns.
+      db.stmt(
+        'UPDATE pts SET slug=?,published=0,deleted_at=?,stripe_ready=0,create_key=NULL,create_hash=NULL,business_name=NULL,contact_email=NULL,contact_phone=NULL,reply_to_email=NULL,reply_to_name=NULL,venue_name=NULL,venue_address=NULL,photo_url=NULL,brand_name=?,tagline=?,description=?,about=? WHERE id=? AND deleted_at IS NULL',
+        'deleted-' + pt.id, now, 'Deleted trainer', 'This trainer has been removed.', 'This trainer has been removed.', 'This trainer has been removed.', ptId
+      ),
       db.stmt('UPDATE blocks SET published=0,closed=1 WHERE pt_id=?', ptId),
       db.stmt('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE pt_id=?)', ptId),
       db.stmt("UPDATE users SET active=0,deleted_at=?,email='deleted+' || id || '@deleted.invalid',name='Deleted trainer' WHERE pt_id=? AND deleted_at IS NULL", now, ptId),

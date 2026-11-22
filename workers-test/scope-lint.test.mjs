@@ -155,7 +155,7 @@ export const ALLOWED = {
     why: 'admin-only op (actor role checked first): soft-deletes a PT, keeps booking/payment rows',
     queries: [
       '21d34f50', // UPDATE users SET active=0,deleted_at=?,email='deleted+' || id || '@del
-      '38af24bc', // UPDATE pts SET slug=?,published=0,deleted_at=?,stripe_ready=0,create_k
+      'a1ad6c46', // UPDATE pts SET slug=?,published=0,deleted_at=?,stripe_ready=0,create_k
       '40a7eeb2', // UPDATE blocks SET published=0,closed=1 WHERE pt_id=?
       '5e125b5b', // DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE pt_i
       '791cef76', // SELECT id,role FROM users WHERE pt_id=? AND deleted_at IS NULL

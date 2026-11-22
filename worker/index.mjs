@@ -241,7 +241,8 @@ export async function handle(request, env) {
   if (method === 'DELETE' && (adminPt || adminTrainer)) {
     requireUser(user, ['admin']);
     const ptId = idParam((adminPt || adminTrainer)[1], 'trainer', { encoded: true });
-    return json(200, await write(env, 'deletePt', { userId: user.id, ptId, force: url.searchParams.get('force') === '1' }));
+    const forceValues = url.searchParams.getAll('force');
+    return json(200, await write(env, 'deletePt', { userId: user.id, ptId, force: forceValues.at(-1) === '1' }));
   }
 
   // ---- classes and attendance ----
