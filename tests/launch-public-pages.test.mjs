@@ -96,3 +96,71 @@ test('preview entry still serves Disallow-all robots and the Worker stays withou
   assert.equal(worker.includes('X-Robots-Tag'), false);
   assert.equal(worker.includes('robots.txt'), false);
 });
+
+
+function legalRenderer(src) {
+  const start = src.indexOf('const SITE_ORIGIN=');
+  const end = src.indexOf('\nfunction brandHeader');
+  if (start < 0 || end < start) throw new Error('legal helpers not found');
+  const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const documentStub = { title: '', querySelector() { return { setAttribute() {}, href: '' }; } };
+  return new Function('esc', 'brandHeader', 'footer', 'site', 'document',
+    src.slice(start, end) + '\nreturn {legalPage,termsBody,privacyBody,refundsBody,contactBody};'
+  )(esc, () => '<header></header>', () => '<footer></footer>', { pt: null }, documentStub);
+}
+
+function assertNoEmptyContact(html, label) {
+  assert.equal(typeof html, 'string', label + ' did not render');
+  assert.ok(html.length > 40, label + ' rendered almost nothing');
+  assert.equal(/href="mailto:\s*"/.test(html), false, label + ' has an empty mailto link: ' + html);
+  assert.equal(/href="tel:\s*"/.test(html), false, label + ' has an empty tel link');
+  assert.equal(/held at\s*[,.]/.test(html), false, label + ' has an empty venue sentence');
+  assert.equal(/contact us at\s*[,.]/.test(html), false, label + ' has an empty contact sentence');
+  assert.equal(/contact us at\s+(or|and)\b/.test(html), false, label + ' has a dangling contact sentence');
+  assert.equal(/trading as\s*(<|,|\.|$)/.test(html), false, label + ' has an empty trading-as clause');
+  assert.equal(/provided by\s*,/.test(html), false, label + ' has an empty provided-by clause');
+  assert.equal(/<a[^>]*href="[^"]*"‌?[^>]*>\s*<\/a>/.test(html), false, label + ' has an empty link');
+  assert.equal(/\b(Email|Phone):\s*(<|\n|$)/.test(html), false, label + ' has an empty Email/Phone label');
+}
+
+test('legal pages render without empty contact labels or links when PT fields are blank', () => {
+  const js = read('app/public/app.js');
+  const { legalPage, termsBody, privacyBody, refundsBody, contactBody } = legalRenderer(js);
+  const blanks = [
+    {},
+    { display_name: '', business_name: '', brand_name: '', contact_email: '', contact_phone: '', venue_name: '', venue_address: '', venue: '', cancellation_window_hours: '', reply_to_email: '', reply_to_name: '' },
+    { display_name: '   ', business_name: null, contact_email: '  ', contact_phone: ' ', venue_name: ' ', venue_address: '\n', cancellation_window_hours: null },
+    { contact_email: undefined, contact_phone: undefined, venue_name: undefined, business_name: undefined }
+  ];
+  for (const [i, pt] of blanks.entries()) {
+    assertNoEmptyContact(termsBody(pt), 'termsBody blank ' + i);
+    assertNoEmptyContact(privacyBody(pt), 'privacyBody blank ' + i);
+    assertNoEmptyContact(refundsBody(pt), 'refundsBody blank ' + i);
+    assertNoEmptyContact(contactBody(pt), 'contactBody blank ' + i);
+    for (const path of ['/terms', '/privacy', '/refunds', '/contact']) {
+      assertNoEmptyContact(legalPage(path), 'legalPage ' + path + ' blank ' + i);
+    }
+  }
+  // legalPage closes over `site`; rebuild with a blank site.pt
+  const start = js.indexOf('const SITE_ORIGIN=');
+  const end = js.indexOf('\nfunction brandHeader');
+  const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const documentStub = { title: '', querySelector() { return { setAttribute() {}, href: '' }; } };
+  const withSite = (pt) => new Function('esc', 'brandHeader', 'footer', 'site', 'document',
+    js.slice(start, end) + '\nreturn {legalPage,termsBody,privacyBody,refundsBody,contactBody};'
+  )(esc, () => '<header></header>', () => '<footer></footer>', { pt }, documentStub);
+  const blankSite = withSite({ contact_email: '', venue_name: '', business_name: '' });
+  for (const path of ['/terms', '/privacy', '/refunds', '/contact']) {
+    const html = blankSite.legalPage(path);
+    assertNoEmptyContact(html, 'legalPage with site.pt blank ' + path);
+    assert.ok(html.includes('DRAFT for Kieran\'s review, not legal advice.'), path + ' should keep the draft banner');
+  }
+  const contact = blankSite.contactBody({ contact_email: '', contact_phone: '' });
+  assert.ok(contact.includes('[TODO: Contact details will appear here once the trainer has added them in their settings.]'));
+  const refunds = blankSite.refundsBody({});
+  assert.equal(refunds.includes('cancellation window is'), false);
+  const withEmail = termsBody({ contact_email: 'coach@example.com', display_name: 'Jordan Lee' });
+  assert.ok(withEmail.includes('mailto:coach@example.com'));
+  assert.ok(withEmail.includes('Jordan Lee'));
+  assertNoEmptyContact(withEmail, 'terms with email');
+});
