@@ -25,7 +25,7 @@ describe('PT theme API', () => {
     const unmatched = await jsonOf(await send(getRequest(s.pt, '/api/pt/theme')));
     expect(unmatched).toEqual({ id: CUSTOM_THEME_ID });
 
-    await db().run("UPDATE pts SET accent=NULL,background=NULL,foreground=NULL WHERE id=?", s.ptId);
+    await db().run("UPDATE pts SET accent='',background='',foreground='' WHERE id=?", s.ptId);
     const empty = await jsonOf(await send(getRequest(s.pt, '/api/pt/theme')));
     expect(empty).toEqual({ id: DEFAULT_THEME_ID });
   });
