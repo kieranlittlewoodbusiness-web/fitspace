@@ -38,7 +38,7 @@ Default in this runbook: (b) for D1 and deploy, with each run approved separatel
 | 7 | Sun 12:00 | Create the scoped API token (above) | [Kieran hands] | 10 m |
 | 8 | Sun 12:15 | Prod D1: Time Travel bookmark, export, migrations 0001–0005, verification (§3) | [Backend] via token, [Kieran yes] | 15 m |
 | 9 | Sun 12:30 | Admin bootstrap on prod D1 (§3.3) | [Kieran hands] | 5 m |
-| 10 | Sun 12:35 | Set Worker secrets (§2.3) | [Kieran hands] for values; [Backend] can run `secret put` with piped stdin only if Kieran pastes into a form | 15 m |
+| 10 | Sun 12:35 | Set Worker secrets (§2.3) | [Kieran hands] (values never pass through chat or the box) | 15 m |
 | 11 | Sun 12:50 | Deploy the prod Worker and attach the custom domain (§2.4, §6) | [Backend] via token, [Kieran yes] | 15 m + certificate issuance of a few minutes |
 | 12 | Sun 13:10 | Create live webhook endpoints, then set the secrets (§4.2) | [Kieran hands] | 15 m |
 | 13 | Sun 13:30 | Kieran signs in and creates the single PT (§3.4). PT signs in, changes password, presses Connect Stripe, completes live onboarding | [Kieran hands], then [PT] | 30 m + Stripe verification (**hours to 2 days: the biggest schedule risk**) |
@@ -55,6 +55,7 @@ The default env in `wrangler.jsonc` is deliberately non-deployable: no `APP_URL`
 - add `env.production` with `name: "resiliencecoaching"`, the prod D1 binding (`fd8a613f-…`), the `WRITER` DO and DO migration `v1`, `triggers.crons ["* * * * *"]` and `observability.enabled: true`;
 - add `routes: [{ "pattern": "resiliencecoaching.app", "custom_domain": true }, { "pattern": "www.resiliencecoaching.app", "custom_domain": true }]` (see §6 for www);
 - strip the prod D1 binding from the top-level env, or point it at a local placeholder, so a bare `wrangler deploy` can't hit prod;
+- teach `scripts/bootstrap-admin.mjs` to pass `--env production` to wrangler. Today it runs `wrangler d1 execute DB --remote` against the top-level binding, so moving prod D1 into `env.production` would otherwise break §3.3;
 - update the guard tests so they assert: the prod cron appears only in `env.production`; `D1_DATABASE_ID` is **not** set in production, so the preview out-of-band reset stays fail-closed; and `PAYMENT_MODE=stripe_live` appears only in production.
 
 Vars for `env.production`:
@@ -101,8 +102,9 @@ Rollback: either `npx wrangler d1 time-travel restore DB --env production --book
 
 ### 3.3 Admin bootstrap ([Kieran hands], owner-only)
 ```
-ADMIN_EMAIL=<kieran's address> ADMIN_NAME="Kieran" node scripts/bootstrap-admin.mjs --remote --confirm-remote
-# password typed at the stdin prompt (12+ chars); never printed or stored
+read -rs ADMIN_PW   # type the password (12+ chars); not echoed
+printf %s "$ADMIN_PW" | ADMIN_EMAIL=<kieran's address> ADMIN_NAME="Kieran" node scripts/bootstrap-admin.mjs --remote --confirm-remote; unset ADMIN_PW
+# the script reads the password from piped stdin (a TTY gives an empty password), hashes it with scrypt, never prints it
 ```
 The script refuses if an admin already exists.
 Verify: `... --command "SELECT count(*) FROM users WHERE role='admin'"` returns 1.
