@@ -39,6 +39,20 @@ export const securityHeaders = {
   'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'self'; base-uri 'self'; object-src 'none'",
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()'
 };
+
+export const APEX_HOST = 'resiliencecoaching.app';
+export const WWW_HOST = 'www.resiliencecoaching.app';
+
+/** 301 www to the apex, preserving path and query. Other hosts are unchanged. */
+export function wwwToApexRedirect(request) {
+  const url = new URL(request.url);
+  const host = (request.headers.get('Host') || url.hostname || '').split(':')[0].toLowerCase();
+  if (host !== WWW_HOST) return null;
+  url.protocol = 'https:';
+  url.hostname = APEX_HOST;
+  url.port = '';
+  return new Response(null, { status: 301, headers: { ...securityHeaders, Location: url.toString() } });
+}
 const json = (status, data, extraHeaders = {}) => new Response(JSON.stringify(data), { status, headers: { ...securityHeaders, 'Content-Type': 'application/json; charset=utf-8', ...extraHeaders } });
 
 async function boundedText(request, max) {
@@ -368,8 +382,8 @@ function temporaryPassword(env, key) {
   return crypto.createHmac('sha256', secret).update('fitspace-pt-temporary:' + key).digest('base64url').slice(0, 16) + '!';
 }
 
-/** CR 5941600057: the Cron Trigger is OFF unless CRON_ENABLED is exactly "true". Only
- *  env.preview sets it; production sets it at the approved go-live step. So an accidental
+/** CR 5941600057: the Cron Trigger is OFF unless CRON_ENABLED is exactly "true".
+ *  env.preview and env.production set it; the default env does not. So an accidental
  *  deploy of the default env (bound to the real D1 database) runs nothing on a schedule. */
 export async function cronTick(env) {
   if (env.CRON_ENABLED !== 'true') return { skipped: 'CRON_ENABLED is not "true"' };
@@ -382,6 +396,8 @@ export default {
   },
   async fetch(request, env) {
     try {
+      const redirected = wwwToApexRedirect(request);
+      if (redirected) return redirected;
       const response = await handle(request, env);
       if (response) return response;
       if (!['GET', 'HEAD'].includes(request.method)) return new Response('Method not allowed.', { status: 405, headers: securityHeaders });
