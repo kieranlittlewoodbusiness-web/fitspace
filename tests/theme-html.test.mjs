@@ -121,3 +121,10 @@ test('serveThemedAsset leaves non-HTML 200 responses untouched', async () => {
   const again = await serveThemedAsset(new Response(body, { status: 200, headers: { 'content-type': 'application/javascript', etag: '"js1"' } }), new Request('https://example.test/app.js'), {}, {});
   assert.equal((await again.text()).includes('theme-boot'), false);
 });
+
+test('app.js does not apply a cached site payload over server theme-boot', () => {
+  const appJs = readFileSync(join(root, 'app/public/app.js'), 'utf8');
+  assert.ok(appJs.includes("fetch('/api/public/site',{cache:'no-store'"));
+  assert.ok(appJs.includes("function applyLandingTheme(){if(document.getElementById('theme-boot'))return;"));
+  assert.ok(appJs.includes("if(!fromPt&&document.getElementById('theme-boot'))return;"));
+});

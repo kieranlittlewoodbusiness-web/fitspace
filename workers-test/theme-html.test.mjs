@@ -192,7 +192,7 @@ describe('HTML theme injection', () => {
     const type = res.headers.get('content-type') || '';
     expect(type.includes('javascript') || type.includes('ecmascript') || type.includes('text/plain')).toBe(true);
     const body = await res.text();
-    expect(body.includes('theme-boot')).toBe(false);
+    expect(body.includes('<style id="theme-boot">')).toBe(false);
     expect(body.includes(':root{--accent:')).toBe(false);
   });
 });
