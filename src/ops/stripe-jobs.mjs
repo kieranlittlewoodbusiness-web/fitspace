@@ -85,7 +85,10 @@ export async function prepareRefund(db, { bookingId, userId, token, mode, now = 
   return id;
 }
 
-const onboardPayload = (mode, account, origin) => ({ mode, path: '/v2/core/account_links', v2: true, data: { account, use_case: { type: 'account_onboarding', account_onboarding: { configurations: ['merchant'], refresh_url: origin + '/dashboard?tab=payments&connect=refresh', return_url: origin + '/dashboard?tab=payments&connect=return', collection_options: { fields: 'eventually_due' } } } } });
+// RC-32: POST /v2/core/account_links (2026-09-30.endive) accepts only account and use_case{type, account_onboarding{refresh_url,
+// return_url, collection_options}}. `configurations` is not a request field (prod 400 invalid_fields 'Unknown field', 22 Nov);
+// Stripe infers it from the account's applied configurations (merchant).
+const onboardPayload = (mode, account, origin) => ({ mode, path: '/v2/core/account_links', v2: true, data: { account, use_case: { type: 'account_onboarding', account_onboarding: { refresh_url: origin + '/dashboard?tab=payments&connect=refresh', return_url: origin + '/dashboard?tab=payments&connect=return', collection_options: { fields: 'eventually_due' } } } } });
 
 /** RC-32: id (and so the Stripe Idempotency-Key) of the account-creation job for this PT and mode.
  *  First attempt: the fixed `account:[live:]<pt>` id. While the latest attempt is pending, retrying

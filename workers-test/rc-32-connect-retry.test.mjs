@@ -184,6 +184,34 @@ describe('RC-32 M1/m2: a created account is never duplicated', () => {
   });
 });
 
+describe('RC-32 v2 Connect request shapes (2026-09-30.endive)', () => {
+  it('POST /v2/core/account_links sends exactly account + use_case.account_onboarding{refresh_url, return_url, collection_options}', async () => {
+    const s = await seedBlock({ customers: 0 });
+    const pt = await seedUser({ role: 'pt', ptId: s.ptId });
+    const bodies = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input.url);
+      if (url.origin !== 'https://api.stripe.com') throw new Error('unexpected host in test: ' + url.origin);
+      if (url.pathname === '/v2/core/account_links') { bodies.push(JSON.parse(init.body)); return json(200, { url: 'https://connect.stripe.com/setup/shape', livemode: false }); }
+      return json(200, { id: 'acct_test_shape', livemode: false });
+    });
+    expect((await call(pt, '/api/pt/stripe/connect')).status).toBe(200);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toEqual({
+      account: 'acct_test_shape',
+      use_case: {
+        type: 'account_onboarding',
+        account_onboarding: {
+          refresh_url: 'https://example.test/dashboard?tab=payments&connect=refresh',
+          return_url: 'https://example.test/dashboard?tab=payments&connect=return',
+          collection_options: { fields: 'eventually_due' }
+        }
+      }
+    });
+    expect(JSON.stringify(bodies[0])).not.toContain('configurations');
+  });
+});
+
 describe('RC-32 Stripe error logging and PT message', () => {
   it('redacts account ids, emails and keys, and keeps type, code and request id', () => {
     const response = new Response('{}', { status: 400, headers: { 'request-id': 'req_abc123' } });
