@@ -84,6 +84,6 @@ export async function stripe(env, path, data, { account, idempotency, method = '
     if (platformNotReady(response.status, result)) throw httpError(409, PLATFORM_NOT_READY, { code: 'STRIPE_PLATFORM_NOT_READY', retryable: false });
     throw httpError(retryable ? 503 : 409, 'Stripe could not complete this action. ' + (response.status === 401 ? 'Check this account’s key.' : response.status === 403 ? 'Check this key’s permissions.' : 'Check the Stripe account setup and retry.'), { retryable });
   }
-  if (typeof result.livemode === 'boolean' && result.livemode !== live(mode)) throw httpError(403, 'Stripe response payment mode mismatch.');
+  if (typeof result.livemode === 'boolean' && result.livemode !== live(mode)) throw httpError(403, 'Stripe response payment mode mismatch.', { stripeSucceeded: true });
   return result;
 }

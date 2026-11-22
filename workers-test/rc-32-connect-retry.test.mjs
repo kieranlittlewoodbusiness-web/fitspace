@@ -107,6 +107,83 @@ describe('RC-32 Connect retry after a failed account job', () => {
   });
 });
 
+describe('RC-32 M1/m2: a created account is never duplicated', () => {
+  // Stripe idempotency model: the same key replays the same account; a new key creates a new one.
+  function idempotentAccounts() {
+    const byKey = new Map();
+    const calls = mockStripe(info => {
+      if (info.path === '/v2/core/accounts') {
+        if (!byKey.has(info.idempotency)) byKey.set(info.idempotency, 'acct_test_' + nodeCrypto.randomBytes(6).toString('hex'));
+        return json(200, { id: byKey.get(info.idempotency), livemode: false });
+      }
+      return json(200, { url: 'https://connect.stripe.com/setup/m1', livemode: false });
+    });
+    return { calls, byKey };
+  }
+
+  it('M1: if completeJob fails after Stripe created the account, the retry reuses the key and binds the same acct_', async () => {
+    const s = await seedBlock({ customers: 0 });
+    const pt = await seedUser({ role: 'pt', ptId: s.ptId });
+    const { calls, byKey } = idempotentAccounts();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await db().run("CREATE TRIGGER rc32_fail_done BEFORE UPDATE OF status ON stripe_jobs WHEN NEW.status='done' AND OLD.kind='account' BEGIN SELECT RAISE(ABORT, 'rc32 simulated done-update failure'); END");
+    let first;
+    try { first = await call(pt, '/api/pt/stripe/connect'); } finally { await db().run('DROP TRIGGER IF EXISTS rc32_fail_done'); }
+    expect(first.status).toBeGreaterThanOrEqual(500);
+    const job = await db().get("SELECT id,status FROM stripe_jobs WHERE kind='account' AND target_id=?", s.ptId);
+    expect(job.status).toBe('retry');
+    expect(await db().get('SELECT account_id FROM stripe_connections WHERE pt_id=?', s.ptId)).toBeNull();
+
+    const second = await call(pt, '/api/pt/stripe/connect');
+    expect(second.status).toBe(200);
+    const accountCalls = calls.filter(c => c.path === '/v2/core/accounts');
+    expect(accountCalls).toHaveLength(2);
+    expect(new Set(accountCalls.map(c => c.idempotency))).toEqual(new Set([job.id]));
+    expect(byKey.size).toBe(1);
+    expect(await db().get('SELECT account_id FROM stripe_connections WHERE pt_id=?', s.ptId)).toEqual({ account_id: byKey.get(job.id) });
+    expect((await db().all("SELECT id FROM stripe_jobs WHERE kind='account' AND target_id=?", s.ptId))).toHaveLength(1);
+  });
+
+  it('M1: a post-create check failure (livemode mismatch) stays retryable on the same key', async () => {
+    const s = await seedBlock({ customers: 0 });
+    const pt = await seedUser({ role: 'pt', ptId: s.ptId });
+    let n = 0;
+    const calls = mockStripe(info => info.path === '/v2/core/accounts'
+      ? json(200, { id: 'acct_test_same', livemode: ++n === 1 })
+      : json(200, { url: 'https://connect.stripe.com/setup/m1b', livemode: false }));
+    const first = await call(pt, '/api/pt/stripe/connect');
+    expect(first.status).toBe(403); // 'Stripe response payment mode mismatch.' from the shared client
+    expect((await db().get("SELECT status FROM stripe_jobs WHERE kind='account' AND target_id=?", s.ptId)).status).toBe('retry');
+    expect((await call(pt, '/api/pt/stripe/connect')).status).toBe(200);
+    const keys = calls.filter(c => c.path === '/v2/core/accounts').map(c => c.idempotency);
+    expect(new Set(keys)).toEqual(new Set(['account:' + s.ptId]));
+    expect(await db().get('SELECT account_id FROM stripe_connections WHERE pt_id=?', s.ptId)).toEqual({ account_id: 'acct_test_same' });
+  });
+
+  it('m2: a stale (30 h old) pending account job is retried with the same key instead of blocking', async () => {
+    const s = await seedBlock({ customers: 0 });
+    const pt = await seedUser({ role: 'pt', ptId: s.ptId });
+    let fail = true;
+    const calls = mockStripe(info => {
+      if (info.path === '/v2/core/accounts') {
+        if (fail) { fail = false; return json(503, { error: { type: 'api_error', message: 'try later' } }); }
+        return json(200, { id: 'acct_test_stale', livemode: false });
+      }
+      return json(200, { url: 'https://connect.stripe.com/setup/m2', livemode: false });
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect((await call(pt, '/api/pt/stripe/connect')).status).toBe(503);
+    const job = await db().get("SELECT id,status FROM stripe_jobs WHERE kind='account' AND target_id=?", s.ptId);
+    expect(job.status).toBe('retry');
+    await db().run('UPDATE stripe_jobs SET created_at=? WHERE id=?', Date.now() - 30 * 3600000, job.id);
+    const second = await call(pt, '/api/pt/stripe/connect');
+    expect(second.status).toBe(200);
+    const keys = calls.filter(c => c.path === '/v2/core/accounts').map(c => c.idempotency);
+    expect(keys).toEqual([job.id, job.id]);
+    expect(await db().get('SELECT account_id FROM stripe_connections WHERE pt_id=?', s.ptId)).toEqual({ account_id: 'acct_test_stale' });
+  });
+});
+
 describe('RC-32 Stripe error logging and PT message', () => {
   it('redacts account ids, emails and keys, and keeps type, code and request id', () => {
     const response = new Response('{}', { status: 400, headers: { 'request-id': 'req_abc123' } });
