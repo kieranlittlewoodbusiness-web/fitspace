@@ -199,6 +199,7 @@ describe('Stripe Connect: at most one account, direct charges, no application fe
       .rejects.toMatchObject({ status: 409, code: 'PLATFORM_LINK_DISABLED' });
   });
 
+
   it('single_connect: a second PT cannot bind another account when single-PT mode is on', async () => {
     const a = await seedBlock({ customers: 0, blockId: 'conn-a' });
     const b = await seedBlock({ customers: 0, blockId: 'conn-b' });
@@ -240,6 +241,39 @@ describe('Stripe Connect: at most one account, direct charges, no application fe
     expect(created.data.defaults.responsibilities.losses_collector).toBe('stripe');
   });
 });
+
+
+  it('omitting multiPt on prepareConnect is fail-closed (409 SINGLE_CONNECT_EXISTS)', async () => {
+    await db().run('DELETE FROM stripe_jobs');
+    await db().run('DELETE FROM stripe_connections');
+    const a = await seedBlock({ customers: 0, blockId: 'omit-prep-a' });
+    const b = await seedBlock({ customers: 0, blockId: 'omit-prep-b' });
+    const ptA = await seedUser({ role: 'pt', ptId: a.ptId });
+    const ptB = await seedUser({ role: 'pt', ptId: b.ptId });
+    const jobA = await prepareConnect(db(), { userId: ptA.id, origin: ORIGIN, mode: 'stripe_test' });
+    await completeJob(db(), { id: jobA, result: { id: 'acct_test_omit_prep' } });
+    await expect(prepareConnect(db(), { userId: ptB.id, origin: ORIGIN, mode: 'stripe_test' }))
+      .rejects.toMatchObject({ status: 409, code: 'SINGLE_CONNECT_EXISTS' });
+  });
+
+  it('omitting multiPt on completeJob is fail-closed (409 SINGLE_CONNECT_EXISTS)', async () => {
+    await db().run('DELETE FROM stripe_jobs');
+    await db().run('DELETE FROM stripe_connections');
+    const a = await seedBlock({ customers: 0, blockId: 'omit-job-a' });
+    const b = await seedBlock({ customers: 0, blockId: 'omit-job-b' });
+    const ptA = await seedUser({ role: 'pt', ptId: a.ptId });
+    const ptB = await seedUser({ role: 'pt', ptId: b.ptId });
+    const jobA = await prepareConnect(db(), { userId: ptA.id, origin: ORIGIN, mode: 'stripe_test' });
+    const jobB = await prepareConnect(db(), { userId: ptB.id, origin: ORIGIN, mode: 'stripe_test' });
+    const row = await db().get('SELECT payload FROM stripe_jobs WHERE id=?', jobB);
+    const payload = JSON.parse(row.payload);
+    delete payload.multiPt;
+    await db().run('UPDATE stripe_jobs SET payload=? WHERE id=?', JSON.stringify(payload), jobB);
+    await completeJob(db(), { id: jobA, result: { id: 'acct_test_omit_one' } });
+    await expect(completeJob(db(), { id: jobB, result: { id: 'acct_test_omit_two' } }))
+      .rejects.toMatchObject({ status: 409, code: 'SINGLE_CONNECT_EXISTS' });
+    expect(await db().all('SELECT account_id FROM stripe_connections')).toEqual([{ account_id: 'acct_test_omit_one' }]);
+  });
 
 describe('customer 409 copy', () => {
   it('tells the customer to contact their coach to refund a completed payment', async () => {

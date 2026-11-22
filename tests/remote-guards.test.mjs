@@ -107,6 +107,34 @@ test('wrangler.jsonc: MULTI_PT_ENABLED is "false" on the default and preview env
   assert.equal(resolve('preview').vars?.MULTI_PT_ENABLED, 'false');
 });
 
+
+test('gen-upload writes a script from the preview bundle and refuses a prod-bound config', async () => {
+  const { assertSafePreviewUpload, PREVIEW_DB } = await import('../docs/rc-4/preview/gen-upload.mjs');
+  const previewMeta = () => ({ bindings: [{ type: 'd1', name: 'DB', id: PREVIEW_DB }] });
+  assert.doesNotThrow(() => assertSafePreviewUpload(previewMeta(), { database_id: PREVIEW_DB, D1_DATABASE_ID: PREVIEW_DB }));
+  // The guard comparison constant in the bundle must not, by itself, refuse a preview-bound upload.
+  assert.doesNotThrow(() => assertSafePreviewUpload(previewMeta(), { database_id: PREVIEW_DB }));
+  assert.throws(() => assertSafePreviewUpload(previewMeta(), { database_id: PRODUCTION }), /refusing: production database id present in the upload/);
+  assert.throws(() => assertSafePreviewUpload(previewMeta(), { D1_DATABASE_ID: PRODUCTION }), /refusing: production database id present in the upload/);
+  assert.throws(() => assertSafePreviewUpload({ bindings: [{ type: 'd1', name: 'DB', id: PRODUCTION }] }, { database_id: PREVIEW_DB }), /refusing: production database id present in the upload/);
+
+  const outdir = tmp('rc4-prev-bundle-');
+  const wrangler = spawnSync(join(process.cwd(), 'node_modules/.bin/wrangler'), ['deploy', '--dry-run', '--env', 'preview', '--outdir', outdir], { encoding: 'utf8' });
+  assert.equal(wrangler.status, 0, wrangler.stderr || wrangler.stdout);
+  const bundle = readFileSync(join(outdir, 'index.js'), 'utf8');
+  assert.match(bundle, new RegExp(PRODUCTION, 'i'), 'preview bundle still inlines the guard comparison constant');
+
+  const script = join(tmp('rc4-gen-upload-'), 'upload.js');
+  const r = run('docs/rc-4/preview/gen-upload.mjs', [script, outdir]);
+  assert.equal(r.status, 0, r.stderr || r.stdout);
+  assert.match(r.stdout, /^ok /);
+  assert.equal(existsSync(script), true);
+  const generated = readFileSync(script, 'utf8');
+  assert.match(generated, new RegExp(PREVIEW_DB));
+  assert.match(generated, /"type":"d1"/);
+  assert.doesNotMatch(generated, new RegExp(`"id":"${PRODUCTION}"`));
+});
+
 test('seed-dev-pt.mjs refuses --remote (even with --confirm-remote) and requires --local', () => {
   for (const args of [['--remote'], ['--remote', '--confirm-remote']]) {
     const r = run('scripts/seed-dev-pt.mjs', args);

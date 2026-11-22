@@ -109,6 +109,11 @@ describe('preview out-of-band reset (EMAIL_MODE=preview, non-prod)', () => {
     expect(previewOutOfBandAllowed(previewEnv({ EMAIL_MODE: 'send' }))).toBe(false);
     expect(previewOutOfBandAllowed(previewEnv({ EMAIL_MODE: 'Preview' }))).toBe(true);
     expect(previewOutOfBandAllowed(previewEnv({ EMAIL_MODE: ' preview' }))).toBe(true);
+    expect(previewOutOfBandAllowed(previewEnv({ EMAIL_MODE: undefined }))).toBe(false);
+    expect(previewOutOfBandAllowed(previewEnv({ EMAIL_MODE: '' }))).toBe(false);
+    expect(previewOutOfBandAllowed(previewEnv({ EMAIL_MODE: 'previewx' }))).toBe(false);
+    expect(previewOutOfBandAllowed(previewEnv({ EMAIL_MODE: 'preview-x' }))).toBe(false);
+    expect(previewOutOfBandAllowed(previewEnv({ EMAIL_MODE: 'production' }))).toBe(false);
     expect(previewOutOfBandAllowed(previewEnv({ APP_URL: 'https://example.test' }))).toBe(false);
     expect(previewOutOfBandAllowed(previewEnv({ APP_URL: '' }))).toBe(false);
     expect(previewOutOfBandAllowed(previewEnv({ D1_DATABASE_ID: PRODUCTION_DB }))).toBe(false);
@@ -180,6 +185,11 @@ describe('preview out-of-band reset (EMAIL_MODE=preview, non-prod)', () => {
     const { id, token } = await issueOutOfBand(u, sign);
     const closed = [
       previewEnv({ EMAIL_MODE: 'send' }),
+      previewEnv({ EMAIL_MODE: undefined }),
+      previewEnv({ EMAIL_MODE: '' }),
+      previewEnv({ EMAIL_MODE: 'previewx' }),
+      previewEnv({ EMAIL_MODE: 'preview-x' }),
+      previewEnv({ EMAIL_MODE: 'production' }),
       previewEnv({ APP_URL: 'https://resiliencecoaching.example' }),
       previewEnv({ D1_DATABASE_ID: PRODUCTION_DB }),
       previewEnv({ PT_INVITE_SECRET: '', AUTH_RESET_SECRET: '' }),

@@ -99,7 +99,7 @@ export const ALLOWED = {
     ]
   },
   '../src/ops/stripe-jobs.mjs::prepareConnect': {
-    why: "PT op: pts row for the caller's own pt_id",
+    why: "PT owner or admin: pts row for the resolved pt_id; single-connect pre-check",
     queries: [
       'abf4ec84', // SELECT * FROM pts WHERE id=?
       'd8aa094b', // SELECT pt_id FROM stripe_connections WHERE NOT (pt_id=? AND mode=?) LI
@@ -159,7 +159,7 @@ export const ALLOWED = {
     queries: [
       '7c8afa9c', // SELECT stripe_account,stripe_ready FROM pts WHERE id=?
       'a49c8539', // SELECT * FROM pt_stripe_credentials WHERE pt_id=? AND mode=?
-      'b64f1291', // SELECT account_id,routing,ready FROM stripe_connections WHERE pt_id=? 
+      'e4408298', // SELECT account_id,routing,ready,charges_enabled,payouts_enabled,detail
     ]
   },
   '../src/ops/accounts.mjs::updatePtBranding': {
@@ -177,11 +177,18 @@ export const ALLOWED = {
     ]
   },
   '../src/ops/accounts.mjs::bindConnection': {
-    why: 'admin-only op (actor role checked first); binds by pt_id from the verified job',
+    why: 'PT owner or admin: persist the Connect snapshot for the resolved pt_id',
     queries: [
-      '45cb7122', // UPDATE stripe_connections SET ready=? WHERE pt_id=? AND mode=? AND acc
       '5f50fda9', // SELECT id,role,pt_id FROM users WHERE id=? AND active=1
+      '704793ed', // UPDATE stripe_connections SET ready=?,charges_enabled=?,payouts_enable
       'd54e1a4c', // UPDATE pts SET stripe_ready=? WHERE id=? AND stripe_account=?
+    ]
+  },
+  '../src/connect-status.mjs::resolveConnectPtId': {
+    why: 'PT owner (own pt_id) or admin (explicit pt_id, or the one PT in single-PT mode)',
+    queries: [
+      '03fd9f09', // SELECT id FROM pts ORDER BY created_at LIMIT 2
+      '4b1f8101', // SELECT id FROM pts WHERE id=?
     ]
   },
   '../src/mail.mjs::deliverAuthMail': {

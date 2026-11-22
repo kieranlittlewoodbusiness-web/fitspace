@@ -13,8 +13,8 @@ export async function currentUser(db, request, { demo = false, now = Date.now() 
   return row;
 }
 export function requireUser(user, roles) {
-  if (!user) throw httpError(401, 'Please sign in to continue.');
-  if (roles && !roles.includes(user.role)) throw httpError(403, 'Your account does not have access to this action.');
+  if (!user) throw httpError(401, 'Please sign in to continue.', { code: 'UNAUTHENTICATED' });
+  if (roles && !roles.includes(user.role)) throw httpError(403, 'Your account does not have access to this action.', { code: 'FORBIDDEN' });
   return user;
 }
 /** Same-origin + CSRF checks for state-changing JSON routes (app/server.cjs:34). */
