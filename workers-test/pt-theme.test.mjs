@@ -66,9 +66,9 @@ describe('PT theme API', () => {
     const got = await jsonOf(await send(getRequest(s.pt, '/api/pt/theme')));
     expect(got).toEqual({ id: 'night' });
 
-    const site = await jsonOf(await send(new Request(ORIGIN + '/api/public/site')));
-    expect(site.pt.accent).toBe(night.accent);
-    expect(site.pt.background).toBe(night.background);
-    expect(site.pt.foreground).toBe(night.text);
+    const page = await jsonOf(await send(new Request(ORIGIN + '/api/public/pts/' + s.ptId)));
+    expect(page.pt.accent).toBe(night.accent);
+    expect(page.pt.background).toBe(night.background);
+    expect(page.pt.foreground).toBe(night.text);
   });
 });
