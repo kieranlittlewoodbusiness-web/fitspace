@@ -1,7 +1,9 @@
 // Resolve the PT theme for an HTML page and inject CSS variables into <head>
 // so the first paint is already themed (no flash of the default yellow/black).
-// Uses the existing pts colour columns (no migration). Does not write, and
-// does not use deleted_at so a D1 that has only reached 0006 still works.
+// Uses the existing pts colour columns (no migration). Does not write.
+// customerPt/bookingPt require p.published=1, and p.deleted_at IS NULL only
+// when that column exists (0007). Preview D1 has been migrated only through
+// 0006 and has no pts.deleted_at; the check is skipped there.
 import { currentUser } from './auth.mjs';
 import { createDb } from './db.mjs';
 import { multiPtEnabled } from './multi-pt.mjs';
@@ -17,8 +19,10 @@ const FALLBACK = Object.freeze({
   primaryInk: '#ffffff'
 });
 
+export const THEME_HEX = /^#[0-9a-f]{6}$/i;
+
 function safeHex(value, fallback) {
-  return /^#[0-9a-f]{6}$/i.test(String(value || '')) ? String(value).toLowerCase() : fallback;
+  return THEME_HEX.test(String(value || '')) ? String(value).toLowerCase() : fallback;
 }
 
 /** Map a pts row (or a public PT payload) to the CSS variables the pages use. */
@@ -64,23 +68,47 @@ async function publishedPtBySlug(db, slug) {
   return db.get('SELECT accent,background,foreground,id,slug FROM pts WHERE slug=? AND published=1', slug);
 }
 
+async function ptsHasDeletedAt(db) {
+  const rows = await db.all('PRAGMA table_info(pts)');
+  return rows.some(row => row.name === 'deleted_at');
+}
+
 async function bookingPt(db, user, bookingId) {
   if (!user || !bookingId) return null;
+  const live = await ptsHasDeletedAt(db);
   if (user.role === 'customer') {
+    if (live) {
+      return db.get(
+        'SELECT p.accent,p.background,p.foreground,p.id FROM bookings b JOIN blocks c ON c.id=b.block_id JOIN pts p ON p.id=c.pt_id WHERE b.id=? AND b.customer_id=? AND p.published=1 AND p.deleted_at IS NULL',
+        bookingId, user.id
+      );
+    }
     return db.get(
-      'SELECT p.accent,p.background,p.foreground,p.id FROM bookings b JOIN blocks c ON c.id=b.block_id JOIN pts p ON p.id=c.pt_id WHERE b.id=? AND b.customer_id=?',
+      'SELECT p.accent,p.background,p.foreground,p.id FROM bookings b JOIN blocks c ON c.id=b.block_id JOIN pts p ON p.id=c.pt_id WHERE b.id=? AND b.customer_id=? AND p.published=1',
       bookingId, user.id
     );
   }
   if (user.role === 'pt' && user.pt_id) {
+    if (live) {
+      return db.get(
+        'SELECT p.accent,p.background,p.foreground,p.id FROM bookings b JOIN blocks c ON c.id=b.block_id JOIN pts p ON p.id=c.pt_id WHERE b.id=? AND c.pt_id=? AND p.published=1 AND p.deleted_at IS NULL',
+        bookingId, user.pt_id
+      );
+    }
     return db.get(
-      'SELECT p.accent,p.background,p.foreground,p.id FROM bookings b JOIN blocks c ON c.id=b.block_id JOIN pts p ON p.id=c.pt_id WHERE b.id=? AND c.pt_id=?',
+      'SELECT p.accent,p.background,p.foreground,p.id FROM bookings b JOIN blocks c ON c.id=b.block_id JOIN pts p ON p.id=c.pt_id WHERE b.id=? AND c.pt_id=? AND p.published=1',
       bookingId, user.pt_id
     );
   }
   if (user.role === 'admin') {
+    if (live) {
+      return db.get(
+        'SELECT p.accent,p.background,p.foreground,p.id FROM bookings b JOIN blocks c ON c.id=b.block_id JOIN pts p ON p.id=c.pt_id WHERE b.id=? AND p.published=1 AND p.deleted_at IS NULL',
+        bookingId
+      );
+    }
     return db.get(
-      'SELECT p.accent,p.background,p.foreground,p.id FROM bookings b JOIN blocks c ON c.id=b.block_id JOIN pts p ON p.id=c.pt_id WHERE b.id=?',
+      'SELECT p.accent,p.background,p.foreground,p.id FROM bookings b JOIN blocks c ON c.id=b.block_id JOIN pts p ON p.id=c.pt_id WHERE b.id=? AND p.published=1',
       bookingId
     );
   }
@@ -89,8 +117,14 @@ async function bookingPt(db, user, bookingId) {
 
 async function customerPt(db, user) {
   if (!user?.id) return null;
+  if (await ptsHasDeletedAt(db)) {
+    return db.get(
+      'SELECT p.accent,p.background,p.foreground,p.id FROM bookings b JOIN blocks c ON c.id=b.block_id JOIN pts p ON p.id=c.pt_id WHERE b.customer_id=? AND p.published=1 AND p.deleted_at IS NULL ORDER BY b.created_at DESC LIMIT 1',
+      user.id
+    );
+  }
   return db.get(
-    'SELECT p.accent,p.background,p.foreground,p.id FROM bookings b JOIN blocks c ON c.id=b.block_id JOIN pts p ON p.id=c.pt_id WHERE b.customer_id=? ORDER BY b.created_at DESC LIMIT 1',
+    'SELECT p.accent,p.background,p.foreground,p.id FROM bookings b JOIN blocks c ON c.id=b.block_id JOIN pts p ON p.id=c.pt_id WHERE b.customer_id=? AND p.published=1 ORDER BY b.created_at DESC LIMIT 1',
     user.id
   );
 }
@@ -148,30 +182,37 @@ function headerValue(headers, name) {
   return '';
 }
 
-/** Apply the resolved PT theme to an ASSETS HTML response, then attach security headers. */
-export async function serveThemedAsset(asset, request, env, securityHeaders) {
-  const type = headerValue(asset.headers, 'content-type');
-  let out;
-  if (type.includes('text/html')) {
-    let vars = FALLBACK;
-    try {
-      vars = await resolveThemeVars(createDb(env.DB), request, {
-        multiPt: multiPtEnabled(env),
-        demo: env.DEMO_MODE === 'true'
-      });
-    } catch (error) {
-      console.error('RC-29b theme resolve failed:', error.code || error.name || 'Error');
-    }
-    out = new Response(injectThemeIntoHtml(await asset.text(), vars), {
-      status: asset.status,
-      statusText: asset.statusText,
-      headers: new Headers(asset.headers)
-    });
-    out.headers.delete('Content-Length');
-  } else {
-    out = new Response(asset.body, asset);
-  }
+function withSecurityHeaders(out, request, securityHeaders) {
   for (const [name, value] of Object.entries(securityHeaders || {})) out.headers.set(name, value);
   if (new URL(request.url).pathname === '/reset-password') out.headers.set('Referrer-Policy', 'no-referrer');
   return out;
+}
+
+/** Apply the resolved PT theme to a 200 HTML ASSETS response. 304s and other
+ *  statuses are passed through untouched so a conditional request cannot build
+ *  a 304 with a body. */
+export async function serveThemedAsset(asset, request, env, securityHeaders) {
+  const type = headerValue(asset.headers, 'content-type');
+  if (asset.status !== 200 || !type.includes('text/html')) {
+    return withSecurityHeaders(new Response(asset.body, asset), request, securityHeaders);
+  }
+  let vars = FALLBACK;
+  try {
+    vars = await resolveThemeVars(createDb(env.DB), request, {
+      multiPt: multiPtEnabled(env),
+      demo: env.DEMO_MODE === 'true'
+    });
+  } catch (error) {
+    console.error('RC-29b theme resolve failed:', error.code || error.name || 'Error');
+  }
+  const out = new Response(injectThemeIntoHtml(await asset.text(), vars), {
+    status: 200,
+    statusText: asset.statusText,
+    headers: new Headers(asset.headers)
+  });
+  out.headers.delete('Content-Length');
+  out.headers.delete('ETag');
+  out.headers.delete('Last-Modified');
+  out.headers.set('Cache-Control', 'no-store');
+  return withSecurityHeaders(out, request, securityHeaders);
 }

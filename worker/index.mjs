@@ -419,7 +419,7 @@ export default {
       if (response) return response;
       if (!['GET', 'HEAD'].includes(request.method)) return new Response('Method not allowed.', { status: 405, headers: securityHeaders });
       const asset = await env.ASSETS.fetch(request);
-      return serveThemedAsset(asset, request, env, securityHeaders);
+      return await serveThemedAsset(asset, request, env, securityHeaders);
     } catch (error) {
       if (error.status) return json(error.status, { error: error.message, ...errorExtras(error) });
       console.error('RC-4 request failed:', error.code || error.name || 'Error');
