@@ -480,6 +480,32 @@ export const ALLOWED = {
       '5a88c258', // UPDATE pts SET accent=?,background=?,foreground=? WHERE id=?
     ]
   },
+  '../src/theme-resolve.mjs::ptById': {
+    why: 'HTML theme inject: a signed-in PT reads only their own colour columns by user.pt_id',
+    queries: [
+      '7d81321e', // SELECT accent,background,foreground,id FROM pts WHERE id=?
+    ]
+  },
+  '../src/theme-resolve.mjs::publishedPtBySlug': {
+    why: 'HTML theme inject: public published PT colours by slug on /pt/:slug',
+    queries: [
+      '89d03958', // SELECT accent,background,foreground,id,slug FROM pts WHERE slug=? AND published=1
+    ]
+  },
+  '../src/theme-resolve.mjs::bookingPt': {
+    why: 'HTML theme inject: checkout/booking pages read pts colours only for a booking the caller can already see (customer own id, PT own pt_id, or admin)',
+    queries: [
+      'b3f3b12d', // SELECT ... WHERE b.id=? AND b.customer_id=?
+      '0b6fc3a6', // SELECT ... WHERE b.id=? AND c.pt_id=?
+      '0581aa5c', // SELECT ... WHERE b.id=?
+    ]
+  },
+  '../src/theme-resolve.mjs::customerPt': {
+    why: 'HTML theme inject: a signed-in customer reads colours for the PT on their most recent booking only',
+    queries: [
+      '5e521d5d', // SELECT ... WHERE b.customer_id=? ORDER BY b.created_at DESC LIMIT 1
+    ]
+  },
   '../src/ops/webhooks.mjs::handleWebhook': {
     why: "system: Stripe-signed events, matched by session/payment/account ids",
     queries: [
