@@ -132,22 +132,14 @@ input[type=time]::-webkit-date-and-time-value{text-align:left}
 .profile-missing-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 .profile-missing-actions .btn{min-height:44px}
 
-/* RC-29: PT theme preset picker. Swatches stay at least 44px tall with a visible focus ring. */
+/* RC-29: PT theme preset picker. Native select with a 44px target and a live swatch. */
 .theme-settings{max-width:570px;margin-top:28px}
-.theme-settings legend,.theme-settings h2{font-size:22px;margin:0 0 8px}
 .theme-settings .theme-help{margin:0 0 16px;color:var(--muted);font-size:14px}
-.theme-swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:12px;margin:0 0 20px;padding:0;border:0}
-.theme-swatch{position:relative;margin:0;cursor:pointer;display:block}
-.theme-swatch input{position:absolute;inset:0;margin:0;opacity:0;cursor:pointer}
-.theme-swatch-card{display:flex;flex-direction:column;justify-content:flex-end;min-height:44px;border:1px solid var(--line);border-radius:10px;padding:10px 10px 8px;background:var(--swatch-bg,#fff);color:var(--swatch-fg,#111);box-shadow:inset 0 0 0 2px transparent}
-.theme-swatch-colours{display:flex;gap:6px;margin-bottom:8px}
-.theme-swatch-colours i{display:block;width:22px;height:22px;border-radius:50%;border:1px solid color-mix(in srgb,var(--swatch-fg,#111) 20%,transparent);box-sizing:border-box}
-.theme-swatch-name{font-size:12px;font-weight:600;letter-spacing:-.02em}
-.theme-swatch input:focus-visible+.theme-swatch-card{outline:3px solid #8a6a00;outline-offset:3px}
-.theme-swatch input:checked+.theme-swatch-card{box-shadow:inset 0 0 0 2px var(--swatch-fg,#111)}
+.theme-picker{display:flex;align-items:flex-end;gap:12px;margin:0 0 20px}
+.theme-picker .theme-select-label{flex:1;min-width:0}
+.theme-settings select{min-height:44px}
+.theme-swatch-preview{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;flex-shrink:0;width:44px;height:44px;border:1px solid color-mix(in srgb,var(--swatch-fg,#111) 20%,transparent);border-radius:10px;overflow:hidden;background:var(--swatch-bg,#fff);box-sizing:border-box}
+.theme-swatch-preview i{display:block;min-width:0;min-height:0}
 .theme-settings .form-buttons .btn{min-height:44px}
 .theme-settings #themeStatus[data-state=error]{color:#7c2520}
 .theme-settings #themeStatus[data-state=success]{color:#0f5c32}
-@media(max-width:480px){
-  .theme-swatches{grid-template-columns:repeat(2,minmax(0,1fr))}
-}
