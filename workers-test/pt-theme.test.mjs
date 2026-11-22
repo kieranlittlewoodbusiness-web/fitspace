@@ -126,7 +126,7 @@ describe('PT theme API', () => {
     const s = await seedTrainer();
     await db().run("UPDATE pts SET accent='#cc3300',background='#ffffff',foreground='#111111' WHERE id=?", s.ptId);
     const before = await db().get('SELECT accent,background,foreground FROM pts WHERE id=?', s.ptId);
-    const audits = await db().get("SELECT count(*) AS n FROM audit_log WHERE pt_id=? AND action='pt_theme_updated'", s.ptId);
+    const audits = await db().get("SELECT count(*) AS n FROM audit_log WHERE target_id=? AND action='pt_theme_updated'", s.ptId);
 
     const res = await send(jsonRequest(s.pt, 'PUT', '/api/pt/theme', { id: 'custom', accent: '#000000' }));
     expect(res.status).toBe(200);
@@ -134,7 +134,7 @@ describe('PT theme API', () => {
 
     const after = await db().get('SELECT accent,background,foreground FROM pts WHERE id=?', s.ptId);
     expect(after).toEqual(before);
-    const afterAudits = await db().get("SELECT count(*) AS n FROM audit_log WHERE pt_id=? AND action='pt_theme_updated'", s.ptId);
+    const afterAudits = await db().get("SELECT count(*) AS n FROM audit_log WHERE target_id=? AND action='pt_theme_updated'", s.ptId);
     expect(afterAudits.n).toBe(audits.n);
   });
 });
