@@ -10,9 +10,16 @@ const WRITABLE = new Set([
 ]);
 
 const CONTROL = /[\r\n\u0000-\u001f\u007f]/g;
+const HAS_CONTROL = /[\r\n\u0000-\u001f\u007f]/;
 
 function blank(value) {
   return value == null || (typeof value === 'string' && value.trim() === '');
+}
+
+function assertNoControls(value, label) {
+  if (typeof value === 'string' && HAS_CONTROL.test(value)) {
+    throw new Error(`${label} cannot contain control characters.`);
+  }
 }
 
 function failed(fields) {
@@ -23,6 +30,7 @@ function failed(fields) {
 function optionalText(value, label, max) {
   if (blank(value)) return null;
   if (typeof value !== 'string') throw new Error(`${label} must be 1–${max} characters.`);
+  assertNoControls(value, label);
   const trimmed = value.trim();
   if (trimmed.length < 1 || trimmed.length > max) throw new Error(`${label} must be 1–${max} characters.`);
   return trimmed;
@@ -30,8 +38,15 @@ function optionalText(value, label, max) {
 
 function optionalEmail(value, label = 'Email') {
   if (blank(value)) return null;
+  assertNoControls(typeof value === 'string' ? value : String(value), label[0].toUpperCase() + label.slice(1));
   try { return validEmail(value); }
   catch { throw new Error(`Enter a valid ${label.toLowerCase()}.`); }
+}
+
+function publishedFlag(value) {
+  if (value === true || value === 1) return 1;
+  if (value === false || value === 0) return 0;
+  throw new Error('Published must be true or false.');
 }
 
 function optionalPhone(value) {
@@ -91,7 +106,7 @@ export function profilePatch(body) {
   set('venue_name', () => optionalText(body.venue_name, 'Venue name', 160));
   set('venue_address', () => optionalText(body.venue_address, 'Venue address', 400));
   set('cancellation_window_hours', () => optionalWindow(body.cancellation_window_hours));
-  set('published', () => (body.published ? 1 : 0));
+  set('published', () => publishedFlag(body.published));
   if (Object.keys(fields).length) failed(fields);
   return patch;
 }
