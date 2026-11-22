@@ -8,6 +8,7 @@
 // also gets an Idempotency-Key per row, so a re-send after a crash mid-call is deduped.
 import { resetToken, configured as resetConfigured } from './ops/password-reset.mjs';
 import { digest } from './util.mjs';
+import { replyToForSend } from './profile.mjs';
 
 const LEASE_MS = 5 * 60000;
 const RESEND = 'https://api.resend.com/emails';
@@ -34,7 +35,8 @@ export async function deliverOutbox(env, db, { now = Date.now(), limit = 10 } = 
       out.suppressed++; continue;
     }
     try {
-      const replyTo = row.pt_id ? (await db.get("SELECT email FROM users WHERE pt_id=? AND role='pt' LIMIT 1", row.pt_id))?.email : undefined;
+      const owner = row.pt_id ? await db.get("SELECT u.email AS login_email, p.reply_to_email, p.reply_to_name FROM users u JOIN pts p ON p.id=u.pt_id WHERE u.pt_id=? AND u.role='pt' LIMIT 1", row.pt_id) : null;
+      const replyTo = owner ? replyToForSend({ replyToEmail: owner.reply_to_email, replyToName: owner.reply_to_name, loginEmail: owner.login_email }) : undefined;
       const result = await sendResend(env, { idempotencyKey: row.dedupe_key, payload: { from: env.MAIL_FROM, to: [row.recipient], subject: row.subject, text: row.body, ...(replyTo ? { reply_to: replyTo } : {}) } });
       await db.run("UPDATE email_outbox SET status='sent',provider_id=?,sent_at=?,last_error=NULL,attempts=attempts+1 WHERE id=? AND status='sending'", result.id ?? null, Date.now(), id);
       out.sent++;
