@@ -480,6 +480,36 @@ export const ALLOWED = {
       '5a88c258', // UPDATE pts SET accent=?,background=?,foreground=? WHERE id=?
     ]
   },
+  '../src/theme-resolve.mjs::ptById': {
+    why: 'HTML theme inject: a signed-in PT reads only their own colour columns by user.pt_id',
+    queries: [
+      '7d81321e', // SELECT accent,background,foreground,id FROM pts WHERE id=?
+    ]
+  },
+  '../src/theme-resolve.mjs::publishedPtBySlug': {
+    why: 'HTML theme inject: public published PT colours by slug on /pt/:slug',
+    queries: [
+      '89d03958', // SELECT accent,background,foreground,id,slug FROM pts WHERE slug=? AND published=1
+    ]
+  },
+  '../src/theme-resolve.mjs::bookingPt': {
+    why: 'HTML theme inject: checkout/booking pages read pts colours only for a booking the caller can already see, and only when that PT is published (deleted_at IS NULL when the column exists)',
+    queries: [
+      '19cd571a', // customer, published=1 (no deleted_at column)
+      '863e6f89', // customer, published=1 AND deleted_at IS NULL
+      'a097a01d', // PT, published=1 (no deleted_at column)
+      'b2501664', // PT, published=1 AND deleted_at IS NULL
+      '68a5c0eb', // admin, published=1 (no deleted_at column)
+      'a8176532', // admin, published=1 AND deleted_at IS NULL
+    ]
+  },
+  '../src/theme-resolve.mjs::customerPt': {
+    why: 'HTML theme inject: a signed-in customer reads colours for the PT on their most recent published booking only (deleted_at IS NULL when the column exists)',
+    queries: [
+      '7ea05988', // published=1 (no deleted_at column)
+      'b9d904b1', // published=1 AND deleted_at IS NULL
+    ]
+  },
   '../src/ops/webhooks.mjs::handleWebhook': {
     why: "system: Stripe-signed events, matched by session/payment/account ids",
     queries: [
