@@ -116,3 +116,18 @@ input[type=time]::-webkit-date-and-time-value{text-align:left}
     padding-right:max(40px,env(safe-area-inset-right,0px))
   }
 }
+
+/* Launch-2: PT profile settings and missing-profile prompt. 44px targets. */
+.profile-form-panel{max-width:720px;margin-top:24px}
+.profile-form-panel h2{font-size:24px;margin-bottom:8px}
+.profile-form input,.profile-form textarea,.profile-form .btn{min-height:44px}
+.profile-form textarea{min-height:94px}
+.profile-form input[readonly]{background:#f6f6f4;color:var(--muted)}
+.field-error{display:block;color:#7c2520;font-size:12px;font-weight:400;margin-top:6px;line-height:1.5}
+.field-error[hidden]{display:none}
+.profile-form-status{min-height:1.5em}
+.profile-form-status.error{color:#7c2520}
+.profile-missing-prompt{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;margin:0 0 20px}
+.profile-missing-prompt p{margin:0;flex:1 1 220px}
+.profile-missing-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.profile-missing-actions .btn{min-height:44px}
