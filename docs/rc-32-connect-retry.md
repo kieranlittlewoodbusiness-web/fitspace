@@ -49,3 +49,9 @@ Redeploy Worker version `70cf2048-02a4-4ef0-92b8-73514fb18ea4`. There is no data
 ## Ops note (prod, after deploy)
 
 The failed live row `account:live:2ba6e68d-…` stays as history. The next tap creates a fresh job. The platform's live Connect setup still has to be finished in Stripe first, otherwise the PT now sees the new message. The exact Stripe reason will appear in the Worker logs as `Stripe API error`.
+
+## Prod follow-up, 22 Nov from 22:30 UK (Connect live)
+
+- **v2 account_links:** prod `POST /v2/core/account_links` returned 400 `invalid_fields`, `use_case.account_onboarding.configurations: Unknown field` (req_v2kciMEtAg3oUwS1C, API 2026-09-30.endive). The request now sends only `account` plus `use_case{type:'account_onboarding', account_onboarding{refresh_url, return_url, collection_options{fields:'eventually_due'}}}`, matching the v2 docs (https://docs.stripe.com/api/v2/core/account-links/create). Configurations are inferred from the account. The exact payload is pinned in a test.
+- **v2 account retrieve (status):** the request now uses the documented indexed form `?include[0]=configuration.merchant` (https://docs.stripe.com/api/v2/core/accounts/retrieve), and the exact URL is pinned in a test. `requirements` is deliberately NOT included: in v2 it has a different shape (`entries`/`summary`) that `parseRequirements()` doesn't read. Requirements keep coming from the `account.updated` webhook. Known gap, follow-up: a status refresh still writes an empty requirements object.
+- **Nit 1:** a 2xx response whose body is null or can't be parsed is now a retryable 503 on the same key (flagged `stripeSucceeded`), so an account create is never retried with a fresh key.
