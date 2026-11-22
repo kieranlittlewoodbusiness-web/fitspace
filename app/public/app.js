@@ -27,9 +27,8 @@ function statusPill(status,mode){const names={pending:'Checkout in progress',pai
 function resetTheme(){const styles=document.documentElement.style;for(const [name,value]of Object.entries({'--accent':'#ffd43b','--accent-ink':'#111','--bg':'#fff','--fg':'#141414'}))styles.setProperty(name,value);}
 function theme(pt){document.documentElement.style.setProperty('--accent',pt.accent);document.documentElement.style.setProperty('--bg',pt.background);document.documentElement.style.setProperty('--fg',pt.foreground);document.documentElement.style.setProperty('--accent-ink',accentInk(pt.accent));}
 
-/* DRAFT for Kieran's review, not legal advice. Standard UK class-booking template. */
+/* Standard UK class-booking template. */
 const SITE_ORIGIN='https://resiliencecoaching.app';
-const LEGAL_DRAFT='DRAFT for Kieran\'s review, not legal advice.';
 function presentField(value){
   if(value==null||value===false)return null;
   if(typeof value==='number')return Number.isFinite(value)?value:null;
@@ -100,14 +99,13 @@ function legalPage(path){
   };
   const title=(titles[path]||'Information')+' — Resilience Coaching';
   setPageMeta({title,path});
-  const banner=`<!-- ${LEGAL_DRAFT} --><p class="info-box legal-draft">${esc(LEGAL_DRAFT)}</p>`;
   const body=path==='/contact'?contactBody(pt):path==='/privacy'?privacyBody(pt):path==='/refunds'?refundsBody(pt):termsBody(pt);
-  return `<div class="brand-shell">${brandHeader()}<main class="legal-page">${banner}<div class="eyebrow">RESILIENCE COACHING</div><h1>${esc(titles[path])}</h1>${body}</main>${footer()}</div>`;
+  return `<div class="brand-shell">${brandHeader()}<main class="legal-page"><div class="eyebrow">RESILIENCE COACHING</div><h1>${esc(titles[path])}</h1>${body}</main>${footer()}</div>`;
 }
 
 function termsBody(pt){
   const party=tradingLine(pt);
-  return `<p>These terms apply when you book a class through this website. They are a draft for review and are not legal advice.</p>
+  return `<p>These terms apply when you book a class through this website.</p>
 <h2>Who we are</h2>
 <p>These classes are provided by ${party}.${contactSentence(pt)}${venueSentence(pt)}</p>
 <h2>Booking and payment</h2>
@@ -127,10 +125,9 @@ function termsBody(pt){
 function privacyBody(pt){
   const party=tradingLine(pt);
   const email=presentField(pt?.contact_email);
-  const rightsContact=email
-    ?`<p>To use these rights, contact us at <a href="mailto:${esc(email)}">${esc(email)}</a>${presentField(pt?.contact_phone)?` or telephone ${esc(presentField(pt.contact_phone))}`:''}.</p>`
-    :`<p class="settings-placeholder">[To use these rights, use the contact details on the contact page. Those details will appear once they have been added in the trainer's settings.]</p>`;
-  return `<p>This privacy notice explains how ${party} uses your personal data when you create an account or book a class. It is a draft for review and is not legal advice. We handle personal data in line with the UK GDPR and the Data Protection Act 2018.</p>
+  const phone=presentField(pt?.contact_phone);
+  const rightsContact=(!email&&!phone)?'':`<p>To use these rights, contact us at ${email?`<a href="mailto:${esc(email)}">${esc(email)}</a>`:''}${email&&phone?' or ':''}${phone?`telephone ${esc(phone)}`:''}.</p>`;
+  return `<p>This privacy notice explains how ${party} uses your personal data when you create an account or book a class. We handle personal data in line with the UK GDPR and the Data Protection Act 2018.</p>
 <h2>Who is responsible</h2>
 <p>${party} is the controller of your personal data for account, booking and class-administration purposes.${contactSentence(pt)}</p>
 <h2>What we collect</h2>
@@ -150,7 +147,7 @@ ${rightsContact}
 function coachContactHtml(pt){
   const email=presentField(pt?.contact_email);
   const phone=presentField(pt?.contact_phone);
-  if(!email&&!phone)return `<p class="settings-placeholder">[Contact details will appear here once the trainer has added them in their settings.]</p>`;
+  if(!email&&!phone)return '';
   const parts=[];
   if(email)parts.push(`email <a href="mailto:${esc(email)}">${esc(email)}</a>`);
   if(phone)parts.push(`telephone ${esc(phone)}`);
@@ -160,7 +157,7 @@ function refundsBody(pt){
   const party=tradingLine(pt);
   const hours=cancellationWindowHours(pt);
   const windowPara=hours==null?'':`<p>The trainer's cancellation window is ${esc(String(hours))} hours before the class start time.</p>`;
-  return `<p>This policy explains how cancellations and refunds work when you book a class with ${party}. It is a draft for review and is not legal advice. Your statutory rights are unaffected.</p>
+  return `<p>This policy explains how cancellations and refunds work when you book a class with ${party}. Your statutory rights are unaffected.</p>
 <h2>Paid bookings</h2>
 <p>Customers cannot cancel a paid booking in the app. If you need to cancel or request a refund, contact the coach. The coach decides on refunds.</p>
 ${coachContactHtml(pt)}
@@ -184,7 +181,6 @@ function contactBody(pt){
   const parts=[...who];
   if(contacts.length)parts.push(`<div class="contact-details">${contacts.map(line=>`<p>${line}</p>`).join('')}</div>`);
   if(venues.length)parts.push(`<div class="contact-details"><p>${venues.join('<br>')}</p></div>`);
-  if(!contacts.length)parts.push(`<p class="todo-placeholder">[TODO: Contact details will appear here once the trainer has added them in their settings.]</p>`);
   return `<p>Use the details below to get in touch about classes or bookings.</p>${parts.join('')}`;
 }
 

@@ -66,9 +66,18 @@ test('favicon, apple-touch icon and og image exist at the expected sizes', async
   assert.equal(h, 630);
 });
 
-test('app.js legal pages are marked draft and only interpolate present public profile fields', () => {
+test('app.js legal pages interpolate present public profile fields and are no longer marked draft', () => {
   const js = read('app/public/app.js');
-  assert.ok(js.includes('DRAFT for Kieran\'s review, not legal advice.'));
+  assert.equal(js.includes('DRAFT for Kieran\'s review, not legal advice.'), false);
+  assert.equal(js.includes('LEGAL_DRAFT'), false);
+  assert.equal(js.includes('legal-draft'), false);
+  assert.equal(js.includes('todo-placeholder'), false);
+  assert.equal(js.includes('settings-placeholder'), false);
+  assert.equal(js.includes('[TODO:'), false);
+  assert.equal(js.includes('draft for review'), false);
+  assert.equal(js.includes('not legal advice'), false);
+  assert.equal(js.includes('will appear here once the trainer has added them'), false);
+  assert.equal(js.includes('will appear once they have been added'), false);
   for (const name of ['business_name', 'display_name', 'contact_email', 'contact_phone', 'venue_name', 'venue_address', 'cancellation_window_hours']) {
     assert.ok(js.includes(name), 'missing field ' + name);
   }
@@ -78,8 +87,6 @@ test('app.js legal pages are marked draft and only interpolate present public pr
   assert.ok(js.includes("The trainer's cancellation window is ${esc(String(hours))} hours before the class start time."));
   assert.equal(js.includes('You may cancel a booking up to'), false);
   assert.ok(js.includes('hours==null?\'\':'));
-  assert.ok(js.includes('[TODO: Contact details will appear here once the trainer has added them in their settings.]'));
-  assert.ok(js.includes('[Contact details will appear here once the trainer has added them in their settings.]'));
   assert.ok(js.includes('UK GDPR'));
   assert.ok(js.includes('Data Protection Act 2018'));
   assert.ok(js.includes('Consumer Contracts (Information, Cancellation and Additional Charges) Regulations 2013'));
@@ -153,14 +160,35 @@ test('legal pages render without empty contact labels or links when PT fields ar
   for (const path of ['/terms', '/privacy', '/refunds', '/contact']) {
     const html = blankSite.legalPage(path);
     assertNoEmptyContact(html, 'legalPage with site.pt blank ' + path);
-    assert.ok(html.includes('DRAFT for Kieran\'s review, not legal advice.'), path + ' should keep the draft banner');
+    assert.equal(html.includes('DRAFT for Kieran\'s review, not legal advice.'), false, path + ' should not show the draft banner');
+    assert.equal(html.includes('[TODO:'), false, path + ' should not show a TODO placeholder');
+    assert.equal(html.includes('draft for review'), false, path + ' should not say it is a draft');
+    assert.equal(html.includes('will appear here once the trainer has added them'), false, path + ' should not show a settings placeholder');
   }
   const contact = blankSite.contactBody({ contact_email: '', contact_phone: '' });
-  assert.ok(contact.includes('[TODO: Contact details will appear here once the trainer has added them in their settings.]'));
+  assert.ok(contact.includes('Use the details below to get in touch about classes or bookings.'));
+  assert.equal(contact.includes('[TODO:'), false);
+  assert.equal(contact.includes('will appear here once the trainer has added them'), false);
   const refunds = blankSite.refundsBody({});
   assert.equal(refunds.includes('cancellation window is'), false);
+  assert.equal(refunds.includes('Contact the coach at'), false);
+  assert.equal(refunds.includes('will appear here once the trainer has added them'), false);
+  const privacyBlank = blankSite.privacyBody({});
+  assert.equal(privacyBlank.includes('To use these rights, contact us at'), false);
   const withEmail = termsBody({ contact_email: 'coach@example.com', display_name: 'Jordan Lee' });
   assert.ok(withEmail.includes('mailto:coach@example.com'));
   assert.ok(withEmail.includes('Jordan Lee'));
   assertNoEmptyContact(withEmail, 'terms with email');
+  const privacyEmail = privacyBody({ contact_email: 'coach@example.com', contact_phone: '01234 567890' });
+  assert.ok(privacyEmail.includes('To use these rights, contact us at'));
+  assert.ok(privacyEmail.includes('mailto:coach@example.com'));
+  assert.ok(privacyEmail.includes('telephone 01234 567890'));
+  const refundsEmail = refundsBody({ contact_email: 'coach@example.com' });
+  assert.ok(refundsEmail.includes('Contact the coach at'));
+  assert.ok(refundsEmail.includes('mailto:coach@example.com'));
+  const contactFilled = contactBody({ business_name: 'Example Coaching', contact_email: 'coach@example.com', venue_name: 'The Studio' });
+  assert.ok(contactFilled.includes('Example Coaching'));
+  assert.ok(contactFilled.includes('mailto:coach@example.com'));
+  assert.ok(contactFilled.includes('The Studio'));
+  assert.equal(contactFilled.includes('[TODO:'), false);
 });
