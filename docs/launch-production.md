@@ -2,7 +2,7 @@
 
 This is the config and command reference for `env.production` in `wrangler.jsonc`. **Do not deploy, set secrets, or touch prod D1 from this document.** Those steps need Kieran's yes and are in the launch runbook.
 
-The default env stays as it is today: no cron, no `CRON_ENABLED`, `PAYMENT_MODE=demo`, `EMAIL_MODE=preview`, no routes. A production target is allowed only with an explicit `--env production`.
+The default env stays safe: no cron, no `CRON_ENABLED`, `PAYMENT_MODE=demo`, `EMAIL_MODE=preview`, no routes, and no `D1_DATABASE_ID` var. Its DB binding is the local placeholder (`00000000-0000-4000-8000-000000000000`). The production D1 id appears only under `env.production`. A production target is allowed only with an explicit `--env production`.
 
 ## Deploy and bootstrap (after approval)
 

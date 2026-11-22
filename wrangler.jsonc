@@ -1,8 +1,7 @@
 // RC-4 (Cloudflare D1 port). Used by `wrangler dev` (local mode) and the Vitest Workers
-// integration. Not approved for deploy: no account_id, routes, workers.dev or preview URLs.
-// The D1 database below is the REAL database (created 17 Nov 2026 with Kieran's approval,
-// location hint weur). It is EMPTY: migrations are applied only at the approved go-live step
-// (`wrangler d1 migrations apply DB --remote`). Local runs never touch it (no --remote).
+// integration. Not approved for deploy: no account_id, routes, workers.dev or preview URLs,
+// and the D1 database_id below is a PLACEHOLDER that matches no real database. The real
+// production D1 is bound only under env.production (selected with `--env production`).
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "resiliencecoaching",
@@ -30,9 +29,9 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "resiliencecoaching",
-      // Real D1 database (weur). Local dev/tests use a local copy; nothing here runs remotely.
-      "database_id": "fd8a613f-4dd4-462b-83e0-d7673031a6fc",
+      "database_name": "resiliencecoaching-local",
+      // PLACEHOLDER for local development only (wrangler dev / vitest). Not a real database.
+      "database_id": "00000000-0000-4000-8000-000000000000",
       "migrations_dir": "migrations"
     }
   ],
@@ -44,8 +43,8 @@
   // storage of its own; all data lives in D1.
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Writer"] }],
   // Cron Trigger (src/mail.mjs): email delivery (booking + password-reset mail) and
-  // housekeeping (expire holds, prune rate limits). QA D1-D3 (f978692): this default env (real
-  // D1 id) has NO cron trigger and no CRON_ENABLED. env.preview and env.production each have
+  // housekeeping (expire holds, prune rate limits). QA D1-D3 (f978692): this default env has
+  // NO cron trigger and no CRON_ENABLED. env.preview and env.production each have
   // both; production is only selected with `--env production`. Two layers: no schedule here,
   // and cronTick is a no-op unless CRON_ENABLED is "true" (CR 5941600057). Test:
   // tests/remote-guards.test.mjs reads this file through wrangler's own config resolver.

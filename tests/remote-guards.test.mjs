@@ -80,10 +80,12 @@ test('wrangler.jsonc: the default env does not enable the cron; preview and prod
   assert.doesNotMatch(top, /"CRON_ENABLED"/);
   assert.doesNotMatch(top, /"D1_DATABASE_ID"/);
   assert.doesNotMatch(top, /"triggers"/);
+  assert.doesNotMatch(top, new RegExp(PRODUCTION), 'default env must not contain the production D1 id');
   assert.match(preview, /"CRON_ENABLED": "true"/);
   assert.match(preview, /"database_id": "81379d2e-c718-48b7-870d-1d189feea966"/);
   assert.match(preview, /"D1_DATABASE_ID": "81379d2e-c718-48b7-870d-1d189feea966"/);
-  assert.doesNotMatch(preview, new RegExp(PRODUCTION));
+  assert.doesNotMatch(preview, new RegExp(PRODUCTION), 'preview env must not contain the production D1 id');
+  assert.match(top, /"database_id": "00000000-0000-4000-8000-000000000000"/);
   assert.match(production, /"CRON_ENABLED": "true"/);
   assert.match(production, /"PAYMENT_MODE": "stripe_live"/);
   assert.match(production, new RegExp('"D1_DATABASE_ID": "' + PRODUCTION + '"'));
@@ -98,7 +100,9 @@ test('wrangler.jsonc resolved by wrangler: cron and live Stripe only under --env
   const resolve = (env) => readConfig({ config: 'wrangler.jsonc', env });
   const def = resolve(undefined), preview = resolve('preview'), production = resolve('production');
   const PRODUCTION_DB = 'fd8a613f-4dd4-462b-83e0-d7673031a6fc';
-  assert.equal(def.d1_databases[0].database_id, PRODUCTION_DB);
+  const LOCAL_DB = '00000000-0000-4000-8000-000000000000';
+  assert.equal(def.d1_databases[0].database_id, LOCAL_DB);
+  assert.notEqual(def.d1_databases[0].database_id, PRODUCTION_DB);
   assert.deepEqual(def.triggers?.crons ?? [], [], 'default env must not register a cron trigger');
   assert.equal(def.vars?.CRON_ENABLED, undefined);
   assert.equal(def.vars?.D1_DATABASE_ID, undefined);
@@ -133,6 +137,12 @@ test('wrangler.jsonc resolved by wrangler: cron and live Stripe only under --env
   }
   assert.notEqual((resolve('preview').vars?.PAYMENT_MODE), 'stripe_live');
   assert.notEqual(def.vars?.PAYMENT_MODE, 'stripe_live');
+  // The full production D1 id is resolved only under --env production.
+  assert.notEqual(def.d1_databases[0].database_id, PRODUCTION_DB);
+  assert.notEqual(preview.d1_databases[0].database_id, PRODUCTION_DB);
+  assert.notEqual(preview.vars?.D1_DATABASE_ID, PRODUCTION_DB);
+  assert.equal(production.d1_databases[0].database_id, PRODUCTION_DB);
+  assert.equal(production.vars?.D1_DATABASE_ID, PRODUCTION_DB);
 });
 
 test('wrangler.jsonc: MULTI_PT_ENABLED is "false" on the default, preview and production envs', async () => {
