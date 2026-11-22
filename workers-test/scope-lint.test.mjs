@@ -493,17 +493,21 @@ export const ALLOWED = {
     ]
   },
   '../src/theme-resolve.mjs::bookingPt': {
-    why: 'HTML theme inject: checkout/booking pages read pts colours only for a booking the caller can already see (customer own id, PT own pt_id, or admin)',
+    why: 'HTML theme inject: checkout/booking pages read pts colours only for a booking the caller can already see, and only when that PT is published (deleted_at IS NULL when the column exists)',
     queries: [
-      'b3f3b12d', // SELECT ... WHERE b.id=? AND b.customer_id=?
-      '0b6fc3a6', // SELECT ... WHERE b.id=? AND c.pt_id=?
-      '0581aa5c', // SELECT ... WHERE b.id=?
+      '19cd571a', // customer, published=1 (no deleted_at column)
+      '863e6f89', // customer, published=1 AND deleted_at IS NULL
+      'a097a01d', // PT, published=1 (no deleted_at column)
+      'b2501664', // PT, published=1 AND deleted_at IS NULL
+      '68a5c0eb', // admin, published=1 (no deleted_at column)
+      'a8176532', // admin, published=1 AND deleted_at IS NULL
     ]
   },
   '../src/theme-resolve.mjs::customerPt': {
-    why: 'HTML theme inject: a signed-in customer reads colours for the PT on their most recent booking only',
+    why: 'HTML theme inject: a signed-in customer reads colours for the PT on their most recent published booking only (deleted_at IS NULL when the column exists)',
     queries: [
-      '5e521d5d', // SELECT ... WHERE b.customer_id=? ORDER BY b.created_at DESC LIMIT 1
+      '7ea05988', // published=1 (no deleted_at column)
+      'b9d904b1', // published=1 AND deleted_at IS NULL
     ]
   },
   '../src/ops/webhooks.mjs::handleWebhook': {

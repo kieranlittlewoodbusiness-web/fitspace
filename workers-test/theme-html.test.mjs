@@ -105,4 +105,94 @@ describe('HTML theme injection', () => {
     expect(vars['--bg']).toBe('#ffffff');
     expect(vars['--fg']).toBe('#111111');
   });
+
+  it('passes If-None-Match and If-Modified-Since HTML through without a 5xx', async () => {
+    const first = await send(new Request(ORIGIN + '/'), single());
+    expect(first.status).toBe(200);
+    const body = await first.text();
+    expect(bootVars(body)).toBeTruthy();
+    expect(first.headers.get('etag')).toBeNull();
+    expect(first.headers.get('last-modified')).toBeNull();
+
+    for (const headers of [
+      { 'If-None-Match': '"x"' },
+      { 'If-None-Match': first.headers.get('etag') || '"x"' },
+      { 'If-Modified-Since': 'Wed, 21 Oct 2015 07:28:00 GMT' }
+    ]) {
+      const res = await send(new Request(ORIGIN + '/', { headers }), single());
+      expect(res.status, JSON.stringify(headers)).toBeLessThan(500);
+      expect([200, 304].includes(res.status), 'status ' + res.status).toBe(true);
+      if (res.status === 304) {
+        expect((await res.text()).includes('theme-boot')).toBe(false);
+      } else {
+        expect(bootVars(await res.text())).toBeTruthy();
+      }
+    }
+  });
+
+  it('does not theme a customer after their PT is unpublished or deleted', async () => {
+    const s = await seedBlock({ customers: 1 });
+    await paintPt(s.ptId, ocean);
+    await insertBooking({ blockId: s.blockId, customerId: s.users[0].id, status: 'paid' });
+    const before = await htmlOf(getRequest(s.users[0], '/dashboard'), multi());
+    expect(bootVars(before.body)['--accent']).toBe(ocean.accent);
+
+    await db().run('UPDATE pts SET published=0 WHERE id=?', s.ptId);
+    const unpublished = await htmlOf(getRequest(s.users[0], '/dashboard'), multi());
+    expect(bootVars(unpublished.body)['--accent']).toBe('#ffd43b');
+    expect(unpublished.body.includes(ocean.accent)).toBe(false);
+
+    await db().run('UPDATE pts SET published=1 WHERE id=?', s.ptId);
+    const restored = await htmlOf(getRequest(s.users[0], '/dashboard'), multi());
+    expect(bootVars(restored.body)['--accent']).toBe(ocean.accent);
+
+    await db().run('UPDATE pts SET published=0, deleted_at=? WHERE id=?', Date.now(), s.ptId);
+    const deleted = await htmlOf(getRequest(s.users[0], '/dashboard'), multi());
+    expect(bootVars(deleted.body)['--accent']).toBe('#ffd43b');
+    expect(deleted.body.includes(ocean.accent)).toBe(false);
+  });
+
+  it('refuses a stored injection string in the injected theme tag', async () => {
+    const s = await seedBlock({ customers: 0 });
+    const breakout = '#123456;}</style><script>alert(1)</script>';
+    await db().run(
+      'UPDATE pts SET accent=?,background=?,foreground=? WHERE id=?',
+      breakout, '#ffffff', '#111111', s.ptId
+    );
+    await onlyPublished(s.ptId);
+    const res = await htmlOf(new Request(ORIGIN + '/'), single());
+    expect(res.status).toBe(200);
+    expect(res.body.includes('<script>')).toBe(false);
+    expect(res.body.includes(breakout)).toBe(false);
+    expect(bootVars(res.body)['--accent']).toBe('#ffd43b');
+  });
+
+  it('sets Cache-Control no-store on themed HTML', async () => {
+    const res = await send(new Request(ORIGIN + '/'), single());
+    expect(res.status).toBe(200);
+    expect((res.headers.get('cache-control') || '').toLowerCase()).toContain('no-store');
+    await res.text();
+  });
+
+  it('gives a multi-PT anonymous visitor the Resilience default', async () => {
+    const s = await seedBlock({ customers: 0 });
+    await paintPt(s.ptId, ocean);
+    await onlyPublished(s.ptId);
+    const res = await htmlOf(new Request(ORIGIN + '/'), multi());
+    expect(res.status).toBe(200);
+    const vars = bootVars(res.body);
+    expect(vars['--accent']).toBe('#ffd43b');
+    expect(vars['--bg']).toBe('#ffffff');
+    expect(vars['--fg']).toBe('#111111');
+  });
+
+  it('does not inject a theme tag into non-HTML assets', async () => {
+    const res = await send(new Request(ORIGIN + '/app.js'), single());
+    expect(res.status).toBe(200);
+    const type = res.headers.get('content-type') || '';
+    expect(type.includes('javascript') || type.includes('ecmascript') || type.includes('text/plain')).toBe(true);
+    const body = await res.text();
+    expect(body.includes('theme-boot')).toBe(false);
+    expect(body.includes(':root{--accent:')).toBe(false);
+  });
 });
