@@ -73,8 +73,13 @@ test('app.js legal pages are marked draft and only interpolate present public pr
     assert.ok(js.includes(name), 'missing field ' + name);
   }
   assert.ok(js.includes('presentField(pt?.display_name)||presentField(pt?.brand_name)'));
-  assert.ok(js.includes("[The cancellation window will be shown here once it is set in the trainer's settings.]"));
+  assert.ok(js.includes('Customers cannot cancel a paid booking in the app.'));
+  assert.ok(js.includes('The coach decides on refunds.'));
+  assert.ok(js.includes("The trainer's cancellation window is ${esc(String(hours))} hours before the class start time."));
+  assert.equal(js.includes('You may cancel a booking up to'), false);
+  assert.ok(js.includes('hours==null?\'\':'));
   assert.ok(js.includes('[TODO: Contact details will appear here once the trainer has added them in their settings.]'));
+  assert.ok(js.includes('[Contact details will appear here once the trainer has added them in their settings.]'));
   assert.ok(js.includes('UK GDPR'));
   assert.ok(js.includes('Data Protection Act 2018'));
   assert.ok(js.includes('Consumer Contracts (Information, Cancellation and Additional Charges) Regulations 2013'));

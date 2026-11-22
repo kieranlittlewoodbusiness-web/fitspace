@@ -49,10 +49,10 @@ function ptContactLines(pt){
 }
 function ptVenueLines(pt){
   const lines=[];
-  const name=presentField(pt?.venue_name);
+  const name=presentField(pt?.venue_name)||presentField(pt?.venue);
   const address=presentField(pt?.venue_address);
   if(name)lines.push(esc(name));
-  if(address)lines.push(esc(address));
+  if(address&&address!==name)lines.push(esc(address));
   return lines;
 }
 function setPageMeta({title,path,description}={}){
@@ -147,19 +147,28 @@ ${rightsContact}
 <p>You can also complain to the Information Commissioner’s Office (ICO) at <a href="https://ico.org.uk/" rel="noopener noreferrer" target="_blank">ico.org.uk</a>.</p>`;
 }
 
+function coachContactHtml(pt){
+  const email=presentField(pt?.contact_email);
+  const phone=presentField(pt?.contact_phone);
+  if(!email&&!phone)return `<p class="settings-placeholder">[Contact details will appear here once the trainer has added them in their settings.]</p>`;
+  const parts=[];
+  if(email)parts.push(`email <a href="mailto:${esc(email)}">${esc(email)}</a>`);
+  if(phone)parts.push(`telephone ${esc(phone)}`);
+  return `<p>Contact the coach at ${parts.join(' or ')}.</p>`;
+}
 function refundsBody(pt){
   const party=tradingLine(pt);
   const hours=cancellationWindowHours(pt);
-  const cancelPara=hours==null
-    ?`<p class="settings-placeholder">[The cancellation window will be shown here once it is set in the trainer's settings.]</p>`
-    :`<p>You may cancel a booking up to ${esc(String(hours))} hours before the class start time and receive a refund of the amount you paid for the cancelled booking.</p>`;
+  const windowPara=hours==null?'':`<p>The trainer's cancellation window is ${esc(String(hours))} hours before the class start time.</p>`;
   return `<p>This policy explains how cancellations and refunds work when you book a class with ${party}. It is a draft for review and is not legal advice. Your statutory rights are unaffected.</p>
-<h2>If you cancel</h2>
-${cancelPara}
+<h2>Paid bookings</h2>
+<p>Customers cannot cancel a paid booking in the app. If you need to cancel or request a refund, contact the coach. The coach decides on refunds.</p>
+${coachContactHtml(pt)}
+${windowPara}
 <h2>If we cancel</h2>
 <p>If we cancel a class, we will refund the affected booking, or a fair portion where only some sessions in a block are cancelled.</p>
 <h2>If you do not attend</h2>
-<p>If you do not attend a class and have not cancelled in line with this policy, the session remains payable. Your statutory rights are unaffected.</p>
+<p>If you do not attend a class, the session remains payable unless the coach agrees a refund. Your statutory rights are unaffected.</p>
 <h2>How refunds are paid</h2>
 <p>Refunds are made by the same payment method used at checkout where that is possible. See also the <a href="/terms" data-route>terms of use</a>.</p>`;
 }
