@@ -112,7 +112,7 @@ export async function prepareLink(db, { userId, ptId, mode, integration = 'conne
   if (user.role !== 'admin') throw httpError(403, 'Your account does not have access to this action.', { code: 'FORBIDDEN' });
   if (integration === 'pt_direct') throw httpError(403, 'Owner account linking is disabled. Each PT must configure their own account.', { code: 'USE_PAYMENTS_SETUP' });
   if (!multiPt) throw platformLinkDisabledError();
-  if (typeof ptId !== 'string' || !(await db.get('SELECT id FROM pts WHERE id=?', ptId))) throw httpError(404, 'Trainer not found.', { code: 'TRAINER_NOT_FOUND' });
+  if (typeof ptId !== 'string' || !(await db.get('SELECT id FROM pts WHERE id=? AND deleted_at IS NULL', ptId))) throw httpError(404, 'Trainer not found.', { code: 'TRAINER_NOT_FOUND' });
   return job(db, 'link:' + uid(), 'link_platform', ptId, user.id, { mode, multiPt, path: '/v1/account', method: 'GET' }, now);
 }
 

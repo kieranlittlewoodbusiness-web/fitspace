@@ -6,7 +6,7 @@ export const digest = value => crypto.createHash('sha256').update(value).digest(
 /** An error with an HTTP status. `extra` may carry { code, retryable, retry_after_seconds }:
  *  a stable machine code and retry hint the UI can show (passed through to the JSON body). */
 export const httpError = (status, message, extra = {}) => Object.assign(new Error(message), { status, ...extra });
-export const errorExtras = e => Object.fromEntries(['code', 'retryable', 'retry_after_seconds', 'fields'].filter(k => e?.[k] !== undefined).map(k => [k, e[k]]));
+export const errorExtras = e => Object.fromEntries(['code', 'retryable', 'retry_after_seconds', 'fields', 'upcoming_count'].filter(k => e?.[k] !== undefined).map(k => [k, e[k]]));
 
 export function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');

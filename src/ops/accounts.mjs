@@ -41,7 +41,7 @@ export async function updatePtBranding(db, { userId, ptId, body }) {
   let r;
   try {
     [r] = await db.batch([
-      db.stmt('UPDATE pts SET slug=?,brand_name=?,tagline=?,description=?,about=?,accent=?,background=?,foreground=?,features=?,published=? WHERE id=?', b.slug, b.name, b.tagline, b.description, b.about, b.accent, b.background, b.foreground, JSON.stringify(b.features), b.published, ptId),
+      db.stmt('UPDATE pts SET slug=?,brand_name=?,tagline=?,description=?,about=?,accent=?,background=?,foreground=?,features=?,published=? WHERE id=? AND deleted_at IS NULL', b.slug, b.name, b.tagline, b.description, b.about, b.accent, b.background, b.foreground, JSON.stringify(b.features), b.published, ptId),
       db.stmt('INSERT INTO audit_log VALUES(?,?,?,?,?)', uid(), user.id, 'pt_branding_updated', ptId, Date.now())
     ]);
   } catch (error) {

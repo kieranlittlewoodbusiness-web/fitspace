@@ -61,7 +61,7 @@ In single-PT mode this resolves only the one published PT (the same one as `defa
 
 ### `POST /api/admin/pts`
 
-The first PT can always be created. A further create (different `create_key`) returns 409 `{ error, code: "SINGLE_PT_EXISTS" }`. The same `create_key` still replays. Two concurrent creates are serialised by the Writer and a commit-time `single_pt_free` guard, so exactly one PT is inserted.
+The first PT can always be created. A further create (different `create_key`) returns 409 `{ error, code: "SINGLE_PT_EXISTS" }`. The same `create_key` still replays. Two concurrent creates are serialised by the Writer and a commit-time `single_pt_free` guard (`NOT EXISTS(SELECT 1 FROM pts WHERE deleted_at IS NULL)`), so exactly one live PT is inserted. After an admin deletes that PT (see `docs/rc-31-admin-delete-pt.md`), a new PT can be created, including with the same slug.
 
 ### `/trainers` and `/trainers/`
 

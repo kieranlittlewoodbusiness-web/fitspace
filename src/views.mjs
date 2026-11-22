@@ -74,7 +74,7 @@ export async function dashboard(db, user, { paymentMode, integration, now = Date
     };
   }
   // admin (unscoped by definition)
-  const ptRows = await db.all("SELECT p.*,u.name owner_name,u.email owner_email,u.active owner_active FROM pts p LEFT JOIN users u ON u.pt_id=p.id AND u.role='pt' ORDER BY p.created_at DESC");
+  const ptRows = await db.all("SELECT p.*,u.name owner_name,u.email owner_email,u.active owner_active FROM pts p LEFT JOIN users u ON u.pt_id=p.id AND u.role='pt' AND u.deleted_at IS NULL WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC");
   const allBlocks = await viewBlocks(db, await scope.blocks(), now);
   const pts = [];
   for (const p of ptRows) {
