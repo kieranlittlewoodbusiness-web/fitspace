@@ -9,7 +9,7 @@ export function themeView(pt) {
 
 export async function readPtTheme(db, user) {
   if (user?.role !== 'pt' || !user.pt_id) throw httpError(403, 'Your account does not have access to this action.');
-  const pt = await db.get('SELECT accent,background,foreground FROM pts WHERE id=? AND deleted_at IS NULL', user.pt_id);
+  const pt = await db.get('SELECT accent,background,foreground FROM pts WHERE id=?', user.pt_id);
   if (!pt) throw httpError(404, 'Trainer not found.');
   return themeView(pt);
 }
@@ -19,11 +19,11 @@ export async function updatePtTheme(db, { userId, body, now = Date.now() }) {
   if (user?.role !== 'pt' || !user.pt_id) throw httpError(403, 'Your account does not have access to this action.');
   const id = themeIdFromBody(body);
   const colours = presetColours(presetById(id));
-  const current = await db.get('SELECT id FROM pts WHERE id=? AND deleted_at IS NULL', user.pt_id);
+  const current = await db.get('SELECT id FROM pts WHERE id=?', user.pt_id);
   if (!current) throw httpError(404, 'Trainer not found.');
   const [r] = await db.batch([
     db.stmt(
-      'UPDATE pts SET accent=?,background=?,foreground=? WHERE id=? AND deleted_at IS NULL',
+      'UPDATE pts SET accent=?,background=?,foreground=? WHERE id=?',
       colours.accent, colours.background, colours.foreground, user.pt_id
     ),
     db.stmt('INSERT INTO audit_log VALUES(?,?,?,?,?)', uid(), user.id, 'pt_theme_updated', user.pt_id, now)
