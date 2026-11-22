@@ -59,6 +59,46 @@ describe('PT profile API', () => {
     const adminPatch = await send(jsonRequest(s.admin, 'PATCH', '/api/pt/profile', { venue_name: 'Nope' }));
     expect(customerPatch.status).toBe(403);
     expect(adminPatch.status).toBe(403);
+    const customerPut = await send(jsonRequest(s.users[0], 'PUT', '/api/pt/profile', { venue_name: 'Nope' }));
+    const adminPut = await send(jsonRequest(s.admin, 'PUT', '/api/pt/profile', { venue_name: 'Nope' }));
+    expect(customerPut.status).toBe(403);
+    expect(adminPut.status).toBe(403);
+  });
+
+  it('rejects CSRF, origin and cross-site writes with 403, and another PT cannot change this profile', async () => {
+    const a = await seedTrainer();
+    const b = await seedTrainer();
+    const before = await db().get('SELECT brand_name,venue_name,published FROM pts WHERE id=?', a.ptId);
+    const write = (user, { method = 'PATCH', csrf, origin, headers = {}, body = { venue_name: 'Hijack Hall' } } = {}) => {
+      const h = { 'content-type': 'application/json', cookie: 'fit_session=' + user.token, ...headers };
+      if (origin !== null) h.origin = origin === undefined ? ORIGIN : origin;
+      if (csrf !== null) h['x-csrf-token'] = csrf === undefined ? user.csrf : csrf;
+      return new Request(ORIGIN + '/api/pt/profile', { method, headers: h, body: JSON.stringify(body) });
+    };
+    const cases = [
+      write(a.pt, { csrf: null }),
+      write(a.pt, { csrf: 'wrong-token' }),
+      write(a.pt, { origin: null }),
+      write(a.pt, { origin: 'https://evil.example' }),
+      write(a.pt, { headers: { 'sec-fetch-site': 'cross-site' } }),
+      write(a.pt, { method: 'PUT', csrf: null })
+    ];
+    for (const req of cases) {
+      const res = await send(req);
+      expect(res.status, `${req.method} ${[...req.headers.entries()].map(([k, v]) => k + '=' + v).join(' ')}`).toBe(403);
+      const body = await jsonOf(res);
+      expect(body.code === 'VALIDATION_FAILED').toBe(false);
+    }
+    expect(await db().get('SELECT brand_name,venue_name,published FROM pts WHERE id=?', a.ptId)).toEqual(before);
+
+    const cross = await send(jsonRequest(b.pt, 'PATCH', '/api/pt/profile', { pt_id: a.ptId, id: a.ptId, display_name: 'Hijacked', venue_name: 'Stolen' }));
+    const denied = await jsonOf(cross);
+    expect(cross.status).toBe(400);
+    expect(denied.code).toBe('VALIDATION_FAILED');
+    expect(denied.fields.pt_id).toBeTruthy();
+    expect(denied.fields.id).toBeTruthy();
+    expect(await db().get('SELECT brand_name,venue_name,published FROM pts WHERE id=?', a.ptId)).toEqual(before);
+    expect(await db().get('SELECT brand_name,venue_name FROM pts WHERE id=?', b.ptId)).toEqual({ brand_name: 'Test PT', venue_name: null });
   });
 
   it('PATCH requires CSRF; partial updates work; PUT is accepted; unknown and slug fields are rejected', async () => {
@@ -104,6 +144,42 @@ describe('PT profile API', () => {
     expect(body.fields.contact_phone).toBeTruthy();
     expect(body.fields.photo_url).toMatch(/https/i);
     expect(body.fields.cancellation_window_hours).toMatch(/0 to 720/);
+  });
+
+  it('rejects control characters in reply_to_name and reply_to_email on save', async () => {
+    const s = await seedTrainer();
+    const before = await db().get('SELECT reply_to_email,reply_to_name FROM pts WHERE id=?', s.ptId);
+    const res = await send(jsonRequest(s.pt, 'PATCH', '/api/pt/profile', {
+      reply_to_name: 'Coach\rName',
+      reply_to_email: 'coach@studio.test\nBcc: attacker@evil.test'
+    }));
+    const body = await jsonOf(res);
+    expect(res.status).toBe(400);
+    expect(body.code).toBe('VALIDATION_FAILED');
+    expect(body.fields.reply_to_name).toMatch(/control characters/i);
+    expect(body.fields.reply_to_email).toMatch(/control characters/i);
+    expect(await db().get('SELECT reply_to_email,reply_to_name FROM pts WHERE id=?', s.ptId)).toEqual(before);
+  });
+
+  it('accepts boolean and 0/1 published values and rejects the string "false"', async () => {
+    const s = await seedTrainer();
+    expect((await db().get('SELECT published FROM pts WHERE id=?', s.ptId)).published).toBe(1);
+    const bad = await send(jsonRequest(s.pt, 'PATCH', '/api/pt/profile', { published: 'false' }));
+    const denied = await jsonOf(bad);
+    expect(bad.status).toBe(400);
+    expect(denied.code).toBe('VALIDATION_FAILED');
+    expect(denied.fields.published).toBeTruthy();
+    expect((await db().get('SELECT published FROM pts WHERE id=?', s.ptId)).published).toBe(1);
+
+    const off = await jsonOf(await send(jsonRequest(s.pt, 'PATCH', '/api/pt/profile', { published: false })));
+    expect(off.pt.published).toBe(false);
+    expect((await db().get('SELECT published FROM pts WHERE id=?', s.ptId)).published).toBe(0);
+    const on = await jsonOf(await send(jsonRequest(s.pt, 'PATCH', '/api/pt/profile', { published: true })));
+    expect(on.pt.published).toBe(true);
+    const zero = await jsonOf(await send(jsonRequest(s.pt, 'PATCH', '/api/pt/profile', { published: 0 })));
+    expect(zero.pt.published).toBe(false);
+    const one = await jsonOf(await send(jsonRequest(s.pt, 'PATCH', '/api/pt/profile', { published: 1 })));
+    expect(one.pt.published).toBe(true);
   });
 
   it('public payloads include display_name and set contact fields, omit blanks, and never expose reply_to', async () => {
@@ -173,5 +249,14 @@ describe('reply-to header safety', () => {
     expect(injected).toBe('NiceName <login@studio.test>');
     expect(injected).not.toMatch(/[\r\n]/);
     expect(injected).not.toMatch(/Bcc:/i);
+    expect(replyToForSend({ replyToEmail: 'coach@studio.test', replyToName: 'Nice\rName', loginEmail: 'login@studio.test' })).toBe('NiceName <coach@studio.test>');
+    expect(replyToForSend({ replyToEmail: 'coach@studio.test', replyToName: 'Nice\nName', loginEmail: 'login@studio.test' })).toBe('NiceName <coach@studio.test>');
+    const loneCrEmail = replyToForSend({ replyToEmail: 'coach@studio.test\rBcc: attacker@evil.test', replyToName: 'Coach', loginEmail: 'login@studio.test' });
+    const loneLfEmail = replyToForSend({ replyToEmail: 'coach@studio.test\nBcc: attacker@evil.test', replyToName: 'Coach', loginEmail: 'login@studio.test' });
+    expect(loneCrEmail).toBe('Coach <login@studio.test>');
+    expect(loneLfEmail).toBe('Coach <login@studio.test>');
+    expect(loneCrEmail).not.toMatch(/[\r\n]/);
+    expect(loneLfEmail).not.toMatch(/[\r\n]/);
+    expect(loneCrEmail + loneLfEmail).not.toMatch(/Bcc:/i);
   });
 });
