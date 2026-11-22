@@ -120,6 +120,8 @@ test('app.js ships the same preset ids and colours as the shared allowlist', () 
   );
   assert.ok(appJs.includes('if(!isMultiPt()&&site?.pt)theme(site.pt);else resetTheme();'));
   assert.ok(appJs.includes('applyLandingTheme();'));
+  assert.equal(appJs.includes('function requestedTheme'), false);
+  assert.equal(appJs.includes("URLSearchParams(location.search).get('theme')"), false);
   assert.ok(appJs.includes('for="themePreset">Theme'));
   assert.ok(appJs.includes('<select id="themePreset" name="theme-preset">'));
   assert.ok(appJs.includes('class="theme-swatch-preview"'));
