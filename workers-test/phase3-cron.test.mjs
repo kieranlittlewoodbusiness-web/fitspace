@@ -108,4 +108,23 @@ describe('cron email delivery', () => {
     expect(waits).toHaveLength(1);
     await waits[0];
   });
+
+  it('Reply-To uses the PT profile address and name; injected CR/LF falls back to the login email', async () => {
+    const s = await seedBlock({ customers: 0 });
+    await db().run("INSERT INTO users(id,name,email,password_hash,role,pt_id,created_at) VALUES(?,?,?,'x','pt',?,?)", 'u-' + s.ptId, 'Owner', s.ptId + '@trainer.test', s.ptId, Date.now());
+    await db().run("UPDATE pts SET reply_to_email=?,reply_to_name=? WHERE id=?", 'bookings@studio.test', 'Studio Bookings', s.ptId);
+    const okId = await outboxRow(s.ptId, 'ok-' + s.ptId.slice(3, 11) + '@customer.test');
+    const calls = mockResend();
+    expect((await runScheduled(sendEnv(), db())).outbox.sent).toBe(1);
+    expect(calls[0].reply_to).toBe('Studio Bookings <bookings@studio.test>');
+
+    await db().run("UPDATE pts SET reply_to_email=?,reply_to_name=? WHERE id=?", 'bookings@studio.test\r\nBcc: attacker@evil.test', 'Coach', s.ptId);
+    const badId = await outboxRow(s.ptId, 'bad-' + s.ptId.slice(3, 11) + '@customer.test');
+    expect(badId).not.toBe(okId);
+    expect((await runScheduled(sendEnv(), db())).outbox.sent).toBe(1);
+    const injected = calls[1].reply_to;
+    expect(injected).toBe('Coach <' + s.ptId + '@trainer.test>');
+    expect(injected).not.toMatch(/[\r\n]/);
+    expect(JSON.stringify(calls[1])).not.toMatch(/Bcc:/i);
+  });
 });
