@@ -233,9 +233,15 @@ export async function handle(request, env) {
     return json(201, await createPtRoute(env, user, body));
   }
   const adminPt = route.match(/^\/api\/admin\/pts\/([^/]+)$/);
+  const adminTrainer = route.match(/^\/api\/admin\/trainers\/([^/]+)$/);
   if (method === 'PUT' && adminPt) {
     requireUser(user, ['admin']);
     return json(200, await write(env, 'updatePtBranding', { userId: user.id, ptId: idParam(adminPt[1], 'trainer', { encoded: true }), body }));
+  }
+  if (method === 'DELETE' && (adminPt || adminTrainer)) {
+    requireUser(user, ['admin']);
+    const ptId = idParam((adminPt || adminTrainer)[1], 'trainer', { encoded: true });
+    return json(200, await write(env, 'deletePt', { userId: user.id, ptId, force: url.searchParams.get('force') === '1' }));
   }
 
   // ---- classes and attendance ----

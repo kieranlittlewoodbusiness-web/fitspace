@@ -40,7 +40,7 @@ export async function createPt(db, { userId, body, temporaryHash, temporary, mul
   const b = branding(body), address = validEmail(body.email), name = text(body.owner_name, 'PT name', 80, 2);
   const hash = payloadHash({ b, address, name });
   const replay = async () => {
-    const row = await db.get("SELECT p.id,p.slug,p.create_hash,u.email,u.must_change_password FROM pts p JOIN users u ON u.pt_id=p.id AND u.role='pt' WHERE p.create_key=?", key);
+    const row = await db.get("SELECT p.id,p.slug,p.create_hash,u.email,u.must_change_password FROM pts p JOIN users u ON u.pt_id=p.id AND u.role='pt' WHERE p.create_key=? AND p.deleted_at IS NULL", key);
     if (row && row.create_hash && row.create_hash !== hash) throw reused();
     return row && { pt_id: row.id, email: row.email, temporary_password: row.must_change_password ? temporary : null, path: '/pt/' + row.slug, replay: true };
   };
@@ -51,7 +51,7 @@ export async function createPt(db, { userId, body, temporaryHash, temporary, mul
   try {
     await db.batch([
       // RC-14: commit-time lock so two concurrent creates in single-PT mode yield exactly one PT.
-      multiPt ? null : db.guard('single_pt_free', 'NOT EXISTS(SELECT 1 FROM pts)'),
+      multiPt ? null : db.guard('single_pt_free', 'NOT EXISTS(SELECT 1 FROM pts WHERE deleted_at IS NULL)'),
       db.stmt('INSERT INTO pts(id,slug,brand_name,tagline,description,about,accent,background,foreground,features,published,created_at,create_key,create_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)', id, b.slug, b.name, b.tagline, b.description, b.about, b.accent, b.background, b.foreground, JSON.stringify(b.features), b.published, now, key, hash),
       db.stmt("INSERT INTO users(id,name,email,password_hash,role,pt_id,must_change_password,created_at) VALUES(?,?,?,?,'pt',?,1,?)", uid(), name, address, temporaryHash, id, now),
       audit(db, user.id, 'pt_created', id, now)
@@ -86,7 +86,7 @@ export async function createBlock(db, { userId, body, now = Date.now() }) {
   };
   const prior = await replay();
   if (prior) return prior;
-  if (!(await db.get('SELECT id FROM pts WHERE id=?', ptId))) throw httpError(404, 'Trainer not found.');
+  if (!(await db.get('SELECT id FROM pts WHERE id=? AND deleted_at IS NULL', ptId))) throw httpError(404, 'Trainer not found.');
   try {
     await db.batch([
       db.stmt('INSERT INTO blocks(id,pt_id,title,description,venue,price_pence,capacity,published,created_at,create_key,create_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)', id, ptId, d.title, d.description, d.venue, d.price, d.capacity, d.published, now, key, hash),
@@ -173,4 +173,51 @@ export async function markAttendance(db, { userId, bookingId, sessionId, status,
   }
   const result = mailKey ? await db.get('SELECT id,status,subject,body FROM email_outbox WHERE dedupe_key=?', mailKey) : null;
   return { ok: true, email: result };
+}
+
+
+const upcomingBookingsSql = `SELECT count(*) n FROM bookings b JOIN blocks bl ON bl.id=b.block_id
+    WHERE bl.pt_id=? AND b.status IN ('paid','pending') AND (b.status='paid' OR b.expires_at>?)
+    AND EXISTS(SELECT 1 FROM class_sessions s WHERE s.block_id=b.block_id AND s.starts_epoch>?)`;
+const noUpcomingSql = `NOT EXISTS(SELECT 1 FROM bookings b JOIN blocks bl ON bl.id=b.block_id
+    WHERE bl.pt_id=? AND b.status IN ('paid','pending') AND (b.status='paid' OR b.expires_at>?)
+    AND EXISTS(SELECT 1 FROM class_sessions s WHERE s.block_id=b.block_id AND s.starts_epoch>?))`;
+const upcomingError = count => httpError(409, 'This trainer has upcoming paid or reserved bookings.', { code: 'UPCOMING_BOOKINGS', upcoming_count: count });
+
+/** Admin soft-deletes a PT: revoke sessions, unpublish classes, free the slug, unlink Stripe
+ *  locally, keep booking/payment/webhook rows. Never calls Stripe. */
+export async function deletePt(db, { userId, ptId, force = false, now = Date.now() }) {
+  const user = await actor(db, userId);
+  requireRole(user, ['admin']);
+  const pt = await db.get('SELECT * FROM pts WHERE id=? AND deleted_at IS NULL', ptId);
+  if (!pt) throw httpError(404, 'Trainer not found.');
+  const owners = await db.all('SELECT id,role FROM users WHERE pt_id=? AND deleted_at IS NULL', ptId);
+  if (owners.some(owner => owner.role === 'admin' || owner.id === user.id)) throw httpError(403, 'You cannot delete an admin account.', { code: 'ADMIN_PROTECTED' });
+  const upcomingCount = (await db.get(upcomingBookingsSql, ptId, now, now))?.n || 0;
+  if (upcomingCount > 0 && !force) throw upcomingError(upcomingCount);
+  try {
+    await db.batch([
+      force ? null : db.guard('no_upcoming_bookings', noUpcomingSql, ptId, now, now),
+      db.guard('pt_still_present', 'EXISTS(SELECT 1 FROM pts WHERE id=? AND deleted_at IS NULL)', ptId),
+      // Keep pts.stripe_account: Connect refunds use bookings.stripe_account_id, and webhook
+      // fallback still reads this column. stripe_ready is cleared; connections are removed.
+      db.stmt('UPDATE pts SET slug=?,published=0,deleted_at=?,stripe_ready=0,create_key=NULL,create_hash=NULL WHERE id=? AND deleted_at IS NULL', 'deleted-' + pt.id, now, ptId),
+      db.stmt('UPDATE blocks SET published=0,closed=1 WHERE pt_id=?', ptId),
+      db.stmt('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE pt_id=?)', ptId),
+      db.stmt("UPDATE users SET active=0,deleted_at=?,email='deleted+' || id || '@deleted.invalid',name='Deleted trainer' WHERE pt_id=? AND deleted_at IS NULL", now, ptId),
+      db.stmt('DELETE FROM stripe_connections WHERE pt_id=?', ptId),
+      // Keep credential rows (enabled=0) so historical pt_direct refunds can still load the key.
+      db.stmt('UPDATE pt_stripe_credentials SET enabled=0 WHERE pt_id=?', ptId),
+      audit(db, user.id, 'pt_deleted', ptId, now)
+    ]);
+  } catch (error) {
+    if (isGuardFailure(error)) {
+      if ((await db.get('SELECT deleted_at FROM pts WHERE id=?', ptId))?.deleted_at) throw httpError(404, 'Trainer not found.');
+      const count = (await db.get(upcomingBookingsSql, ptId, now, now))?.n || 0;
+      if (count > 0) throw upcomingError(count);
+      throw httpError(409, 'The trainer changed while you were deleting. Refresh and try again.');
+    }
+    throw error;
+  }
+  return { ok: true, pt_id: ptId };
 }

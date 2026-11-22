@@ -72,11 +72,11 @@ export async function resolveConnectPtId(db, user, ptId, { multiPt = true } = {}
   }
   if (user.role === 'admin') {
     if (typeof ptId === 'string' && ptId) {
-      if (!(await db.get('SELECT id FROM pts WHERE id=?', ptId))) throw httpError(404, 'Trainer not found.', { code: 'TRAINER_NOT_FOUND' });
+      if (!(await db.get('SELECT id FROM pts WHERE id=? AND deleted_at IS NULL', ptId))) throw httpError(404, 'Trainer not found.', { code: 'TRAINER_NOT_FOUND' });
       return ptId;
     }
     if (!multiPt) {
-      const rows = await db.all('SELECT id FROM pts ORDER BY created_at LIMIT 2');
+      const rows = await db.all('SELECT id FROM pts WHERE deleted_at IS NULL ORDER BY created_at LIMIT 2');
       if (rows.length === 1) return rows[0].id;
     }
     throw httpError(400, 'Choose a trainer to continue Stripe setup.', { code: 'PT_REQUIRED' });
