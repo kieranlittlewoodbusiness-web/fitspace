@@ -13,6 +13,8 @@ Prod incident, 22 Nov 2026 at 22:06 UK (version 70cf2048). The PT tapped "Connec
    - While the PT's latest account job is `pending`, `retry` or `done`, its id is reused. Double taps still share one job and one Idempotency-Key. `prepareConnect` runs in the Writer, so the read-then-insert is serialised.
    - Only when the latest attempt is `failed` (non-retryable) does the next tap create `account:[live:]<pt_id>:<uuid>`. That gives a new job row and a new Idempotency-Key (the job id), so neither the stored failure nor Stripe's cached result is replayed.
    - Completion (`completeJob`), binding (`bindStmts`), the chained onboarding job and the status routes all use `stripe_jobs.target_id` or `stripe_connections`, never the fixed id. Retryable failures (`retry`, from 409/429/5xx/timeouts) keep the same id and key, as before.
+   - **No duplicate account (CR M1):** once Stripe has answered 2xx for an account create, every later failure in that run stays retryable (`status='retry'`). That covers the `acct_`/livemode checks, the shared client's livemode check and a failed `completeJob`. The next tap therefore replays the same Idempotency-Key, Stripe returns the same `acct_`, and that account is bound. A fresh id is minted only after a failure where Stripe created nothing: a non-2xx Stripe response, such as a 4xx setup error.
+   - **Stale jobs (CR m2):** a `pending`/`retry` account job is retried on the same key whenever the PT taps again, however old it is. The 23-hour "reconcile first" guard in `runJob` still applies to payment jobs (checkout, refund, cancel), but no longer to account jobs, which move no money. Residual risk: Stripe drops idempotency keys after about 24 h. If a create succeeded but was never recorded, and the retry comes more than 24 h later, Stripe could create a second account. That's only possible if the Writer failed and nobody tapped again for a day. It's documented here and not handled in code.
 2. **Redacted Stripe error logging** (`src/stripe.mjs` `stripeErrorLog` and `redactStripeText`).
    - Every non-2xx Stripe response logs `console.error('Stripe API error', {status, path, type, code, message, request_id})`.
    - `acct_` ids keep only their first 4 characters. Emails become `[email]`. `sk_`/`rk_`/`pk_` keys and `whsec_` secrets become `[redacted]`. The message is capped at 300 characters.
@@ -34,7 +36,9 @@ Unchanged apart from the new error message and code on `POST /api/pt/stripe/conn
 - Pending and retrying jobs are reused; the live namespace is kept separate.
 - Five concurrent taps after a failure produce one new job and one key.
 - Log redaction, and that no key appears in a real failed call's log line.
-- Message mapping, both positive and negative cases.
+- Message mapping, both positive and negative cases, scoped to /v2/core/accounts (CR nit 3).
+- M1: a failed done-update and a livemode mismatch after the create both retry on the same key and bind one acct_.
+- m2: a 30 h old retry job is retried on the same key.
 
 The scope-lint allowlist has the new `accountJobId` query.
 
