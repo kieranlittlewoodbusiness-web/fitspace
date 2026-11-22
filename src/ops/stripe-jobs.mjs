@@ -85,7 +85,23 @@ export async function prepareRefund(db, { bookingId, userId, token, mode, now = 
   return id;
 }
 
-const onboardPayload = (mode, account, origin) => ({ mode, path: '/v2/core/account_links', v2: true, data: { account, use_case: { type: 'account_onboarding', account_onboarding: { configurations: ['merchant'], refresh_url: origin + '/dashboard?tab=payments&connect=refresh', return_url: origin + '/dashboard?tab=payments&connect=return', collection_options: { fields: 'eventually_due' } } } } });
+// RC-32: POST /v2/core/account_links (2026-09-30.endive) accepts only account and use_case{type, account_onboarding{refresh_url,
+// return_url, collection_options}}. `configurations` is not a request field (prod 400 invalid_fields 'Unknown field', 22 Nov);
+// Stripe infers it from the account's applied configurations (merchant).
+const onboardPayload = (mode, account, origin) => ({ mode, path: '/v2/core/account_links', v2: true, data: { account, use_case: { type: 'account_onboarding', account_onboarding: { refresh_url: origin + '/dashboard?tab=payments&connect=refresh', return_url: origin + '/dashboard?tab=payments&connect=return', collection_options: { fields: 'eventually_due' } } } } });
+
+/** RC-32: id (and so the Stripe Idempotency-Key) of the account-creation job for this PT and mode.
+ *  First attempt: the fixed `account:[live:]<pt>` id. While the latest attempt is pending, retrying
+ *  or done, its id is reused, so double taps still share one job and one key (prepareConnect runs in
+ *  the Writer, so this read-then-insert is serialised). Only after a non-retryable failure does the
+ *  next tap get a fresh `<base>:<uid>` id, so neither the stored failure nor Stripe's cached
+ *  idempotent response is replayed. Completion and status lookups use target_id, not this id. */
+export async function accountJobId(db, ptId, mode) {
+  const base = 'account:' + (live(mode) ? 'live:' : '') + ptId;
+  const latest = await db.get("SELECT id,status FROM stripe_jobs WHERE kind='account' AND target_id=? AND (id=? OR substr(id,1,?)=?) ORDER BY created_at DESC, rowid DESC LIMIT 1", ptId, base, base.length + 1, base + ':');
+  if (!latest) return base;
+  return latest.status === 'failed' ? base + ':' + uid() : latest.id;
+}
 
 /** POST /api/pt/stripe/connect: the PT owner or admin. multiPt defaults false (fail-closed). */
 export async function prepareConnect(db, { userId, origin, mode, integration = 'connect', multiPt = false, ptId = null, now = Date.now() }) {
@@ -103,7 +119,7 @@ export async function prepareConnect(db, { userId, origin, mode, integration = '
     const other = await db.get('SELECT pt_id FROM stripe_connections WHERE NOT (pt_id=? AND mode=?) LIMIT 1', pt.id, mode);
     if (other) throw singleConnectExistsError();
   }
-  return job(db, 'account:' + (live(mode) ? 'live:' : '') + pt.id, 'account', pt.id, user.id, { mode, origin, multiPt, path: '/v2/core/accounts', v2: true, data: { contact_email: user.email, display_name: pt.brand_name, dashboard: 'full', identity: { country: 'gb' }, configuration: { merchant: { capabilities: { card_payments: { requested: true } } } }, defaults: { currency: 'gbp', responsibilities: { fees_collector: 'stripe', losses_collector: 'stripe' }, locales: ['en-GB'] }, include: ['configuration.merchant'] } }, now);
+  return job(db, await accountJobId(db, pt.id, mode), 'account', pt.id, user.id, { mode, origin, multiPt, path: '/v2/core/accounts', v2: true, data: { contact_email: user.email, display_name: pt.brand_name, dashboard: 'full', identity: { country: 'gb' }, configuration: { merchant: { capabilities: { card_payments: { requested: true } } } }, defaults: { currency: 'gbp', responsibilities: { fees_collector: 'stripe', losses_collector: 'stripe' }, locales: ['en-GB'] }, include: ['configuration.merchant'] } }, now);
 }
 
 /** POST /api/admin/stripe/link (admin only). Disabled in single-PT mode. multiPt defaults false (fail-closed). */

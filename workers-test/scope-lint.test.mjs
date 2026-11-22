@@ -108,6 +108,12 @@ export const ALLOWED = {
       'd8aa094b', // SELECT pt_id FROM stripe_connections WHERE NOT (pt_id=? AND mode=?) LI
     ]
   },
+  '../src/ops/stripe-jobs.mjs::accountJobId': {
+    why: "RC-32: called only from prepareConnect for the resolved pt_id; reads that PT's latest account job",
+    queries: [
+      'b57123f8', // SELECT id,status FROM stripe_jobs WHERE kind='account' AND target_id=? AND
+    ]
+  },
   '../src/ops/stripe-jobs.mjs::bindStmts': {
     why: "system: binds the account from a verified Stripe job to the job's pt_id",
     queries: [

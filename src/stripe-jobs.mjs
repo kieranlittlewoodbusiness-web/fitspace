@@ -16,7 +16,9 @@ export async function runJob(env, db, id, { mode, integration }) {
   if ((p.mode || 'stripe_test') !== mode) throw httpError(409, 'Switch to the original payment mode to retry this operation.');
   if (row.status === 'done') return { status: 200, body: JSON.parse(row.result) };
   if (row.status === 'failed') return { status: 409, body: { error: row.last_error || 'This payment operation failed. Start a fresh action.' } };
-  if (Date.now() - row.created_at > 23 * 3600000) return { status: 409, body: { error: 'This payment operation is over 23 hours old. Reconcile it in Stripe before starting another request.' } };
+  // RC-32 m2: a stale pending/retry ACCOUNT job (no payment involved) is retried with the same key
+  // instead of blocking Connect for good; payment jobs keep the 23-hour reconcile guard.
+  if (row.kind !== 'account' && Date.now() - row.created_at > 23 * 3600000) return { status: 409, body: { error: 'This payment operation is over 23 hours old. Reconcile it in Stripe before starting another request.' } };
   // Legacy pt_direct: the booking's own (decrypted) restricted key, ownership re-checked.
   const credential = p.credential_id ? await loadCredential(db, env, p.credential_id) : null;
   if (integration === 'pt_direct' && !credential) throw httpError(409, 'This historical payment requires its original Connect setup. It cannot use a PT-owned key.');
@@ -25,6 +27,7 @@ export async function runJob(env, db, id, { mode, integration }) {
     if (!bound || bound.stripe_credential_id !== credential.id || bound.stripe_account_id !== credential.account_id || bound.pt_id !== credential.pt_id || credential.mode !== p.mode) throw httpError(403, 'Payment credential ownership mismatch.');
   }
   const opts = { mode, integration, ...(credential ? { key: credential.key } : {}) };
+  let created = false;
   try {
     let result;
     if (row.kind === 'cancel') {
@@ -44,6 +47,10 @@ export async function runJob(env, db, id, { mode, integration }) {
       result = {};
     } else {
       result = await stripe(env, p.path, p.data, { ...opts, account: p.account, idempotency: id, v2: p.v2, method: p.method || 'POST' });
+      // RC-32 M1: from here on Stripe has (probably) created the account. Any failure must stay
+      // retryable so the next tap replays the SAME Idempotency-Key and gets the same acct_,
+      // never a fresh job that would create a second connected account.
+      if (row.kind === 'account') created = true;
       if (['link_platform', 'account'].includes(row.kind) && !/^acct_/.test(result.id || '')) throw httpError(409, 'Stripe returned an invalid account.');
       if (row.kind === 'account' && result.livemode !== live(mode)) throw httpError(409, 'Stripe account payment mode mismatch.');
       if (row.kind === 'onboard' && !validRedirect(result.url, ['connect.stripe.com'])) throw httpError(409, 'Stripe did not return a valid onboarding link.');
@@ -51,6 +58,8 @@ export async function runJob(env, db, id, { mode, integration }) {
     }
     return { status: 200, body: await write(env, 'completeJob', { id, result }) };
   } catch (error) {
+    // stripeSucceeded: Stripe answered 2xx (so it may have created the object) but the response was rejected.
+    if (created || (row.kind === 'account' && error.stripeSucceeded)) error.retryable = true;
     await write(env, 'failJob', { id, retryable: Boolean(error.retryable), message: error.message });
     return { status: error.status || 503, body: { error: error.message || 'Payment operation failed. Please retry.', ...errorExtras(error) } };
   }
