@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  THEME_PRESETS, DEFAULT_THEME_ID, accentInk, contrastRatios, resolveThemeId, presetById, themeIdFromBody, colours
+  THEME_PRESETS, DEFAULT_THEME_ID, CUSTOM_THEME_ID, accentInk, contrastRatios, resolveThemeId, presetById, themeIdFromBody, colours
 } from '../src/theme-presets.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -56,11 +56,18 @@ test('every preset meets WCAG AA 4.5:1 for body text, buttons and links', () => 
   console.log('theme contrast (AA 4.5:1)', rows);
 });
 
-test('resolveThemeId matches stored colours and falls back to resilience', () => {
+test('resolveThemeId matches stored colours, returns custom when unmatched, and falls back to resilience when empty', () => {
+  assert.equal(CUSTOM_THEME_ID, 'custom');
   assert.equal(resolveThemeId({ accent: '#FFD43B', background: '#FFFFFF', foreground: '#111111' }), 'resilience');
   assert.equal(resolveThemeId(presetById('night')), 'night');
-  assert.equal(resolveThemeId({ accent: '#cc3300', background: '#ffffff', foreground: '#111111' }), 'resilience');
+  assert.equal(resolveThemeId({ accent: '#cc3300', background: '#ffffff', foreground: '#111111' }), 'custom');
   assert.equal(resolveThemeId({}), 'resilience');
+  assert.equal(resolveThemeId({ accent: '', background: '  ', foreground: null }), 'resilience');
+});
+
+test('themeIdFromBody accepts custom as a no-op id and still rejects unknown ids', () => {
+  assert.equal(themeIdFromBody({ id: 'Custom' }), 'custom');
+  assert.equal(themeIdFromBody({ id: 'custom' }), 'custom');
 });
 
 test('themeIdFromBody accepts only allowlisted ids', () => {
@@ -116,6 +123,8 @@ test('app.js ships the same preset ids and colours as the shared allowlist', () 
   assert.ok(appJs.includes('for="themePreset">Theme'));
   assert.ok(appJs.includes('<select id="themePreset" name="theme-preset">'));
   assert.ok(appJs.includes('class="theme-swatch-preview"'));
+  assert.ok(appJs.includes('Custom (current)'));
+  assert.ok(appJs.includes("if(picked.value==='custom')"));
   assert.ok(appJs.includes("api('/api/pt/theme',{method:'PUT'"));
   assert.ok(appJs.includes("me.role==='pt'?profileForm()+themeSettings()"));
   assert.equal(appJs.includes('<label for="theme-accent">Accent'), false);

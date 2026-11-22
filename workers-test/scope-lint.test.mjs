@@ -476,7 +476,7 @@ export const ALLOWED = {
     why: 'PT-only writer op: re-reads the actor, then updates only their own pts colour columns by user.pt_id',
     queries: [
       '5f50fda9', // SELECT id,role,pt_id FROM users WHERE id=? AND active=1
-      '4b1f8101', // SELECT id FROM pts WHERE id=?
+      '43a9c952', // SELECT id,accent,background,foreground FROM pts WHERE id=?
       '5a88c258', // UPDATE pts SET accent=?,background=?,foreground=? WHERE id=?
     ]
   },
