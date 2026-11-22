@@ -466,6 +466,20 @@ export const ALLOWED = {
       'c782b604', // SELECT id FROM stripe_jobs WHERE id=?
     ]
   },
+  '../src/ops/theme.mjs::readPtTheme': {
+    why: 'PT-only route: the signed-in PT reads their own pts row by user.pt_id',
+    queries: [
+      '213549cf', // SELECT accent,background,foreground FROM pts WHERE id=?
+    ]
+  },
+  '../src/ops/theme.mjs::updatePtTheme': {
+    why: 'PT-only writer op: re-reads the actor, then updates only their own pts colour columns by user.pt_id',
+    queries: [
+      '5f50fda9', // SELECT id,role,pt_id FROM users WHERE id=? AND active=1
+      '43a9c952', // SELECT id,accent,background,foreground FROM pts WHERE id=?
+      '5a88c258', // UPDATE pts SET accent=?,background=?,foreground=? WHERE id=?
+    ]
+  },
   '../src/ops/webhooks.mjs::handleWebhook': {
     why: "system: Stripe-signed events, matched by session/payment/account ids",
     queries: [
