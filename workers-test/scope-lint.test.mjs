@@ -23,8 +23,11 @@ export const GRAPH = {
   // Node CLI scripts that read the legacy Netlify app's SQLite/Postgres code (never D1). Each edge
   // into app/ or netlify/ is listed; a new one, or any from Worker code, fails.
   // CR 5943169048 C1: relative imports out of src/worker/scripts must be listed here.
-  // Preview out-of-band reset reuses the shared normalised production-id guard.
-  outsideEdges: ['../src/ops/password-reset.mjs -> ../docs/rc-4/d1-rehearsal/guard.mjs'],
+  // Preview out-of-band reset and admin bootstrap reuse the shared production-id guard.
+  outsideEdges: [
+    '../src/ops/password-reset.mjs -> ../docs/rc-4/d1-rehearsal/guard.mjs',
+    '../scripts/bootstrap-admin.mjs -> ../docs/rc-4/d1-rehearsal/guard.mjs'
+  ],
   legacyEdges: [
     '../scripts/demo-snapshot.mjs -> ../app/db.cjs',
     '../scripts/dev.mjs -> ../netlify/functions/platform.mjs',

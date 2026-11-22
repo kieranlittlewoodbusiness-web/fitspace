@@ -45,11 +45,11 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Writer"] }],
   // Cron Trigger (src/mail.mjs): email delivery (booking + password-reset mail) and
   // housekeeping (expire holds, prune rate limits). QA D1-D3 (f978692): this default env (real
-  // D1 id) has NO cron trigger and no CRON_ENABLED; only env.preview has both. The go-live step
-  // adds both here, with approval. Two layers: no schedule here, and cronTick is a no-op unless
-  // CRON_ENABLED is "true" (CR 5941600057). Test: tests/remote-guards.test.mjs reads this file
-  // through wrangler's own config resolver. Local: wrangler dev --test-scheduled, then
-  // GET /__scheduled. Nothing is deployed from this branch.
+  // D1 id) has NO cron trigger and no CRON_ENABLED. env.preview and env.production each have
+  // both; production is only selected with `--env production`. Two layers: no schedule here,
+  // and cronTick is a no-op unless CRON_ENABLED is "true" (CR 5941600057). Test:
+  // tests/remote-guards.test.mjs reads this file through wrangler's own config resolver.
+  // Local: wrangler dev --test-scheduled, then GET /__scheduled. Do not deploy the default env.
   "observability": { "enabled": false },
   // Preview (approved 17 Nov 2026, item 6). Uploaded through the Cloudflare API, not
   // `wrangler deploy`. workers.dev is enabled only behind Cloudflare Access (docs §13).
@@ -80,6 +80,45 @@
           "binding": "DB",
           "database_name": "resiliencecoaching-preview",
           "database_id": "81379d2e-c718-48b7-870d-1d189feea966",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [{ "name": "WRITER", "class_name": "Writer" }]
+      },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Writer"] }],
+      "triggers": { "crons": ["* * * * *"] },
+      "observability": { "enabled": true }
+    },
+    // Production Worker (L1). Deploy only with `wrangler deploy --env production` after
+    // Kieran's yes. Secrets are names only in docs/launch-production.md; never commit values.
+    // www is a custom domain; the Worker 301s it to the apex (worker/index.mjs).
+    "production": {
+      "name": "resiliencecoaching",
+      "workers_dev": false,
+      "preview_urls": false,
+      "vars": {
+        "EMAIL_MODE": "send",
+        "RESET_EMAIL_MODE": "send",
+        "PAYMENT_MODE": "stripe_live",
+        "STRIPE_INTEGRATION": "connect",
+        "MULTI_PT_ENABLED": "false",
+        "APP_URL": "https://resiliencecoaching.app",
+        "CRON_ENABLED": "true",
+        "MAIL_FROM": "bookings@mail.resiliencecoaching.app",
+        // Runtime id for the reset gate. The preview out-of-band path stays fail-closed:
+        // this is the production database, EMAIL_MODE is send, and APP_URL is the apex.
+        "D1_DATABASE_ID": "fd8a613f-4dd4-462b-83e0-d7673031a6fc"
+      },
+      "routes": [
+        { "pattern": "resiliencecoaching.app", "custom_domain": true },
+        { "pattern": "www.resiliencecoaching.app", "custom_domain": true }
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "resiliencecoaching",
+          "database_id": "fd8a613f-4dd4-462b-83e0-d7673031a6fc",
           "migrations_dir": "migrations"
         }
       ],
