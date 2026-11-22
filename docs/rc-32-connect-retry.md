@@ -17,10 +17,10 @@ Prod incident, 22 Nov 2026 at 22:06 UK (version 70cf2048). The PT tapped "Connec
    - **Stale jobs (CR m2):** a `pending`/`retry` account job is retried on the same key whenever the PT taps again, however old it is. The 23-hour "reconcile first" guard in `runJob` still applies to payment jobs (checkout, refund, cancel), but no longer to account jobs, which move no money. Residual risk: Stripe drops idempotency keys after about 24 h. If a create succeeded but was never recorded, and the retry comes more than 24 h later, Stripe could create a second account. That's only possible if the Writer failed and nobody tapped again for a day. It's documented here and not handled in code.
 2. **Redacted Stripe error logging** (`src/stripe.mjs` `stripeErrorLog` and `redactStripeText`).
    - Every non-2xx Stripe response logs `console.error('Stripe API error', {status, path, type, code, message, request_id})`.
-   - `acct_` ids keep only their first 4 characters. Emails become `[email]`. `sk_`/`rk_`/`pk_` keys and `whsec_` secrets become `[redacted]`. The message is capped at 300 characters.
+   - `acct_` ids keep only their first 4 characters. Emails become `[email]`. `sk_`/`rk_`/`pk_` keys, `whsec_` secrets and client secrets (`pi_`/`seti_`/`cs_`/`src_…_secret_…`, CR nit 2) become `[redacted]`. The message is capped at 300 characters.
    - The Authorization header and the key are never logged.
 3. **Clearer PT message** (`src/stripe.mjs` `platformNotReady`).
-   - Applies to a Stripe 400 `invalid_request_error` whose message says the platform hasn't finished Connect setup: not signed up for Connect, platform profile, responsibilities for managing losses, or account not activated.
+   - Applies only on `POST /v2/core/accounts` (CR nit 3), to a Stripe 400 `invalid_request_error` whose message says the platform hasn't finished Connect setup: not signed up for Connect, platform profile, responsibilities for managing losses, or account not activated.
    - Response: 409 `{ error: "Stripe Connect isn't set up on the platform yet. Ask the site owner to finish Stripe setup.", code: "STRIPE_PLATFORM_NOT_READY" }`.
    - It is non-retryable, so the next tap gets a fresh job (item 1).
    - All other errors keep the existing generic text. Stripe's raw message is never returned to the client.
