@@ -192,6 +192,10 @@ describe('RC-32 Stripe error logging and PT message', () => {
     const text = JSON.stringify(log);
     for (const leak of ['coach@example.com', 'SECRETVALUE', 'EfGhIjK', 'abcdef']) expect(text).not.toContain(leak);
     expect(redactStripeText('sk_test_abc123')).toBe('sk_test_[redacted]');
+    // Nit 2: client secrets.
+    const masked = redactStripeText('pi_3Abc123_secret_XyZ987 and seti_1Q2w_secret_Zz9');
+    expect(masked).toBe('pi_[redacted]_secret_[redacted] and seti_[redacted]_secret_[redacted]');
+    expect(masked).not.toMatch(/XyZ987|Zz9|3Abc123/);
   });
 
   it('the logged line for a real failed call never contains the key', async () => {
@@ -213,8 +217,12 @@ describe('RC-32 Stripe error logging and PT message', () => {
   });
 
   it('maps only platform-setup 400s to the fixed message', () => {
-    expect(platformNotReady(400, { error: { type: 'invalid_request_error', message: PLATFORM_MSG } })).toBe(true);
-    expect(platformNotReady(400, { error: { type: 'invalid_request_error', message: "You can only create new accounts if you've signed up for Connect, which you can learn how to do at https://stripe.com/docs/connect." } })).toBe(true);
+    expect(platformNotReady(400, { error: { type: 'invalid_request_error', message: PLATFORM_MSG } }, '/v2/core/accounts')).toBe(true);
+    expect(platformNotReady(400, { error: { type: 'invalid_request_error', message: "You can only create new accounts if you've signed up for Connect, which you can learn how to do at https://stripe.com/docs/connect." } }, '/v2/core/accounts')).toBe(true);
+    // Nit 3: scoped to account creation; checkout/refund 400s with similar wording stay generic.
+    expect(platformNotReady(400, { error: { type: 'invalid_request_error', message: PLATFORM_MSG } }, '/v1/checkout/sessions')).toBe(false);
+    expect(platformNotReady(400, { error: { type: 'invalid_request_error', message: PLATFORM_MSG } }, '/v1/refunds')).toBe(false);
+    expect(platformNotReady(400, { error: { type: 'invalid_request_error', message: PLATFORM_MSG } })).toBe(false);
     expect(platformNotReady(400, { error: { type: 'invalid_request_error', message: 'Invalid email address: x@example.com' } })).toBe(false);
     expect(platformNotReady(403, { error: { type: 'invalid_request_error', message: PLATFORM_MSG } })).toBe(false);
     expect(platformNotReady(500, { error: { type: 'api_error', message: PLATFORM_MSG } })).toBe(false);
