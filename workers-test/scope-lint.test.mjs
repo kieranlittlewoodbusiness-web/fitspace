@@ -265,7 +265,22 @@ export const ALLOWED = {
       '2e285986', // INSERT OR IGNORE INTO email_outbox(id,pt_id,customer_id,dedupe_key,rec
     ]
   },
-  '../src/mail.mjs::deliverOutbox': {
+  '../src/profile.mjs::readPtProfile': {
+    why: 'PT-only route: the signed-in PT reads their own pts row by user.pt_id',
+    queries: [
+      'abf4ec84', // SELECT * FROM pts WHERE id=?
+    ]
+  },
+  '../src/ops/profile.mjs::updatePtProfile': {
+    why: 'PT-only writer op: re-reads the actor, then updates only their own pts row by user.pt_id',
+    queries: [
+      '5f50fda9', // SELECT id,role,pt_id FROM users WHERE id=? AND active=1
+      'abf4ec84', // SELECT * FROM pts WHERE id=?
+      'abf4ec84', // SELECT * FROM pts WHERE id=?
+      '5f6b88e1', // UPDATE pts SET brand_name=?,about=?,business_name=?,contact_email=?,co
+    ]
+  },
+    '../src/mail.mjs::deliverOutbox': {
     why: "system (Cron Trigger): delivery of queued rows by id; nothing returned to a caller",
     queries: [
       '069786df', // UPDATE email_outbox SET status='failed',attempts=attempts+1,last_error
@@ -273,7 +288,7 @@ export const ALLOWED = {
       'de588a69', // UPDATE email_outbox SET status='sending',next_attempt_at=? WHERE id=? 
       'e17b2f90', // UPDATE email_outbox SET status='sent',provider_id=?,sent_at=?,last_err
       'e77454e4', // SELECT id FROM email_outbox WHERE status IN ('queued','failed','sendin
-      '8ceea2ec', // SELECT email FROM users WHERE pt_id=? AND role='pt' LIMIT 1
+      '0041d856', // SELECT u.email AS login_email, p.reply_to_email, p.reply_to_name FROM 
     ]
   },
   '../src/mail.mjs::runScheduled': {

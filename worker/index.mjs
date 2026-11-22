@@ -27,6 +27,7 @@ import { accountSnapshot, connectStatusView, resolveConnectPtId } from '../src/c
 import { password as validPassword } from '../src/validate.mjs';
 import { rateLimit } from '../src/ratelimit.mjs';
 import { errorExtras, hashPassword, httpError, isStripe, live, verifyPassword } from '../src/util.mjs';
+import { readPtProfile } from '../src/profile.mjs';
 
 export { Writer } from '../src/writer.mjs';
 
@@ -200,6 +201,16 @@ export async function handle(request, env) {
     return json(200, await dashboard(db, user, { paymentMode, integration }));
   }
 
+  // ---- PT profile (session + CSRF on writes; PT role only) ----
+  if (method === 'GET' && route === '/api/pt/profile') {
+    requireUser(user, ['pt']);
+    return json(200, await readPtProfile(db, user));
+  }
+  if ((method === 'PATCH' || method === 'PUT') && route === '/api/pt/profile') {
+    requireUser(user, ['pt']);
+    return json(200, await write(env, 'updatePtProfile', { userId: user.id, body }));
+  }
+
   // ---- admin ----
   if (method === 'GET' && route === '/api/admin/stripe/setup') {
     requireUser(user, ['admin']);
@@ -332,7 +343,7 @@ export async function handle(request, env) {
   return null;
 }
 
-const DIAGNOSTIC = /^\/api\/(me|auth\/.*|dashboard|admin\/.*|public\/.*)$/;
+const DIAGNOSTIC = /^\/api\/(me|auth\/.*|dashboard|admin\/.*|public\/.*|pt\/profile)$/;
 const PT_WEBHOOK = /^\/api\/stripe\/pt\/[a-f0-9-]{36}\/webhook$/;
 /** Legacy platform.mjs:47-49 (`diagnostic` routes stay reachable so the owner can see and fix
  *  the configuration). Throws 503 before anything else runs. */
