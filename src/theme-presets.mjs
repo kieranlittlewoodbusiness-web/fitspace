@@ -28,8 +28,10 @@ export const THEME_PRESETS = Object.freeze([
 const byId = Object.freeze(Object.fromEntries(THEME_PRESETS.map(p => [p.id, p])));
 
 export function presetById(id) {
-  const key = String(id ?? '').trim().toLowerCase();
-  return byId[key] || null;
+  if (typeof id !== 'string') return null;
+  const key = id.trim().toLowerCase();
+  if (!Object.hasOwn(byId, key)) return null;
+  return byId[key];
 }
 
 export function presetColours(preset) {
@@ -50,9 +52,11 @@ export function resolveThemeId(pt) {
 }
 
 export function themeIdFromBody(body) {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) throw httpError(400, 'Choose a theme from the list.');
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw httpError(400, 'Choose a theme from the list.', { code: 'VALIDATION_FAILED' });
+  }
   const preset = presetById(body.id);
-  if (!preset) throw httpError(400, 'Choose a theme from the list.');
+  if (!preset) throw httpError(400, 'Choose a theme from the list.', { code: 'VALIDATION_FAILED' });
   return preset.id;
 }
 
