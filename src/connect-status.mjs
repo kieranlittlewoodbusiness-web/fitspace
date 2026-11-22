@@ -20,12 +20,52 @@ export function parseRequirements(value) {
   };
 }
 
-/** Map a Stripe v1 Account or v2 Core Account to the fields we store and return. */
+const isObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+const isV1Requirements = value => isObject(value) && (Array.isArray(value.currently_due) || Array.isArray(value.past_due));
+// v2 capability status_details codes -> the v1 disabled_reason strings the card already shows.
+const V2_DISABLED_REASONS = Object.freeze({
+  requirements_past_due: 'requirements.past_due',
+  requirements_pending_verification: 'requirements.pending_verification'
+});
+
+/**
+ * RC-33: requirements carried by a Stripe response, in the stored {currently_due, past_due, disabled_reason} shape.
+ * v1 Account (or v1-shaped object) -> parsed as-is. v2 Core Account with `include=requirements` -> mapped from
+ * requirements.entries (only entries awaiting the user; past_due entries also count as currently_due, as in v1).
+ * Returns null when the response carries no requirements, so the caller keeps what is stored.
+ */
+export function accountRequirements(account) {
+  const v1 = [account?.configuration?.merchant?.requirements, account?.requirements].find(isV1Requirements);
+  if (v1) return parseRequirements(v1);
+  const v2 = account?.requirements;
+  if (!isObject(v2) || !('entries' in v2 || 'summary' in v2)) return null;
+  if (v2.entries != null && !Array.isArray(v2.entries)) return null;
+  const currently = new Set();
+  const past = new Set();
+  for (const entry of v2.entries || []) {
+    if (!isObject(entry) || entry.awaiting_action_from === 'stripe') continue;
+    const name = typeof entry.description === 'string' ? entry.description : '';
+    const status = entry.minimum_deadline?.status;
+    if (!name) continue;
+    if (status === 'past_due') { past.add(name); currently.add(name); }
+    else if (status === 'currently_due') currently.add(name);
+  }
+  const card = account?.configuration?.merchant?.capabilities?.card_payments;
+  const codes = card && card.status !== 'active' && Array.isArray(card.status_details) ? card.status_details.map(d => d?.code) : [];
+  const mapped = codes.map(code => V2_DISABLED_REASONS[code]).find(Boolean);
+  return {
+    currently_due: [...currently],
+    past_due: [...past],
+    disabled_reason: mapped || (past.size ? 'requirements.past_due' : null)
+  };
+}
+
+/** Map a Stripe v1 Account or v2 Core Account to the fields we store and return. requirements is null when absent. */
 export function accountSnapshot(account) {
   const merchant = account?.configuration?.merchant;
   const card = merchant?.capabilities?.card_payments?.status;
   const transfers = merchant?.capabilities?.transfers?.status;
-  const requirements = parseRequirements(merchant?.requirements || account?.requirements || {});
+  const requirements = accountRequirements(account);
   const charges = typeof account?.charges_enabled === 'boolean' ? Boolean(account.charges_enabled) : card === 'active';
   const payouts = typeof account?.payouts_enabled === 'boolean' ? Boolean(account.payouts_enabled) : transfers === 'active';
   const details = typeof account?.details_submitted === 'boolean'

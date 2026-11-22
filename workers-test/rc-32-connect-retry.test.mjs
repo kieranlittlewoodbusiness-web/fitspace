@@ -226,7 +226,7 @@ describe('RC-32 v2 account retrieve (status)', () => {
       return json(200, { id: acct, livemode: false, configuration: { merchant: { capabilities: { card_payments: { status: 'pending' } } } } });
     });
     expect((await call(pt, '/api/pt/stripe/status')).status).toBe(200);
-    expect(urls).toEqual([{ url: 'https://api.stripe.com/v2/core/accounts/' + acct + '?include[0]=configuration.merchant', method: 'GET' }]);
+    expect(urls).toEqual([{ url: 'https://api.stripe.com/v2/core/accounts/' + acct + '?include[0]=configuration.merchant&include[1]=requirements', method: 'GET' }]);
   });
 });
 

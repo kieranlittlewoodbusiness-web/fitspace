@@ -59,16 +59,23 @@ export async function bindConnection(db, { userId, mode, accountId, routing, rea
   const snap = {
     account_id: accountId, routing, ready,
     charges_enabled: Boolean(charges_enabled), payouts_enabled: Boolean(payouts_enabled),
-    details_submitted: Boolean(details_submitted), requirements: parseRequirements(requirements)
+    details_submitted: Boolean(details_submitted),
+    // RC-33: null/absent means the Stripe response carried no requirements; keep the stored list,
+    // unless the account is ready (CR m1): then clear it so an active card never shows a stale 'restricted'.
+    requirements: requirements != null ? parseRequirements(requirements) : ready ? parseRequirements({}) : null
   };
   await db.batch([
     db.stmt(
-      'UPDATE stripe_connections SET ready=?,charges_enabled=?,payouts_enabled=?,details_submitted=?,requirements=?,updated_at=? WHERE pt_id=? AND mode=? AND account_id=? AND routing=?',
+      'UPDATE stripe_connections SET ready=?,charges_enabled=?,payouts_enabled=?,details_submitted=?,requirements=COALESCE(?,requirements),updated_at=? WHERE pt_id=? AND mode=? AND account_id=? AND routing=?',
       snap.ready ? 1 : 0, snap.charges_enabled ? 1 : 0, snap.payouts_enabled ? 1 : 0, snap.details_submitted ? 1 : 0,
-      JSON.stringify(snap.requirements), now, targetId, mode, accountId, routing
+      snap.requirements ? JSON.stringify(snap.requirements) : null, now, targetId, mode, accountId, routing
     ),
     mode === 'stripe_test' && routing === 'connected' ? db.stmt('UPDATE pts SET stripe_ready=? WHERE id=? AND stripe_account=?', snap.ready ? 1 : 0, targetId, accountId) : null
   ]);
+  if (!snap.requirements) {
+    const stored = await db.get('SELECT requirements FROM stripe_connections WHERE pt_id=? AND mode=? AND account_id=? AND routing=?', targetId, mode, accountId, routing);
+    snap.requirements = parseRequirements(stored?.requirements);
+  }
   return connectStatusView(snap, { mode });
 }
 

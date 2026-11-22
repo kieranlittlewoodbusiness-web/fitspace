@@ -344,7 +344,14 @@ export async function handle(request, env) {
       account = await stripe(env, '/v1/account', null, { ...stripeOpts, method: 'GET' });
       if (account.id !== c.account_id) throw httpError(409, 'The server key belongs to a different Stripe account.', { code: 'CONNECT_ACCOUNT_MISMATCH' });
     } else {
-      account = await stripe(env, '/v2/core/accounts/' + encodeURIComponent(c.account_id) + '?include[0]=configuration.merchant', null, { ...stripeOpts, method: 'GET', v2: true });
+      const retrieve = include => stripe(env, '/v2/core/accounts/' + encodeURIComponent(c.account_id) + include, null, { ...stripeOpts, method: 'GET', v2: true });
+      try {
+        account = await retrieve('?include[0]=configuration.merchant&include[1]=requirements');
+      } catch (error) {
+        // RC-33: if Stripe rejects the requirements include, retry once without it; the stored list is then kept.
+        if (error?.stripeStatus !== 400) throw error;
+        account = await retrieve('?include[0]=configuration.merchant');
+      }
       if (account.id !== c.account_id || account.livemode !== live(paymentMode)) throw httpError(409, 'Unexpected Stripe account or payment mode.', { code: 'CONNECT_ACCOUNT_MISMATCH' });
     }
     const snap = accountSnapshot(account);
