@@ -10,6 +10,9 @@
   - Anything else (absent, null, unrecognised): returns `null`.
 - `src/ops/accounts.mjs` `bindConnection`: `requirements=COALESCE(?,requirements)`. With `null`, the stored list is kept and returned in the view. ready, charges, payouts and details_submitted are still written on every refresh.
 
+- CR m1 (review 6015044403): when the account is ready (charges enabled) and the response carries no requirements, `bindConnection` writes empty requirements so an active card never shows a stale 'restricted'. If the account is not ready, the stored list is kept.
+- Fallback: if the status GET returns HTTP 400 with `include[1]=requirements`, it retries once with only `include[0]=configuration.merchant`. Requirements are then null, so the stored list is kept (or cleared if ready). `stripe()` errors now carry `stripeStatus` internally; it isn't in `errorExtras`, so clients never see it. Other errors are not retried.
+
 **Effect on the coach row:** the next status tap maps Stripe's live requirements into D1, so no manual D1 write is needed.
 
 **Schema/env:** none. **Tests:** `workers-test/rc-33-requirements.test.mjs` adds the new tests. Also updated: the scope-lint hashes for `bindConnection` and the RC-32 include URL assertion.

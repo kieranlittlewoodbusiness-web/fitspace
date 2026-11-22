@@ -20,7 +20,7 @@ function mockAccount(account) {
     const url = new URL(typeof input === 'string' ? input : input.url);
     if (url.origin !== 'https://api.stripe.com') throw new Error('unexpected host in test: ' + url.origin);
     paths.push((init.method || 'GET') + ' ' + url.pathname + url.search);
-    if (/^\/v2\/core\/accounts\//.test(url.pathname)) return json(200, account);
+    if (/^\/v2\/core\/accounts\//.test(url.pathname)) return typeof account === 'function' ? account(url) : json(200, account);
     return json(404, { error: { message: 'no mock' } });
   });
   return paths;
@@ -114,5 +114,48 @@ describe('RC-33 POST /api/pt/stripe/status', () => {
     expect(r.body).toMatchObject({ state: 'active', ready: true, charges_enabled: true, payouts_enabled: true, details_submitted: true, requirements: { currently_due: [], past_due: [], disabled_reason: null } });
     expect(await stored(ptId)).toEqual({ currently_due: [], past_due: [], disabled_reason: null });
     expect(await db().get('SELECT ready,charges_enabled,payouts_enabled,details_submitted FROM stripe_connections WHERE pt_id=?', ptId)).toEqual({ ready: 1, charges_enabled: 1, payouts_enabled: 1, details_submitted: 1 });
+  });
+
+  it('CR m1: ready + no requirements in the response clears a stale past_due list (card goes active)', async () => {
+    const { ptId, pt, acct } = await seeded();
+    mockAccount({ id: acct, livemode: false, configuration: { merchant: { capabilities: { card_payments: { status: 'active' }, transfers: { status: 'active' } } } } });
+    const r = await status(pt);
+    expect(r.body).toMatchObject({ state: 'active', ready: true, requirements: { currently_due: [], past_due: [], disabled_reason: null } });
+    expect(await stored(ptId)).toEqual({ currently_due: [], past_due: [], disabled_reason: null });
+  });
+
+  it('CR m1: not ready + no requirements in the response keeps the stored list', async () => {
+    const { ptId, pt, acct } = await seeded();
+    mockAccount({ id: acct, livemode: false, configuration: { merchant: { capabilities: { card_payments: { status: 'pending' }, transfers: { status: 'pending' } } } } });
+    const r = await status(pt);
+    expect(r.body).toMatchObject({ state: 'restricted', ready: false, requirements: STORED });
+    expect(await stored(ptId)).toEqual(STORED);
+  });
+
+  it('a 400 on include[1]=requirements retries once without it and keeps the stored list', async () => {
+    const { ptId, pt, acct } = await seeded();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const paths = mockAccount(url => url.search.includes('include[1]=requirements')
+      ? json(400, { error: { type: 'invalid_request_error', code: 'invalid_value', message: 'bad include' } })
+      : json(200, { id: acct, livemode: false, configuration: { merchant: { capabilities: { card_payments: restrictedCard } } } }));
+    const r = await status(pt);
+    expect(r.status).toBe(200);
+    expect(paths).toEqual([
+      `GET /v2/core/accounts/${acct}?include[0]=configuration.merchant&include[1]=requirements`,
+      `GET /v2/core/accounts/${acct}?include[0]=configuration.merchant`
+    ]);
+    expect(r.body).toMatchObject({ state: 'restricted', requirements: STORED });
+    expect(await stored(ptId)).toEqual(STORED);
+  });
+
+  it('a non-400 Stripe error (404) is not retried and leaves the row untouched', async () => {
+    const { ptId, pt, acct } = await seeded();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const paths = mockAccount(() => json(404, { error: { type: 'invalid_request_error', code: 'not_found', message: 'nope' } }));
+    const r = await status(pt);
+    expect(r.status).toBe(409);
+    expect(r.body).not.toHaveProperty('stripeStatus');
+    expect(paths).toHaveLength(1);
+    expect(await stored(ptId)).toEqual(STORED);
   });
 });
