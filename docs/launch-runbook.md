@@ -29,7 +29,7 @@ Default in this runbook: (b) for D1 and deploy, with each run approved separatel
 ## 1. Critical path (UK times, assuming Kieran is available from Sun 09:00)
 | # | When | Step | Who | Est. |
 |---|---|---|---|---|
-| 1 | Sun 09:00 | Answer the decision list (§10) | [Kieran yes] | 15 m |
+| 1 | Sun 09:00 | Answer the decision list (§10). It includes the two blockers from Web's audit (`launch-audit/NOTES.md`). **K1:** go live with Stripe/Connect. Today the default env has `PAYMENT_MODE=demo`, and the preview returns 503 for bookings ("key does not match mode") until keys are set. **K2:** a Resend account and the `MAIL_FROM` sender. Without them, mail and password reset stay off | [Kieran yes] | 15 m |
 | 2 | Sun 09:15 | **Blocker L1**: prod env config PR (§2), CR, QA, merge | [Backend] | 1.5–2 h |
 | 3 | Sun 09:15 (parallel) | **Blocker L2**: privacy, terms and cookies pages plus footer (RC-21). Kieran OKs the copy | Web, then [Kieran yes] | 2–3 h |
 | 4 | Sun 09:15 (parallel) | Set up Resend: add the domain, add DNS records (§5), wait for verification | [Kieran hands] | 20 m + up to a few h waiting |
@@ -213,6 +213,28 @@ Daily for the first week: check Stripe webhook failures, the Worker error rate (
 - **L2**, RC-21 privacy, terms (including the cancellation and refund policy) and cookie pages, with footer links. Web, ~1 cycle (2–3 h); Kieran approves the copy. UK GDPR and consumer law expect these before taking payments and personal data.
 - **L3**, real Stripe **test-mode** end-to-end (part of RC-40) on the preview: connect → checkout → webhook → paid → refund. QA plus Backend, ~1.5 h. Needs Kieran's yes for the test keys and webhook. No live money should move before this passes.
 
+- **L4, PT-editable profile and contact** (Kieran, 00:56): the coach must be able to edit their contact email, phone, email reply-to, and trainer, class, venue and price details in settings. `MAIL_FROM` stays a platform env var. The per-PT reply-to goes into the Resend `reply_to`.
+  - **Exists on main `a9d32297`:**
+    - Class details are PT-editable: `POST /api/blocks` and `PUT /api/blocks/:id` cover title, description, venue, price, capacity, published and closed (`worker/index.mjs`, `src/ops/manage.mjs:133`, `src/scope.mjs updateBlockStmt`).
+    - Trainer profile fields exist in `pts`: slug, brand_name, tagline, description, about, accent/background/foreground colours, features and published (`migrations/0001_initial_schema.sql`). But they're editable **only by the admin**, through `PUT /api/admin/pts/:id` → `updatePtBranding` (`src/ops/accounts.mjs:37`).
+    - Booking emails already set `reply_to` to the PT user's **login** email (`src/mail.mjs:37`).
+  - **Missing:**
+    - Columns `pts.contact_email`, `pts.contact_phone` and `pts.reply_to_email`. That's migration 0006, additive, with a down file.
+    - A PT self-service route `GET`/`PUT /api/pt/profile`, scoped to the caller's `pt_id`, covering the branding fields plus contact fields with validation (email and UK phone).
+    - `src/mail.mjs` should use `pts.reply_to_email`, falling back to the login email.
+    - Public site and footer should show the contact details.
+    - Web UI: a PT Settings › Profile and contact form.
+    - Coordinate with RC-29 (Web's `PUT /api/pt/theme`, which touches the same files): put both in one route or sequence them.
+  - **Estimate:** Backend about 1 cycle (2–3 h with CR and QA). Web UI about 1 cycle (2 h). They can run in parallel with L2/L3, and the Backend part lands before Web's form.
+- **Also from Web's audit**, folded into L2 unless noted:
+  - The signup checkbox should link to the terms and privacy pages.
+  - Add a contact page.
+  - Add favicon/apple-touch icons and canonical/OG tags (SEO ticket, cheap).
+  - Production `/robots.txt` currently returns the SPA shell. Add a real `app/public/robots.txt` and sitemap (SEO, week 1).
+  - There's no delete-account route. Handle GDPR erasure requests manually at launch (deferrable).
+  - Unknown paths return 200 with the SPA shell (deferrable).
+  - Clean up Web's throwaway customer signup in the preview D1 (preview only).
+
 **Deferrable after launch**
 - RC-7 (platform subscription; hidden in single-PT mode)
 - RC-8 (discount codes)
@@ -226,6 +248,8 @@ Daily for the first week: check Stripe webhook failures, the Worker error rate (
 - SEO ticket (sitemap and canonical; cheap, do it in week 1)
 - RC-27 (stray Worker)
 
+**Preview note:** don't reseed or reset the preview trainer. Kieran set its password himself, which is why the `.secrets/preview.json` seed login now gets a 401. That's expected.
+
 ## 10. Decisions for Kieran
 - **D1:** Go for the plan and timings in §1, including the scoped API token (option b) versus running the wrangler commands yourself (option a).
 - **D2:** Stripe live key type. A restricted `rk_live_` key is safer but must be proven in the test E2E. A standard `sk_live_` key is simpler.
@@ -234,4 +258,6 @@ Daily for the first week: check Stripe webhook failures, the Worker error rate (
 - **D5:** Do you need to receive email at @resiliencecoaching.app? If so, which mailbox provider (it needs MX records)?
 - **D6:** Canonical host: apex, with www redirecting. And is a Netlify fallback wanted at all? Today the domain points nowhere.
 - **D7:** Approve the privacy, terms and cancellation copy (L2), including the refund policy shown to customers.
+- **K1/K2:** Stripe live/Connect go-live (§4), and Resend plus the `MAIL_FROM` address (§5, D4). Both are launch blockers.
+- **D9:** Approve the L4 scope: which contact fields are public (email, phone) versus reply-to only.
 - **D8:** Each prod step needs its own yes: D1 migrations, the bootstrap, secrets, deploy, the custom domain, live webhooks, the £1 test, and turning off Netlify.
