@@ -5,6 +5,7 @@ import { httpError } from './util.mjs';
 import { colours } from './validate.mjs';
 
 export const DEFAULT_THEME_ID = 'resilience';
+export const CUSTOM_THEME_ID = 'custom';
 
 // Same luminance threshold as app/public/app.js, so button text matches what the pages render.
 export function accentInk(hex){
@@ -42,19 +43,21 @@ function norm(hex) {
   return String(hex ?? '').trim().toLowerCase();
 }
 
-/** Map stored pts colours back to a preset id; unknown combinations fall back to resilience. */
+/** Map stored pts colours back to a preset id. Unmatched colours are 'custom'; missing colours fall back to resilience. */
 export function resolveThemeId(pt) {
   const accent = norm(pt?.accent);
   const background = norm(pt?.background);
   const text = norm(pt?.foreground ?? pt?.text);
+  if (!accent && !background && !text) return DEFAULT_THEME_ID;
   const found = THEME_PRESETS.find(p => norm(p.accent) === accent && norm(p.background) === background && norm(p.text) === text);
-  return found?.id || DEFAULT_THEME_ID;
+  return found?.id || CUSTOM_THEME_ID;
 }
 
 export function themeIdFromBody(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw httpError(400, 'Choose a theme from the list.', { code: 'VALIDATION_FAILED' });
   }
+  if (typeof body.id === 'string' && body.id.trim().toLowerCase() === CUSTOM_THEME_ID) return CUSTOM_THEME_ID;
   const preset = presetById(body.id);
   if (!preset) throw httpError(400, 'Choose a theme from the list.', { code: 'VALIDATION_FAILED' });
   return preset.id;

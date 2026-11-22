@@ -1,7 +1,7 @@
 // PT-owned theme update (PUT /api/pt/theme). Self-contained: does not go through the
 // profile or admin branding ops. Stores the chosen preset's colours in existing pts columns.
 import { httpError, uid } from '../util.mjs';
-import { presetById, presetColours, resolveThemeId, themeIdFromBody } from '../theme-presets.mjs';
+import { CUSTOM_THEME_ID, presetById, presetColours, resolveThemeId, themeIdFromBody } from '../theme-presets.mjs';
 
 export function themeView(pt) {
   return { id: resolveThemeId(pt) };
@@ -18,9 +18,10 @@ export async function updatePtTheme(db, { userId, body, now = Date.now() }) {
   const user = await db.get('SELECT id,role,pt_id FROM users WHERE id=? AND active=1', userId);
   if (user?.role !== 'pt' || !user.pt_id) throw httpError(403, 'Your account does not have access to this action.');
   const id = themeIdFromBody(body);
-  const colours = presetColours(presetById(id));
-  const current = await db.get('SELECT id FROM pts WHERE id=?', user.pt_id);
+  const current = await db.get('SELECT id,accent,background,foreground FROM pts WHERE id=?', user.pt_id);
   if (!current) throw httpError(404, 'Trainer not found.');
+  if (id === CUSTOM_THEME_ID) return { id: resolveThemeId(current) };
+  const colours = presetColours(presetById(id));
   const [r] = await db.batch([
     db.stmt(
       'UPDATE pts SET accent=?,background=?,foreground=? WHERE id=?',
