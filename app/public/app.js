@@ -27,7 +27,7 @@ function statusPill(status,mode){const names={pending:'Checkout in progress',pai
 function resetTheme(){const styles=document.documentElement.style;for(const [name,value]of Object.entries({'--accent':'#ffd43b','--accent-ink':'#111','--bg':'#fff','--fg':'#141414'}))styles.setProperty(name,value);}
 function theme(pt){document.documentElement.style.setProperty('--accent',pt.accent);document.documentElement.style.setProperty('--bg',pt.background);document.documentElement.style.setProperty('--fg',pt.foreground);document.documentElement.style.setProperty('--accent-ink',accentInk(pt.accent));}
 
-/* DRAFT for Kieran's review, not legal advice. Standard UK sole-trader class-booking template. */
+/* DRAFT for Kieran's review, not legal advice. Standard UK class-booking template. */
 const SITE_ORIGIN='https://resiliencecoaching.app';
 const LEGAL_DRAFT='DRAFT for Kieran\'s review, not legal advice.';
 function presentField(value){
@@ -38,7 +38,7 @@ function presentField(value){
 }
 function ptDisplayName(pt){return presentField(pt?.display_name)||presentField(pt?.brand_name)||null;}
 function ptBusinessName(pt){return presentField(pt?.business_name)||null;}
-function partyName(pt){return ptBusinessName(pt)||ptDisplayName(pt)||'Resilience Coaching';}
+function partyName(pt){return ptBusinessName(pt)||ptDisplayName(pt)||'the trainer';}
 function ptContactLines(pt){
   const lines=[];
   const email=presentField(pt?.contact_email);
@@ -109,7 +109,7 @@ function termsBody(pt){
   const party=tradingLine(pt);
   return `<p>These terms apply when you book a class through this website. They are a draft for review and are not legal advice.</p>
 <h2>Who we are</h2>
-<p>These classes are provided by ${party}, a sole trader personal trainer.${contactSentence(pt)}${venueSentence(pt)}</p>
+<p>These classes are provided by ${party}.${contactSentence(pt)}${venueSentence(pt)}</p>
 <h2>Booking and payment</h2>
 <p>When you place a booking and payment is confirmed, a contract is formed between you and ${party} for the class or block you selected, at the price shown at checkout. Payment is taken upfront. Card payments are processed by Stripe.</p>
 <h2>Consumer contracts</h2>
