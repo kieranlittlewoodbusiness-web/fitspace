@@ -190,7 +190,7 @@ export async function handle(request, env) {
 
   // ---- public ----
   if (method === 'GET' && route === '/api/public/site') {
-    return json(200, await publicSite(db, { multiPt }), { 'Cache-Control': 'public, max-age=60' });
+    return json(200, await publicSite(db, { multiPt }), { 'Cache-Control': 'no-store' });
   }
   if (method === 'GET' && route === '/api/public/pts') return json(200, { pts: await publishedPts(db) });
   const ptPublic = route.match(/^\/api\/public\/pts\/([a-z0-9-]+)$/);

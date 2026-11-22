@@ -40,9 +40,9 @@ const THEME_PRESETS=Object.freeze([
 function presetById(id){const key=String(id||'').trim().toLowerCase();return THEME_PRESETS.find(p=>p.id===key)||null;}
 function resolveThemeId(pt){const norm=hex=>String(hex||'').trim().toLowerCase();const accent=norm(pt?.accent),background=norm(pt?.background),text=norm(pt?.foreground||pt?.text);if(!accent&&!background&&!text)return 'resilience';const found=THEME_PRESETS.find(p=>norm(p.accent)===accent&&norm(p.background)===background&&norm(p.text)===text);return found?found.id:'custom';}
 function theme(pt){const preset=presetById(pt?.id)||presetById(pt?.theme_id)||presetById(resolveThemeId(pt));const accent=pt?.accent||preset?.accent;const background=pt?.background||preset?.background;const foreground=pt?.foreground||pt?.text||preset?.text;const primary=pt?.primary||preset?.primary||foreground||'#111111';const styles=document.documentElement.style;styles.setProperty('--accent',accent);styles.setProperty('--accent-ink',accentInk(accent));styles.setProperty('--bg',background);styles.setProperty('--fg',foreground);styles.setProperty('--ink',foreground);styles.setProperty('--canvas',background);styles.setProperty('--primary',primary);styles.setProperty('--primary-ink',accentInk(primary));}
-function applyLandingTheme(){if(!isMultiPt()&&site?.pt)theme(site.pt);else resetTheme();}
+function applyLandingTheme(){if(document.getElementById('theme-boot'))return;if(!isMultiPt()&&site?.pt)theme(site.pt);else resetTheme();}
 function applyPublicTheme(pt){if(pt)theme(pt);else resetTheme();}
-function applyPageTheme(pt){if(me?.role==='admin'&&(location.pathname==='/dashboard'||location.pathname.startsWith('/dashboard'))){resetTheme();return;}const resolved=pt||(me?.role==='pt'&&dashboardData?.pt)||(!isMultiPt()&&site?.pt)||null;if(resolved)theme(resolved);}
+function applyPageTheme(pt){if(me?.role==='admin'&&(location.pathname==='/dashboard'||location.pathname.startsWith('/dashboard'))){resetTheme();return;}const fromPt=pt||(me?.role==='pt'&&dashboardData?.pt)||null;if(!fromPt&&document.getElementById('theme-boot'))return;const resolved=fromPt||(!isMultiPt()&&site?.pt)||null;if(resolved)theme(resolved);}
 function customThemeFromPt(pt){return {id:'custom',name:'Custom (current)',primary:pt?.primary||pt?.foreground||pt?.text||'#111111',accent:pt?.accent||'#ffd43b',background:pt?.background||'#ffffff',text:pt?.foreground||pt?.text||'#111111'};}
 function themeFromSelect(id){return id==='custom'?customThemeFromPt(dashboardData?.pt||{}):presetById(id);}
 function themePreviewMarkup(preset){return `<span class="theme-swatch-preview" id="themePreview" aria-hidden="true" style="--swatch-bg:${esc(preset.background)};--swatch-fg:${esc(preset.text)}"><i style="background:${esc(preset.primary)}"></i><i style="background:${esc(preset.accent)}"></i><i style="background:${esc(preset.background)}"></i><i style="background:${esc(preset.text)}"></i></span>`;}
@@ -214,7 +214,7 @@ function bookingPath(){if(site?.pt?.booking_path)return site.pt.booking_path;if(
 function isMultiPt(){return site?.multi_pt_enabled===true||config.multi_pt_enabled===true;}
 async function loadSite(){
   try{
-    const response=await fetch('/api/public/site',{headers:{...(csrf?{'X-CSRF-Token':csrf}:{})}});
+    const response=await fetch('/api/public/site',{cache:'no-store',headers:{...(csrf?{'X-CSRF-Token':csrf}:{})}});
     const type=response.headers.get('content-type')||'';
     if(response.ok&&type.includes('application/json')){
       const data=await response.json();
