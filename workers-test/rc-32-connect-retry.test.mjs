@@ -230,6 +230,31 @@ describe('RC-32 v2 account retrieve (status)', () => {
   });
 });
 
+describe('RC-32 nit 1: empty or unparseable 2xx bodies', () => {
+  for (const [label, makeBody] of [['null body', () => 'null'], ['unparseable body', () => '<html>gateway</html>']]) {
+    it(`a 2xx ${label} from account create stays retryable and the retry reuses the same key`, async () => {
+      const s = await seedBlock({ customers: 0 });
+      const pt = await seedUser({ role: 'pt', ptId: s.ptId });
+      let first = true;
+      const calls = mockStripe(info => {
+        if (info.path === '/v2/core/accounts') {
+          if (first) { first = false; return new Response(makeBody(), { status: 200, headers: { 'content-type': 'application/json' } }); }
+          return json(200, { id: 'acct_test_nit1', livemode: false });
+        }
+        return json(200, { url: 'https://connect.stripe.com/setup/nit1', livemode: false });
+      });
+      const r1 = await call(pt, '/api/pt/stripe/connect');
+      expect(r1.status).toBe(503);
+      expect((await jsonOf(r1)).retryable).toBe(true);
+      const job = await db().get("SELECT id,status FROM stripe_jobs WHERE kind='account' AND target_id=?", s.ptId);
+      expect(job.status).toBe('retry');
+      expect((await call(pt, '/api/pt/stripe/connect')).status).toBe(200);
+      expect(calls.filter(c => c.path === '/v2/core/accounts').map(c => c.idempotency)).toEqual([job.id, job.id]);
+      expect(await db().get('SELECT account_id FROM stripe_connections WHERE pt_id=?', s.ptId)).toEqual({ account_id: 'acct_test_nit1' });
+    });
+  }
+});
+
 describe('RC-32 Stripe error logging and PT message', () => {
   it('redacts account ids, emails and keys, and keeps type, code and request id', () => {
     const response = new Response('{}', { status: 400, headers: { 'request-id': 'req_abc123' } });

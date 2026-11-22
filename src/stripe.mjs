@@ -78,7 +78,12 @@ export async function stripe(env, path, data, { account, idempotency, method = '
     response = await fetch(STRIPE_API + path, { method, headers, body, signal: AbortSignal.timeout(12000) });
     result = await response.json();
   } catch {
-    throw httpError(503, 'Stripe did not respond. Retry this action; its payment-operation key is preserved.', { retryable: true });
+    // RC-32 nit 1: a 2xx whose body cannot be parsed may still have created the object, so it is
+    // flagged stripeSucceeded and stays retryable on the same Idempotency-Key.
+    throw httpError(503, 'Stripe did not respond. Retry this action; its payment-operation key is preserved.', { retryable: true, ...(response?.ok ? { stripeSucceeded: true } : {}) });
+  }
+  if (response.ok && (!result || typeof result !== 'object' || Array.isArray(result))) {
+    throw httpError(503, 'Stripe did not respond. Retry this action; its payment-operation key is preserved.', { retryable: true, stripeSucceeded: true });
   }
   if (!response.ok) {
     console.error('Stripe API error', JSON.stringify(stripeErrorLog(response, result, path)));
