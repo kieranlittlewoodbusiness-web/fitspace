@@ -6,14 +6,15 @@ import { fileURLToPath } from 'node:url';
 import {
   ERROR_COPY, PLAN_LABELS, friendlyError, formatDueAt, splitInstalments,
   parsePaymentOptionsFromForm, compactPaymentOptions, validatePaymentOptions, enabledQuotesFromBlock,
-  optionsFromBlock, createInstalmentsApi, instalmentsModeFromLocation, instalmentsMockHostAllowed, planTotals
+  optionsFromBlock, createInstalmentsApi, instalmentsModeFromLocation, instalmentsMockHostAllowed, planTotals,
+  followCheckoutUrl, MIN_UPFRONT_PENCE, MAX_PRICE_PENCE
 } from '../app/public/instalments-api.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const CONTRACT_CODES = [
   'FIELDS_INVALID', 'PLAN_INVALID', 'NO_PAYMENT_OPTION', 'PLAN_EXCEEDS_BLOCK',
-  'DISCOUNT_INVALID', 'AUTH_REQUIRED', 'FORBIDDEN', 'NOT_FOUND',
+  'DISCOUNT_INVALID', 'AUTH_REQUIRED', 'UNAUTHENTICATED', 'FORBIDDEN', 'NOT_FOUND',
   'PLAN_NOT_OFFERED', 'BLOCK_UNAVAILABLE', 'PLACE_TAKEN', 'PAYMENT_IN_PROGRESS',
   'PLAN_NOT_ACTIVE', 'CONTACT_COACH', 'PAYMENTS_NOT_READY'
 ];
@@ -95,6 +96,29 @@ test('form parse and validate match the write-shape payment_options object', () 
   });
   assert.equal(badType.code, 'FIELDS_INVALID');
   assert.deepEqual(badType.fields, ['payment_options.upfront.price_pence']);
+
+  const cheap = validatePaymentOptions({
+    upfront: { enabled: true, price_pence: MIN_UPFRONT_PENCE - 1 },
+    weekly: { enabled: false },
+    monthly: { enabled: false }
+  });
+  assert.equal(cheap.code, 'PLAN_INVALID');
+  assert.deepEqual(cheap.fields, ['payment_options.upfront.price_pence']);
+  assert.equal(validatePaymentOptions({
+    upfront: { enabled: true, price_pence: MIN_UPFRONT_PENCE },
+    weekly: { enabled: false },
+    monthly: { enabled: false }
+  }).ok, true);
+  assert.equal(validatePaymentOptions({
+    upfront: { enabled: true, price_pence: MAX_PRICE_PENCE + 1 },
+    weekly: { enabled: false },
+    monthly: { enabled: false }
+  }).code, 'PLAN_INVALID');
+  assert.equal(validatePaymentOptions({
+    upfront: { enabled: false, price_pence: 0 },
+    weekly: { enabled: true, amount_pence: 1250, count: 8 },
+    monthly: { enabled: false }
+  }).ok, true);
 });
 
 test('PLAN_EXCEEDS_BLOCK when the last instalment would fall after the final session', () => {
@@ -306,7 +330,7 @@ test('app.js checkout total is labelled total after discount and hooks go throug
   assert.ok(appJs.includes('id="planQuote" aria-live="polite"'));
   assert.ok(!appJs.includes('class="discount-field"'));
   assert.ok(appJs.includes('data-url="${esc(err.url)}"'));
-  assert.ok(appJs.includes("if(url.startsWith('/'))navigate(url);else location.assign(url)"));
+  assert.ok(appJs.includes("if(followCheckoutUrl(url)==='in-app')navigate(url);else location.assign(url)"));
   assert.ok(appJs.includes('${esc(dueAt(p.due_at))}'));
   const html = readFileSync(join(root, 'app/public/index.html'), 'utf8');
   assert.ok(html.includes('type="module" src="/instalments-api.js"'));
@@ -319,4 +343,55 @@ test('styles keep radios auto-width, amounts unbreakable and plan rows 44px', ()
   assert.ok(css.includes('.plan-choice{display:flex;gap:10px;align-items:center;margin:0 0 10px;font-weight:400;min-height:44px;cursor:pointer}'));
   assert.ok(css.includes('.payment-dates li{display:flex;align-items:baseline;justify-content:flex-end;gap:6px;flex-wrap:nowrap;min-width:0;margin:0}'));
   assert.ok(css.includes('.payment-dates .money{white-space:nowrap;flex-shrink:0}'));
+});
+
+test('followCheckoutUrl branches in-app paths from hosted Stripe URLs', () => {
+  assert.equal(followCheckoutUrl('/checkout/bk_1'), 'in-app');
+  assert.equal(followCheckoutUrl('/booking/bk_1'), 'in-app');
+  assert.equal(followCheckoutUrl('https://checkout.stripe.com/c/pay/cs_test_123'), 'redirect');
+  assert.equal(followCheckoutUrl(''), null);
+  const appJs = readFileSync(join(root, 'app/public/app.js'), 'utf8');
+  assert.ok(appJs.includes("if(followCheckoutUrl(url)==='in-app')navigate(url);else location.assign(url)"));
+  assert.ok(appJs.includes("error.code='UNAUTHENTICATED'"));
+  assert.ok(appJs.includes('function promptSignIn(err)'));
+  assert.equal(ERROR_COPY.UNAUTHENTICATED, 'Sign in to continue.');
+  assert.equal(friendlyError({ code: 'UNAUTHENTICATED' }), 'Sign in to continue.');
+});
+
+test('mock createBooking matches the C2 v2.1 response table and unknown plan error', async () => {
+  const stripe = createInstalmentsApi({ mode: 'mock', paymentMode: 'stripe_test', now: () => new Date('2026-11-23T22:00:00Z') });
+  const weekly = await stripe.createBooking({ block_id: 'blk_example', checkout_token: 'tok-w', plan: 'weekly' });
+  assert.equal(weekly.url, '/checkout/' + weekly.booking_id);
+  assert.equal(weekly.booking.id, weekly.booking_id);
+  assert.equal(followCheckoutUrl(weekly.url), 'in-app');
+
+  const upfrontStripe = await stripe.createBooking({ block_id: 'blk_example', checkout_token: 'tok-u', plan: 'upfront' });
+  assert.equal(upfrontStripe.booking_id.startsWith('bk_mock_'), true);
+  assert.equal('booking' in upfrontStripe, false);
+  assert.match(upfrontStripe.url, /^https:\/\/checkout\.stripe\.com\//);
+  assert.equal(followCheckoutUrl(upfrontStripe.url), 'redirect');
+  const same = await stripe.createBooking({ block_id: 'blk_example', checkout_token: 'tok-u', plan: 'upfront' });
+  assert.deepEqual(same, upfrontStripe);
+  stripe.markPaid(upfrontStripe.booking_id);
+  const paid = await stripe.createBooking({ block_id: 'blk_example', checkout_token: 'tok-u', plan: 'upfront' });
+  assert.equal(paid.url, '/booking/' + upfrontStripe.booking_id);
+  assert.equal(paid.booking.id, upfrontStripe.booking_id);
+  assert.equal(paid.booking.status, 'paid');
+  assert.equal(followCheckoutUrl(paid.url), 'in-app');
+
+  await assert.rejects(
+    () => stripe.createBooking({ block_id: 'blk_example', checkout_token: 'tok-bad', plan: 'yearly' }),
+    err => err.code === 'FIELDS_INVALID' && err.status === 400 && Array.isArray(err.fields) && err.fields[0] === 'plan'
+  );
+
+  const demo = createInstalmentsApi({ mode: 'mock', paymentMode: 'demo', now: () => new Date('2026-11-23T22:00:00Z') });
+  const upfrontDemo = await demo.createBooking({ block_id: 'blk_example', checkout_token: 'tok-d', plan: 'upfront' });
+  assert.equal(upfrontDemo.booking.id, upfrontDemo.booking.id);
+  assert.equal(upfrontDemo.url, '/checkout/' + upfrontDemo.booking.id);
+  assert.equal('booking_id' in upfrontDemo, false);
+  assert.equal(followCheckoutUrl(upfrontDemo.url), 'in-app');
+  await assert.rejects(
+    () => demo.createBooking({ block_id: 'blk_example', checkout_token: 'tok-dw', plan: 'weekly' }),
+    err => err.code === 'PAYMENTS_NOT_READY' && err.status === 503 && friendlyError(err) === ERROR_COPY.PAYMENTS_NOT_READY
+  );
 });
