@@ -5,8 +5,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ERROR_COPY, PLAN_LABELS, friendlyError, formatDueAt, splitInstalments,
-  parsePaymentOptionsFromForm, validatePaymentOptions, enabledQuotesFromBlock,
-  optionsFromBlock, createInstalmentsApi, instalmentsModeFromLocation, planTotals
+  parsePaymentOptionsFromForm, compactPaymentOptions, validatePaymentOptions, enabledQuotesFromBlock,
+  optionsFromBlock, createInstalmentsApi, instalmentsModeFromLocation, instalmentsMockHostAllowed, planTotals
 } from '../app/public/instalments-api.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -60,9 +60,18 @@ test('form parse and validate match the write-shape payment_options object', () 
   assert.deepEqual(options, {
     upfront: { enabled: true, price_pence: 10000 },
     weekly: { enabled: true, amount_pence: 1250, count: 8 },
-    monthly: { enabled: false, amount_pence: 5000, count: 2 }
+    monthly: { enabled: false }
   });
-  assert.deepEqual(planTotals(options), { upfront: 10000, weekly: 10000, monthly: 10000 });
+  assert.deepEqual(planTotals(options), { upfront: 10000, weekly: 10000, monthly: 0 });
+  assert.deepEqual(compactPaymentOptions({
+    upfront: { enabled: false, price_pence: 0 },
+    weekly: { enabled: true, amount_pence: 1250, count: 8 },
+    monthly: { enabled: false, amount_pence: 5000, count: 2 }
+  }), {
+    upfront: { enabled: false },
+    weekly: { enabled: true, amount_pence: 1250, count: 8 },
+    monthly: { enabled: false }
+  });
   assert.equal(validatePaymentOptions(options).ok, true);
 
   assert.equal(validatePaymentOptions({
@@ -130,7 +139,8 @@ test('mock save, quote, booking, list, counts and stop follow the contract shape
   }, { lastSessionAt: '2027-01-12T19:00:00Z' });
   assert.equal(saved.block.id, 'blk_example');
   assert.deepEqual(saved.block.payment_options.weekly, { enabled: true, amount_pence: 1250, count: 8 });
-  assert.deepEqual(saved.block.totals, { upfront: 10000, weekly: 10000, monthly: 10000 });
+  assert.deepEqual(saved.block.payment_options.monthly, { enabled: false });
+  assert.deepEqual(saved.block.totals, { upfront: 10000, weekly: 10000, monthly: 0 });
 
   const quoted = await api.quoteBooking({ block_id: 'blk_example', plan: 'weekly', discount_code: null });
   assert.equal(quoted.quote.discount, null);
@@ -195,6 +205,7 @@ test('live adapter posts the documented routes, CSRF-ready request, and plan pay
   assert.equal(calls[0].path, '/api/blocks/blk_1');
   assert.equal(calls[0].body.price_pence, 10000);
   assert.equal(calls[0].body.payment_options.weekly.count, 8);
+  assert.deepEqual(calls[0].body.payment_options.monthly, { enabled: false });
 
   await api.quoteBooking({ block_id: 'blk_1', plan: 'weekly', discount_code: null });
   assert.deepEqual(calls[1], { path: '/api/bookings/quote', method: 'POST', body: { block_id: 'blk_1', plan: 'weekly', discount_code: null } });
@@ -249,10 +260,20 @@ test('live createBooking also reads the current { booking, url } reserve shape',
   assert.equal(result.url, '/checkout/bk_old');
 });
 
-test('instalments_mock=1 selects the mock harness', () => {
-  assert.equal(instalmentsModeFromLocation({ search: '?instalments_mock=1' }, null), 'mock');
-  assert.equal(instalmentsModeFromLocation({ search: '' }, { getItem: () => '1' }), 'mock');
-  assert.equal(instalmentsModeFromLocation({ search: '' }, { getItem: () => null }), 'live');
+test('instalments_mock=1 is allowed only on localhost, 127.* and *.workers.dev', () => {
+  assert.equal(instalmentsMockHostAllowed('localhost'), true);
+  assert.equal(instalmentsMockHostAllowed('127.0.0.1'), true);
+  assert.equal(instalmentsMockHostAllowed('127.0.0.2'), true);
+  assert.equal(instalmentsMockHostAllowed('preview.workers.dev'), true);
+  assert.equal(instalmentsMockHostAllowed('resiliencecoaching.fit'), false);
+  assert.equal(instalmentsMockHostAllowed('example.com'), false);
+  assert.equal(instalmentsMockHostAllowed('evil.workers.dev.example'), false);
+  assert.equal(instalmentsModeFromLocation({ search: '?instalments_mock=1', hostname: 'localhost' }, null), 'mock');
+  assert.equal(instalmentsModeFromLocation({ search: '', hostname: '127.0.0.1' }, { getItem: () => '1' }), 'mock');
+  assert.equal(instalmentsModeFromLocation({ search: '?instalments_mock=1', hostname: 'foo.workers.dev' }, null), 'mock');
+  assert.equal(instalmentsModeFromLocation({ search: '?instalments_mock=1', hostname: 'resiliencecoaching.fit' }, { getItem: () => '1' }), 'live');
+  assert.equal(instalmentsModeFromLocation({ search: '?instalments_mock=1' }, null), 'live');
+  assert.equal(instalmentsModeFromLocation({ search: '', hostname: 'localhost' }, { getItem: () => null }), 'live');
 });
 
 test('legacy blocks without payment_options stay upfront-only', () => {
@@ -279,7 +300,23 @@ test('app.js checkout total is labelled total after discount and hooks go throug
   assert.ok(appJs.includes('refreshReserveQuote('));
   assert.ok(appJs.includes('if(result.url)error.url=result.url'));
   assert.ok(appJs.includes('if(result.booking_id)error.booking_id=result.booking_id'));
-  assert.ok(appJs.includes('<dt>Total after discount</dt><dd>${money(b.total_pence)}</dd>'));
+  assert.ok(appJs.includes('<dt>Total after discount</dt><dd class="money">${money(totalPence)}</dd>'));
+  assert.ok(appJs.includes('b.instalment_plan'));
+  assert.ok(appJs.includes('result.quote.plan!==selected'));
+  assert.ok(appJs.includes('id="planQuote" aria-live="polite"'));
+  assert.ok(!appJs.includes('class="discount-field"'));
+  assert.ok(appJs.includes('data-url="${esc(err.url)}"'));
+  assert.ok(appJs.includes("if(url.startsWith('/'))navigate(url);else location.assign(url)"));
+  assert.ok(appJs.includes('${esc(dueAt(p.due_at))}'));
   const html = readFileSync(join(root, 'app/public/index.html'), 'utf8');
   assert.ok(html.includes('type="module" src="/instalments-api.js"'));
+});
+
+test('styles keep radios auto-width, amounts unbreakable and plan rows 44px', () => {
+  const css = readFileSync(join(root, 'app/public/styles.css'), 'utf8');
+  assert.ok(css.includes('input[type=checkbox],input[type=radio]{width:auto'));
+  assert.ok(css.includes('.summary-lines dd.money,.money{white-space:nowrap;overflow-wrap:normal;flex-shrink:0}'));
+  assert.ok(css.includes('.plan-choice{display:flex;gap:10px;align-items:center;margin:0 0 10px;font-weight:400;min-height:44px;cursor:pointer}'));
+  assert.ok(css.includes('.payment-dates li{display:flex;align-items:baseline;justify-content:flex-end;gap:6px;flex-wrap:nowrap;min-width:0;margin:0}'));
+  assert.ok(css.includes('.payment-dates .money{white-space:nowrap;flex-shrink:0}'));
 });
