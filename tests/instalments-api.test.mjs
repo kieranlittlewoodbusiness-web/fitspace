@@ -180,7 +180,7 @@ test('live adapter posts the documented routes, CSRF-ready request, and plan pay
     calls.push({ path, ...opts });
     if (path === '/api/blocks/blk_1') return { block: { id: 'blk_1', payment_options: opts.body.payment_options, totals: { upfront: 10000, weekly: 10000, monthly: 0 } } };
     if (path === '/api/bookings/quote') return { quote: { plan: 'weekly', count: 8, list_total_pence: 10000, discount: null, total_pence: 10000, today_pence: 1250, payments: [] } };
-    if (path === '/api/bookings') return { booking_id: 'bk_1', url: 'https://checkout.stripe.com/c/pay/cs_test' };
+    if (path === '/api/bookings') return { booking: { id: 'bk_1' }, booking_id: 'bk_1', url: '/checkout/bk_1' };
     if (path.startsWith('/api/pt/instalment-plans?')) return { past_due_reminder: { show: false, count: 0, message: '' }, plans: [] };
     if (path === '/api/pt/instalment-plans/bk_1/stop') return { booking_id: 'bk_1', status: 'stopped', voided_payments: 3, refunded_pence: 0 };
     throw new Error('unexpected ' + path);
@@ -201,13 +201,42 @@ test('live adapter posts the documented routes, CSRF-ready request, and plan pay
 
   const booked = await api.createBooking({ block_id: 'blk_1', checkout_token: 'tok', plan: 'weekly', discount_code: null });
   assert.equal(booked.booking_id, 'bk_1');
-  assert.equal(booked.url, 'https://checkout.stripe.com/c/pay/cs_test');
+  assert.equal(booked.booking.id, 'bk_1');
+  assert.equal(booked.url, '/checkout/bk_1');
 
   await api.listInstalmentPlans({ status: 'past_due' });
   assert.equal(calls[3].path, '/api/pt/instalment-plans?status=past_due');
 
   await api.stopInstalmentPlan('bk_1', { request_token: 'r1' });
   assert.deepEqual(calls[4], { path: '/api/pt/instalment-plans/bk_1/stop', method: 'POST', body: { request_token: 'r1' } });
+});
+
+test('live save omits price_pence when upfront is not enabled', async () => {
+  const calls = [];
+  const api = createInstalmentsApi({
+    mode: 'live',
+    request: async (path, opts = {}) => { calls.push(opts.body); return { block: { id: 'blk_1' } }; }
+  });
+  await api.saveBlockPaymentOptions('blk_1', {
+    upfront: { enabled: false, price_pence: 0 },
+    weekly: { enabled: true, amount_pence: 1250, count: 8 },
+    monthly: { enabled: false, amount_pence: 0, count: 2 }
+  }, { lastSessionAt: '2027-01-12T19:00:00Z', body: { title: '8-week strength block' } });
+  assert.equal('price_pence' in calls[0], false);
+  assert.equal(calls[0].payment_options.weekly.enabled, true);
+});
+
+test('booking an upfront plan that is not enabled is PLAN_NOT_OFFERED', async () => {
+  const api = createInstalmentsApi({ mode: 'mock', now: () => new Date('2026-11-23T22:00:00Z') });
+  await api.saveBlockPaymentOptions('blk_example', {
+    upfront: { enabled: false, price_pence: 0 },
+    weekly: { enabled: true, amount_pence: 1250, count: 8 },
+    monthly: { enabled: false, amount_pence: 0, count: 2 }
+  }, { lastSessionAt: '2027-01-12T19:00:00Z' });
+  await assert.rejects(
+    () => api.createBooking({ block_id: 'blk_example', checkout_token: 'tok-up', plan: 'upfront' }),
+    err => err.code === 'PLAN_NOT_OFFERED' && err.status === 409 && friendlyError(err) === ERROR_COPY.PLAN_NOT_OFFERED
+  );
 });
 
 test('live createBooking also reads the current { booking, url } reserve shape', async () => {
@@ -245,6 +274,12 @@ test('app.js checkout total is labelled total after discount and hooks go throug
   assert.ok(appJs.includes('listInstalmentPlans('));
   assert.ok(appJs.includes('stopInstalmentPlan('));
   assert.ok(appJs.includes('Past-due behaviour is configured in your own Stripe account.'));
+  assert.ok(appJs.includes("plan.can_stop&&me.role==='pt'"));
+  assert.ok(appJs.includes('resume-open-checkout'));
+  assert.ok(appJs.includes('refreshReserveQuote('));
+  assert.ok(appJs.includes('if(result.url)error.url=result.url'));
+  assert.ok(appJs.includes('if(result.booking_id)error.booking_id=result.booking_id'));
+  assert.ok(appJs.includes('<dt>Total after discount</dt><dd>${money(b.total_pence)}</dd>'));
   const html = readFileSync(join(root, 'app/public/index.html'), 'utf8');
   assert.ok(html.includes('type="module" src="/instalments-api.js"'));
 });

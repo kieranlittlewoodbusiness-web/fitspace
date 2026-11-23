@@ -24,6 +24,7 @@ registerHooks({
 const TEXT = {
   '/index.html': 'index.html',
   '/app.js': 'app.js',
+  '/instalments-api.js': 'instalments-api.js',
   '/styles.css': 'styles.css',
   '/sitemap.xml': 'sitemap.xml'
 };
@@ -84,6 +85,8 @@ test('gen-upload and the preview entry both list the font and image modules', ()
   }
   assert.ok(entrySrc.includes('./public/sitemap.xml.txt'), 'entry missing sitemap import');
   assert.ok(genSrc.includes('sitemap.xml'), 'gen-upload missing sitemap.xml');
+  assert.ok(entrySrc.includes('./public/instalments-api.js.txt'), 'entry missing instalments-api import');
+  assert.ok(genSrc.includes('instalments-api.js'), 'gen-upload missing instalments-api.js');
   assert.equal(entrySrc.includes('robots.txt.txt') || genSrc.includes('robots.txt.txt') || genSrc.includes("public/robots.txt"), false, 'production robots.txt must not be inlined into the preview upload');
 });
 
@@ -126,6 +129,10 @@ test('preview ASSETS still serves known text assets and unknown paths as the HTM
   const js = await get(mod, '/app.js');
   assert.equal(js.headers.get('content-type'), 'application/javascript; charset=utf-8');
   assert.deepEqual(Buffer.from(await js.arrayBuffer()), readFileSync(join(root, 'app/public/app.js')));
+  const instalments = await get(mod, '/instalments-api.js');
+  assert.equal(instalments.headers.get('content-type'), 'application/javascript; charset=utf-8');
+  assert.equal(instalments.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(Buffer.from(await instalments.arrayBuffer()), readFileSync(join(root, 'app/public/instalments-api.js')));
   const css = await get(mod, '/styles.css');
   assert.equal(css.headers.get('content-type'), 'text/css; charset=utf-8');
   assert.equal(css.headers.get('cache-control'), 'no-store');
@@ -158,6 +165,7 @@ test('preview entry serves robots.txt and X-Robots-Tag noindex on every response
     ['/apple-touch-icon.png', 200, 'image/png'],
     ['/sitemap.xml', 200, 'application/xml'],
     ['/app.js', 200, 'application/javascript'],
+    ['/instalments-api.js', 200, 'application/javascript'],
     ['/no-such-page', 200, 'text/html'],
     ['/api/not-a-real-route', 404, 'application/json']
   ]) {
@@ -185,6 +193,8 @@ test('preview entry restores font and image cache after Worker security headers'
   assert.equal(html.headers.get('cache-control'), 'no-store');
   const js = await get(mod, '/app.js');
   assert.equal(js.headers.get('cache-control'), 'no-store');
+  const instalments = await get(mod, '/instalments-api.js');
+  assert.equal(instalments.headers.get('cache-control'), 'no-store');
   const css = await get(mod, '/styles.css');
   assert.equal(css.headers.get('cache-control'), 'no-store');
   const robots = await get(mod, '/robots.txt');
@@ -194,5 +204,5 @@ test('preview entry restores font and image cache after Worker security headers'
   const api = await get(mod, '/api/not-a-real-route');
   assert.equal(api.status, 404);
   assert.equal(api.headers.get('cache-control'), 'no-store');
-  await font.arrayBuffer(); await image.arrayBuffer(); await favicon.arrayBuffer(); await apple.arrayBuffer(); await sitemap.arrayBuffer(); await html.arrayBuffer(); await js.arrayBuffer(); await css.arrayBuffer(); await robots.arrayBuffer(); await missing.arrayBuffer(); await api.arrayBuffer();
+  await font.arrayBuffer(); await image.arrayBuffer(); await favicon.arrayBuffer(); await apple.arrayBuffer(); await sitemap.arrayBuffer(); await html.arrayBuffer(); await js.arrayBuffer(); await instalments.arrayBuffer(); await css.arrayBuffer(); await robots.arrayBuffer(); await missing.arrayBuffer(); await api.arrayBuffer();
 });
