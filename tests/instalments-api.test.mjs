@@ -7,7 +7,8 @@ import {
   ERROR_COPY, PLAN_LABELS, friendlyError, formatDueAt, splitInstalments,
   parsePaymentOptionsFromForm, compactPaymentOptions, validatePaymentOptions, enabledQuotesFromBlock,
   optionsFromBlock, createInstalmentsApi, instalmentsModeFromLocation, instalmentsMockHostAllowed, planTotals,
-  followCheckoutUrl, MIN_UPFRONT_PENCE, MAX_PRICE_PENCE
+  followCheckoutUrl, MIN_UPFRONT_PENCE, MAX_PRICE_PENCE,
+  attentionReasonLabel, needsAttentionCopy, sortPlansForDisplay, LATE_PAYMENT_HINT
 } from '../app/public/instalments-api.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -196,7 +197,16 @@ test('mock save, quote, booking, list, counts and stop follow the contract shape
   assert.equal(listed.plans[0].payments[2].status, 'failed');
 
   const counts = await api.dashboardCounts();
-  assert.deepEqual(counts.instalments, { past_due_count: 1, active_count: 0 });
+  assert.deepEqual(counts.instalments, { past_due_count: 1, active_count: 0, needs_attention_count: 1 });
+  assert.equal(listed.needs_attention.count, 1);
+  assert.equal(listed.needs_attention.message.includes('no place'), true);
+  const flagged = listed.plans.find(p => p.needs_attention);
+  assert.equal(flagged.booking_id, 'bk_late');
+  assert.equal(flagged.status, 'stopped');
+  assert.equal(flagged.can_stop, false);
+  assert.equal(flagged.booking_status, 'review');
+  assert.equal(flagged.attention_reason, 'late_payment');
+  assert.equal(listed.plans.find(p => p.booking_id === 'bk_example').needs_attention, false);
 
   const stopped = await api.stopInstalmentPlan('bk_example', { request_token: 'stop-1' });
   assert.deepEqual(stopped, { booking_id: 'bk_example', status: 'stopped', voided_payments: 2, refunded_pence: 0 });
@@ -338,7 +348,7 @@ test('app.js checkout total is labelled total after discount and hooks go throug
 
 test('styles keep radios auto-width, amounts unbreakable and plan rows 44px', () => {
   const css = readFileSync(join(root, 'app/public/styles.css'), 'utf8');
-  assert.ok(css.includes('input[type=checkbox],input[type=radio]{width:auto'));
+  assert.ok(css.includes('input[type=checkbox],input[type=radio]{width:17px;height:17px'));
   assert.ok(css.includes('.summary-lines dd.money,.money{white-space:nowrap;overflow-wrap:normal;flex-shrink:0}'));
   assert.ok(css.includes('.plan-choice{display:flex;gap:10px;align-items:center;margin:0 0 10px;font-weight:400;min-height:44px;cursor:pointer}'));
   assert.ok(css.includes('.payment-dates li{display:flex;align-items:baseline;justify-content:flex-end;gap:6px;flex-wrap:nowrap;min-width:0;margin:0}'));
@@ -394,4 +404,29 @@ test('mock createBooking matches the C2 v2.1 response table and unknown plan err
     () => demo.createBooking({ block_id: 'blk_example', checkout_token: 'tok-dw', plan: 'weekly' }),
     err => err.code === 'PAYMENTS_NOT_READY' && err.status === 503 && friendlyError(err) === ERROR_COPY.PAYMENTS_NOT_READY
   );
+});
+
+test('needs_attention copy, late-payment label and flagged plans sort first', () => {
+  assert.equal(attentionReasonLabel('late_payment'), 'Late payment, plan stopped');
+  assert.equal(needsAttentionCopy({ count: 0, message: null }), '');
+  assert.equal(needsAttentionCopy({ count: 2, message: null }), '2 plans need your attention');
+  assert.equal(needsAttentionCopy({ count: 1, message: null }), '1 plan needs your attention');
+  assert.equal(needsAttentionCopy({ count: 1, message: 'Server banner.' }), 'Server banner.');
+  const sorted = sortPlansForDisplay([
+    { booking_id: 'a', needs_attention: false },
+    { booking_id: 'b', needs_attention: true },
+    { booking_id: 'c', needs_attention: false }
+  ]);
+  assert.deepEqual(sorted.map(p => p.booking_id), ['b', 'a', 'c']);
+  const appJs = readFileSync(join(root, 'app/public/app.js'), 'utf8');
+  assert.ok(appJs.includes('Needs attention'));
+  assert.ok(appJs.includes('Late payment, plan stopped'));
+  assert.ok(appJs.includes(LATE_PAYMENT_HINT));
+  assert.ok(appJs.includes('needs_attention_count'));
+  assert.ok(appJs.includes('class="nav-count"'));
+  assert.ok(appJs.includes('plan.can_stop&&me.role===\'pt\'&&!plan.needs_attention'));
+  const css = readFileSync(join(root, 'app/public/styles.css'), 'utf8');
+  assert.ok(css.includes('.pill.attention{'));
+  assert.ok(css.includes('.plan-choice{display:flex;gap:10px;align-items:center;margin:0 0 10px;font-weight:400;min-height:44px;cursor:pointer}'));
+  assert.ok(css.includes('.plan-choice input{margin-top:0;flex-shrink:0;width:17px;height:17px}'));
 });
