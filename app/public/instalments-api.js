@@ -35,7 +35,16 @@ export function friendlyError(err) {
   return 'Something went wrong.';
 }
 
+export function instalmentsMockHostAllowed(host) {
+  const name = String(host || '').toLowerCase();
+  if (name === 'localhost' || name === '[::1]') return true;
+  if (name === '127.0.0.1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(name)) return true;
+  return name.endsWith('.workers.dev');
+}
+
 export function instalmentsModeFromLocation(loc = (typeof location !== 'undefined' ? location : { search: '' }), storage = (typeof localStorage !== 'undefined' ? localStorage : null)) {
+  const host = (loc && loc.hostname) || (typeof location !== 'undefined' ? location.hostname : '');
+  if (!instalmentsMockHostAllowed(host)) return 'live';
   try {
     if (storage && storage.getItem('instalments_mock') === '1') return 'mock';
   } catch (e) { /* private mode */ }
@@ -137,11 +146,26 @@ export function parsePaymentOptionsFromForm(fd) {
   const price = poundsToPence(fd.get('price') ?? fd.get('payment_upfront_price'));
   const weeklyAmount = poundsToPence(fd.get('payment_weekly_amount'));
   const monthlyAmount = poundsToPence(fd.get('payment_monthly_amount'));
-  return {
+  return compactPaymentOptions({
     upfront: { enabled: upfrontOn, price_pence: price == null ? 0 : price },
     weekly: { enabled: weeklyOn, amount_pence: weeklyAmount == null ? 0 : weeklyAmount, count: Number(fd.get('payment_weekly_count') || 0) },
     monthly: { enabled: monthlyOn, amount_pence: monthlyAmount == null ? 0 : monthlyAmount, count: Number(fd.get('payment_monthly_count') || 0) }
-  };
+  });
+}
+
+export function compactPaymentOptions(options) {
+  const out = {};
+  for (const id of PLAN_IDS) {
+    const plan = options?.[id];
+    if (!plan?.enabled) {
+      out[id] = { enabled: false };
+    } else if (id === 'upfront') {
+      out[id] = { enabled: true, price_pence: plan.price_pence };
+    } else {
+      out[id] = { enabled: true, amount_pence: plan.amount_pence, count: plan.count };
+    }
+  }
+  return out;
 }
 
 export function validatePaymentOptions(options, { lastSessionAt, now } = {}) {
@@ -310,6 +334,7 @@ function createMockApi({ now = () => new Date() } = {}) {
   return {
     mode: 'mock',
     async saveBlockPaymentOptions(blockId, payment_options, { lastSessionAt } = {}) {
+      payment_options = compactPaymentOptions(payment_options);
       const check = validatePaymentOptions(payment_options, { lastSessionAt, now: now() });
       if (!check.ok) throw apiError(check.code, { fields: check.fields, status: 400 });
       const id = blockId || SPEC_EXAMPLE.block.id;
@@ -384,6 +409,7 @@ function createLiveApi(request) {
   return {
     mode: 'live',
     async saveBlockPaymentOptions(blockId, payment_options, { lastSessionAt, body } = {}) {
+      payment_options = compactPaymentOptions(payment_options);
       const check = validatePaymentOptions(payment_options, { lastSessionAt });
       if (!check.ok) throw apiError(check.code, { fields: check.fields, status: 400 });
       const payload = { ...(body || {}), payment_options };
@@ -427,9 +453,9 @@ if (typeof window !== 'undefined') {
   window.createInstalmentsApi = createInstalmentsApi;
   window.Instalments = {
     PLAN_IDS, PLAN_LABELS, ERROR_COPY, WEEKLY_COUNT, MONTHLY_COUNT, MIN_INSTALMENT_PENCE,
-    friendlyError, instalmentsModeFromLocation, formatDueAt, poundsToPence,
+    friendlyError, instalmentsModeFromLocation, instalmentsMockHostAllowed, formatDueAt, poundsToPence,
     paymentStatusLabel, planStatusLabel, splitInstalments, addInterval, planTotals,
-    emptyPaymentOptions, optionsFromBlock, parsePaymentOptionsFromForm, validatePaymentOptions,
+    emptyPaymentOptions, optionsFromBlock, parsePaymentOptionsFromForm, compactPaymentOptions, validatePaymentOptions,
     enabledQuotesFromBlock, createInstalmentsApi
   };
 }
