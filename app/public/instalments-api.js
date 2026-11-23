@@ -7,15 +7,18 @@ export const PLAN_LABELS = Object.freeze({ upfront: 'Pay upfront', weekly: 'Pay 
 export const WEEKLY_COUNT = Object.freeze({ min: 2, max: 52 });
 export const MONTHLY_COUNT = Object.freeze({ min: 2, max: 12 });
 export const MIN_INSTALMENT_PENCE = 30;
+export const MIN_UPFRONT_PENCE = 100;
+export const MAX_PRICE_PENCE = 1000000;
 
 // Friendly copy for every contract error code. The UI branches on `code` only.
 export const ERROR_COPY = Object.freeze({
   NO_PAYMENT_OPTION: 'Choose at least one payment option: pay upfront, weekly or monthly.',
-  PLAN_INVALID: 'Check the instalment amount and number of payments. Weekly plans need 2 to 52 payments, monthly plans need 2 to 12, and each instalment must be at least 30p.',
+  PLAN_INVALID: 'Check the amounts and number of payments. An upfront price must be £1 to £10,000, weekly plans need 2 to 52 payments, monthly plans need 2 to 12, and each instalment must be at least 30p.',
   PLAN_EXCEEDS_BLOCK: 'The last payment would fall after the final session. Reduce the number of payments or choose a shorter plan.',
   FIELDS_INVALID: 'Some payment option fields are not valid. Check the highlighted fields and try again.',
   DISCOUNT_INVALID: 'That discount code cannot be used on this booking.',
   AUTH_REQUIRED: 'Sign in to continue.',
+  UNAUTHENTICATED: 'Sign in to continue.',
   FORBIDDEN: 'You do not have permission to do that.',
   NOT_FOUND: 'This page is not available.',
   PLAN_NOT_OFFERED: 'That payment option is not available for this class.',
@@ -33,6 +36,11 @@ export function friendlyError(err) {
   if (err && err.error) return String(err.error);
   if (err && err.message) return String(err.message);
   return 'Something went wrong.';
+}
+
+export function followCheckoutUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  return url.startsWith('/') ? 'in-app' : 'redirect';
 }
 
 export function instalmentsMockHostAllowed(host) {
@@ -177,13 +185,13 @@ export function validatePaymentOptions(options, { lastSessionAt, now } = {}) {
   if (options.upfront?.enabled) {
     const price = options.upfront.price_pence;
     if (typeof price !== 'number' || Number.isNaN(price) || !Number.isInteger(price)) typeFields.push('payment_options.upfront.price_pence');
-    else if (price < 0) fields.push('payment_options.upfront.price_pence');
+    else if (price < MIN_UPFRONT_PENCE || price > MAX_PRICE_PENCE) fields.push('payment_options.upfront.price_pence');
   }
   if (options.weekly?.enabled) {
     const amount = options.weekly.amount_pence;
     const count = options.weekly.count;
     if (typeof amount !== 'number' || Number.isNaN(amount) || !Number.isInteger(amount)) typeFields.push('payment_options.weekly.amount_pence');
-    else if (amount < MIN_INSTALMENT_PENCE) fields.push('payment_options.weekly.amount_pence');
+    else if (amount < MIN_INSTALMENT_PENCE || amount > MAX_PRICE_PENCE) fields.push('payment_options.weekly.amount_pence');
     if (typeof count !== 'number' || Number.isNaN(count) || !Number.isInteger(count)) typeFields.push('payment_options.weekly.count');
     else if (count < WEEKLY_COUNT.min || count > WEEKLY_COUNT.max) fields.push('payment_options.weekly.count');
   }
@@ -191,7 +199,7 @@ export function validatePaymentOptions(options, { lastSessionAt, now } = {}) {
     const amount = options.monthly.amount_pence;
     const count = options.monthly.count;
     if (typeof amount !== 'number' || Number.isNaN(amount) || !Number.isInteger(amount)) typeFields.push('payment_options.monthly.amount_pence');
-    else if (amount < MIN_INSTALMENT_PENCE) fields.push('payment_options.monthly.amount_pence');
+    else if (amount < MIN_INSTALMENT_PENCE || amount > MAX_PRICE_PENCE) fields.push('payment_options.monthly.amount_pence');
     if (typeof count !== 'number' || Number.isNaN(count) || !Number.isInteger(count)) typeFields.push('payment_options.monthly.count');
     else if (count < MONTHLY_COUNT.min || count > MONTHLY_COUNT.max) fields.push('payment_options.monthly.count');
   }
@@ -315,11 +323,12 @@ const SPEC_EXAMPLE = {
   }
 };
 
-function createMockApi({ now = () => new Date() } = {}) {
+function createMockApi({ now = () => new Date(), paymentMode = 'stripe_test' } = {}) {
   const blocks = new Map();
   const quotesByToken = new Map();
   const stopByToken = new Map();
   const plans = new Map();
+  const paidIds = new Set();
   blocks.set(SPEC_EXAMPLE.block.id, { ...SPEC_EXAMPLE.block, payment_options: structuredClone(SPEC_EXAMPLE.options) });
   plans.set(SPEC_EXAMPLE.plan.booking_id, structuredClone(SPEC_EXAMPLE.plan));
   let ids = 1;
@@ -345,6 +354,9 @@ function createMockApi({ now = () => new Date() } = {}) {
       return enabledQuotesFromBlock(stored || block, now());
     },
     async quoteBooking({ block_id, plan, discount_code }) {
+      if (plan != null && plan !== '' && !PLAN_IDS.includes(plan)) {
+        throw apiError('FIELDS_INVALID', { status: 400, fields: ['plan'] });
+      }
       if (discount_code != null && String(discount_code).trim() !== '') {
         throw apiError('DISCOUNT_INVALID', { status: 400 });
       }
@@ -365,12 +377,34 @@ function createMockApi({ now = () => new Date() } = {}) {
       };
     },
     async createBooking({ block_id, checkout_token, plan = 'upfront', discount_code = null }) {
+      if (plan != null && plan !== '' && !PLAN_IDS.includes(plan)) {
+        throw apiError('FIELDS_INVALID', { status: 400, fields: ['plan'] });
+      }
+      const instalment = plan === 'weekly' || plan === 'monthly';
+      if (instalment && paymentMode === 'demo') {
+        throw apiError('PAYMENTS_NOT_READY', { status: 503 });
+      }
       const quoted = await this.quoteBooking({ block_id, plan, discount_code });
-      if (checkout_token && quotesByToken.has(checkout_token)) return quotesByToken.get(checkout_token);
+      if (checkout_token && quotesByToken.has(checkout_token)) {
+        const prev = quotesByToken.get(checkout_token);
+        const id = prev.booking_id || prev.booking?.id;
+        if (id && paidIds.has(id)) return { booking: { id, status: 'paid' }, url: '/booking/' + id };
+        return prev;
+      }
       const booking_id = 'bk_mock_' + (ids++);
-      const result = { booking_id, url: '/checkout/' + booking_id };
+      let result;
+      if (instalment) {
+        result = { booking: { id: booking_id }, booking_id, url: '/checkout/' + booking_id };
+      } else if (paymentMode === 'demo') {
+        result = { booking: { id: booking_id }, url: '/checkout/' + booking_id };
+      } else {
+        result = { url: 'https://checkout.stripe.com/c/pay/mock_' + booking_id, booking_id };
+      }
       quotesByToken.set(checkout_token || booking_id, result);
       return result;
+    },
+    markPaid(bookingId) {
+      paidIds.add(bookingId);
     },
     async listInstalmentPlans({ status = 'all' } = {}) {
       let list = [...plans.values()];
@@ -424,8 +458,8 @@ function createLiveApi(request) {
       return request('/api/bookings/quote', { method: 'POST', body: { block_id, plan, discount_code: discount_code || null } });
     },
     async createBooking({ block_id, checkout_token, plan = 'upfront', discount_code = null }) {
-      // Contract: 201 { booking, booking_id, url } with an in-app /checkout/:id url for every plan.
-      // Tolerant of a missing booking_id when booking.id is present.
+      // C2 v2.1: in-app url (/) is navigated; any other url is a full redirect.
+      // booking_id comes from booking_id or booking.id (demo upfront may omit booking_id).
       const result = await request('/api/bookings', { method: 'POST', body: { block_id, checkout_token, plan, discount_code: discount_code || null } });
       const booking_id = result.booking_id || result.booking?.id;
       return { ...result, booking_id, url: result.url };
@@ -444,16 +478,16 @@ function createLiveApi(request) {
   };
 }
 
-export function createInstalmentsApi({ mode = 'live', request, now } = {}) {
-  if (mode === 'mock') return createMockApi({ now });
+export function createInstalmentsApi({ mode = 'live', request, now, paymentMode } = {}) {
+  if (mode === 'mock') return createMockApi({ now, paymentMode });
   return createLiveApi(request);
 }
 
 if (typeof window !== 'undefined') {
   window.createInstalmentsApi = createInstalmentsApi;
   window.Instalments = {
-    PLAN_IDS, PLAN_LABELS, ERROR_COPY, WEEKLY_COUNT, MONTHLY_COUNT, MIN_INSTALMENT_PENCE,
-    friendlyError, instalmentsModeFromLocation, instalmentsMockHostAllowed, formatDueAt, poundsToPence,
+    PLAN_IDS, PLAN_LABELS, ERROR_COPY, WEEKLY_COUNT, MONTHLY_COUNT, MIN_INSTALMENT_PENCE, MIN_UPFRONT_PENCE, MAX_PRICE_PENCE,
+    friendlyError, followCheckoutUrl, instalmentsModeFromLocation, instalmentsMockHostAllowed, formatDueAt, poundsToPence,
     paymentStatusLabel, planStatusLabel, splitInstalments, addInterval, planTotals,
     emptyPaymentOptions, optionsFromBlock, parsePaymentOptionsFromForm, compactPaymentOptions, validatePaymentOptions,
     enabledQuotesFromBlock, createInstalmentsApi
