@@ -56,8 +56,9 @@ export function parsePaymentOptions(raw) {
   const u = raw.upfront;
   if (u !== undefined) {
     if (!u || typeof u !== 'object' || typeof u.enabled !== 'boolean') throw invalid('Upfront payment option is not valid.', ['payment_options.upfront.enabled']);
-    if (u.price_pence !== undefined && u.price_pence !== null && !isInt(u.price_pence)) throw invalid('Upfront price must be whole pence.', ['payment_options.upfront.price_pence']);
-    out.upfront = { enabled: u.enabled, price_pence: u.price_pence ?? null };
+    // Upfront off: its price is ignored (any value). Upfront on: whole pence, range checked in blockFields.
+    if (u.enabled && u.price_pence !== undefined && u.price_pence !== null && !isInt(u.price_pence)) throw invalid('Upfront price must be whole pence.', ['payment_options.upfront.price_pence']);
+    out.upfront = { enabled: u.enabled, price_pence: u.enabled ? u.price_pence ?? null : null };
   }
   for (const plan of INSTALMENT_PLANS) {
     const p = raw[plan];

@@ -284,7 +284,8 @@ export async function handle(request, env) {
     // POST /api/bookings/:id/checkout). Upfront is unchanged from main.
     const instalments = booking.plan && booking.plan !== 'upfront';
     if (!instalments && isStripe(paymentMode) && booking.status === 'pending') return operation(await write(env, 'prepareCheckout', { bookingId: booking.id, userId: user.id, origin: paymentOrigin, mode: paymentMode, integration }));
-    return json(201, { booking: await viewBooking(db, user, booking.id), booking_id: booking.id, url: (booking.status === 'paid' ? '/booking/' : '/checkout/') + booking.id });
+    // Upfront (demo, or a replay after payment) is main's exact 201 {booking, url}; instalments add booking_id (C2).
+    return json(201, { booking: await viewBooking(db, user, booking.id), ...(instalments ? { booking_id: booking.id } : {}), url: (booking.status === 'paid' ? '/booking/' : '/checkout/') + booking.id });
   }
   // RC-30: read-only quote (write-free; the UI re-quotes on Apply and on plan change).
   if (method === 'POST' && route === '/api/bookings/quote') {

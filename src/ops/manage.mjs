@@ -9,7 +9,7 @@ import { singlePtExistsError } from '../multi-pt.mjs';
 import { viewBlocks } from '../views.mjs';
 import { blockData, branding, email as validEmail, text, MOTIVATIONS } from '../validate.mjs';
 import { noShowInsert } from '../emails.mjs';
-import { INSTALMENT_PLANS, exceedsBlock, fitsBlock, parsePaymentOptions } from '../instalments.mjs';
+import { INSTALMENT_PLANS, MAX_PENCE, exceedsBlock, fitsBlock, parsePaymentOptions } from '../instalments.mjs';
 
 // RC-30 (contract v2 C1): without payment_options the old validator is unchanged. With them,
 // upfront enabled -> price = upfront.price_pence (or price_pence), checked 100..1,000,000 as
@@ -17,7 +17,12 @@ import { INSTALMENT_PLANS, exceedsBlock, fitsBlock, parsePaymentOptions } from '
 // total (a "from" price for listings).
 function blockFields(body, opts) {
   if (!opts) return blockData(body);
-  if (opts.upfront.enabled) return blockData(opts.upfront.price_pence !== null ? { ...body, price_pence: opts.upfront.price_pence } : body);
+  if (opts.upfront.enabled) {
+    // One price rule (contract v2.1): upfront on -> 100..1,000,000 pence, stored as the block price.
+    const price = opts.upfront.price_pence ?? body.price_pence;
+    if (!Number.isInteger(price) || price < 100 || price > MAX_PENCE) throw httpError(400, 'Upfront price must be from £1 to £10,000.', { code: 'PLAN_INVALID', fields: ['payment_options.upfront.price_pence'] });
+    return blockData({ ...body, price_pence: price });
+  }
   const d = blockData({ ...body, price_pence: 100 });
   d.price = Math.min(...INSTALMENT_PLANS.filter(p => opts[p]?.enabled).map(p => opts[p].amount_pence * opts[p].count));
   return d;

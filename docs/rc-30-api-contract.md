@@ -1,4 +1,8 @@
-# RC-30 instalments: API contract (MVP, v2)
+# RC-30 instalments: API contract (MVP, v2.1)
+
+**v2.1 (23 Nov, CR review of Web PR #25, C1 + C2 nits)**:
+- **One price rule** (replaces the contradictory "100p" vs "≥ 0" wording): upfront on → 100–1,000,000 pence; each plan payment ≥ 30p; the stored `price_pence` is the upfront price, or the lowest enabled plan total when upfront is off. See §1.
+- **One response table per mode** for `POST /api/bookings` (§2c). Upfront is byte-for-byte main `96c7f1a`: demo `201 {booking, url:"/checkout/:id"}`, Stripe `200 {url:<Stripe URL>, booking_id}`. Only weekly/monthly use the in-app `201 {booking, booking_id, url:"/checkout/:id"}`. Agreed answer 2 ("in-app url for every plan") is narrowed to instalment plans, because main's upfront Stripe mode already redirects straight to Stripe. The UI must handle both kinds of `url`, and it already does.
 
 **v2 changes (23 Nov, agreed with Web M66 and the PM)**:
 - **C1 block price**: with `payment_options`, `price_pence` is optional. The £1–£10,000 check applies only when upfront is enabled. Without `payment_options`, the old validator is unchanged.
@@ -24,11 +28,16 @@ The contract Web (M66, branch `rc-30-ui`) builds against. Backend implements it 
 
 `POST /api/blocks` (create) and `PUT /api/blocks/:id` (edit). Role: `pt` (own block) or `admin`. These are the existing routes with a new `payment_options` field. If you leave `payment_options` out of a PUT, the current setting stays (old blocks remain upfront-only).
 
-**C1 price rules**:
-- With `payment_options`, top-level `price_pence` is optional.
-- Upfront enabled: `upfront.price_pence` (or `price_pence`) is required, 100–1,000,000, and stored as the block price.
-- Upfront disabled: the block price is stored as the **lowest enabled plan total**, a "from" price for listings, with no 100–1,000,000 check.
-- Without `payment_options`, the old validator is unchanged.
+**Price rule (v2.1, the only one)**:
+
+| Case | Input | Rule | Stored `blocks.price_pence` |
+|---|---|---|---|
+| No `payment_options` | `price_pence` | Old validator, unchanged: whole number 100–1,000,000 (400, no code, as on main) | `price_pence` |
+| Upfront on | `upfront.price_pence`, else top-level `price_pence` | Required, whole number 100–1,000,000; otherwise 400 `PLAN_INVALID` (`fields: ["payment_options.upfront.price_pence"]`); non-integer → 400 `FIELDS_INVALID` | the upfront price |
+| Upfront off | any `price_pence`, top-level or `upfront.price_pence` | **Ignored**; may be omitted, 0 or anything | the lowest enabled plan total (`amount_pence × count`), a "from" price for listings, with no 100–1,000,000 check |
+| Each enabled plan | `amount_pence`, `count` | `amount_pence` 30–1,000,000 per payment; weekly count 2–52, monthly 2–12; otherwise 400 `PLAN_INVALID` | (in `block_payment_plans`) |
+
+A switched-off plan should be sent as `{ "enabled": false }`. That keeps its saved values and turns it off. If values are sent with it, they are validated by the same rules and saved.
 
 Request (other block fields unchanged):
 ```json
@@ -48,7 +57,7 @@ Response `200`/`201`: the block as today plus the saved `payment_options` (the s
 ```
 Validation (400 unless noted):
 - `NO_PAYMENT_OPTION`: nothing is enabled.
-- `PLAN_INVALID`: a bad amount or count. Weekly count is 2–52 and monthly count is 2–12. Each amount must be at least 30p (Stripe's minimum). `upfront.price_pence` must be ≥ 0.
+- `PLAN_INVALID`: a value outside the price rule above. That means an upfront price that is missing or outside 100–1,000,000 while upfront is on, a plan payment under 30p (Stripe's minimum) or over 1,000,000, or a count outside 2–52 (weekly) or 2–12 (monthly).
 - `PLAN_EXCEEDS_BLOCK`: the last payment, (count − 1) intervals from today, would fall after the block's final session.
 - `FIELDS_INVALID`: malformed JSON types, with `fields: ["payment_options.weekly.count"]`.
 
@@ -96,7 +105,24 @@ The discount hook is **reserved**: until RC-8 ships, any non-empty code returns 
 ```
 `plan` defaults to `"upfront"`, so old clients still work.
 
-**C2**: for `weekly`/`monthly` the answer is `201 { "booking": {…}, "booking_id": "bk_…", "url": "/checkout/bk_…" }`. Navigate to the in-app `/checkout/:id` page. Its pay button calls the existing `POST /api/bookings/:id/checkout`, which returns `{url, booking_id}` with the Stripe-hosted URL that takes payment 1. **Upfront is unchanged from main**: demo mode returns `201 {booking, booking_id, url:"/checkout/:id"}` (booking_id added), and Stripe mode returns `200 {url, booking_id}` with the Stripe URL. Either way, `url` starting with `/` means navigate in the app, and anything else means redirect. The booking is confirmed once Stripe reports payment 1, and the return page polls `GET /api/bookings/:id`.
+**Responses (v2.1, one table per mode)**. Upfront rows are exactly main `96c7f1a` (worker/index.mjs:274-278).
+
+*Demo mode* (`PAYMENT_MODE=demo`):
+
+| `plan` | Status | Body keys | `url` |
+|---|---|---|---|
+| `upfront` (or omitted) | `201` | `booking`, `url` | in-app `/checkout/:id` (or `/booking/:id` on a replay of a paid booking) |
+| `weekly` / `monthly` | `503` | `error`, `code: "PAYMENTS_NOT_READY"` | n/a (instalments need Stripe) |
+
+*Stripe mode* (`stripe_test` / `stripe_live`, Connect):
+
+| `plan` | Status | Body keys | `url` |
+|---|---|---|---|
+| `upfront` (or omitted) | `200` | `url`, `booking_id` | the **Stripe-hosted** Checkout URL (Checkout is created in the same call) |
+| `upfront`, replay of an already paid booking | `201` | `booking`, `url` | in-app `/booking/:id` |
+| `weekly` / `monthly` | `201` | `booking`, `booking_id`, `url` | in-app `/checkout/:id` (or `/booking/:id` once paid) |
+
+For weekly/monthly, the `/checkout/:id` page shows `booking.instalment_plan` (C4). Its pay button calls the existing `POST /api/bookings/:id/checkout`, which returns `200 {url, booking_id}` with the Stripe-hosted URL that takes payment 1. Client rule: `url` starting with `/` means navigate in the app; anything else means redirect. The booking is confirmed once Stripe reports payment 1, and the return page polls `GET /api/bookings/:id`.
 
 Idempotency: the same `checkout_token` returns the same booking and Checkout. The quote is re-computed and **snapshotted** at this call.
 

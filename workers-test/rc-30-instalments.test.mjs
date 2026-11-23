@@ -140,8 +140,23 @@ describe('block plan config (API)', () => {
     const upBody = await up.json();
     expect(up.status).toBe(201);
     expect((await db().get('SELECT price_pence,upfront_enabled FROM blocks WHERE id=?', upBody.block?.id ?? upBody.id))).toEqual({ price_pence: 10000, upfront_enabled: 1 });
-    expect((await call(pt, 'POST', '/api/blocks', blockBody({ payment_options: { upfront: { enabled: true, price_pence: 50 }, weekly: { enabled: true, amount_pence: 1250, count: 8 } } }))).status).toBe(400);
-    const codes = async opts => (await (await call(pt, 'POST', '/api/blocks', blockBody({ payment_options: opts }))).json()).code;
+    const codes = async (opts, over = {}) => (await (await call(pt, 'POST', '/api/blocks', blockBody({ ...over, payment_options: opts }))).json()).code;
+    // One price rule: upfront on -> 100..1,000,000 (PLAN_INVALID otherwise, also when missing); plan payments >= 30p each.
+    const weekly = { enabled: true, amount_pence: 1250, count: 8 };
+    expect(await codes({ upfront: { enabled: true, price_pence: 99 }, weekly })).toBe('PLAN_INVALID');
+    expect(await codes({ upfront: { enabled: true, price_pence: 0 }, weekly })).toBe('PLAN_INVALID');
+    expect(await codes({ upfront: { enabled: true, price_pence: 1000001 }, weekly })).toBe('PLAN_INVALID');
+    expect(await codes({ upfront: { enabled: true }, weekly })).toBe('PLAN_INVALID');
+    expect(await codes({ upfront: { enabled: true, price_pence: 12.5 }, weekly })).toBe('FIELDS_INVALID');
+    const viaTop = await call(pt, 'POST', '/api/blocks', blockBody({ price_pence: 100, payment_options: { upfront: { enabled: true }, weekly } }));
+    expect(viaTop.status).toBe(201);
+    expect((await call(pt, 'POST', '/api/blocks', blockBody({ payment_options: { upfront: { enabled: true, price_pence: 1000000 }, weekly } }))).status).toBe(201);
+    // Upfront off: its price is ignored (Web may send 0) and the stored price is the lowest plan total.
+    const off = await call(pt, 'POST', '/api/blocks', blockBody({ price_pence: 5, payment_options: { upfront: { enabled: false, price_pence: 0 }, weekly: { enabled: true, amount_pence: 30, count: 4 } } }));
+    const offBody = await off.json();
+    expect(off.status).toBe(201);
+    expect(await db().get('SELECT price_pence,upfront_enabled FROM blocks WHERE id=?', offBody.block?.id ?? offBody.id)).toEqual({ price_pence: 120, upfront_enabled: 0 });
+    expect(await codes({ upfront: { enabled: false }, weekly: { enabled: true, amount_pence: 29, count: 4 } })).toBe('PLAN_INVALID');
     expect(await codes({ upfront: { enabled: false }, weekly: { enabled: false } })).toBe('NO_PAYMENT_OPTION');
     expect(await codes({ weekly: { enabled: true, amount_pence: 1250, count: 1 } })).toBe('PLAN_INVALID');
     expect(await codes({ weekly: { enabled: true, amount_pence: '12', count: 4 } })).toBe('FIELDS_INVALID');
@@ -216,6 +231,7 @@ describe('booking with a plan', () => {
     const r = await book(s.users[0], s.blockId, { checkout_token: token, plan: 'weekly' });
     const body = await r.json();
     expect(r.status).toBe(201);
+    expect(Object.keys(body).sort()).toEqual(['booking', 'booking_id', 'url']);
     expect(body.url).toBe('/checkout/' + body.booking_id);
     expect(body.booking).toMatchObject({ id: body.booking_id, status: 'pending' });
     expect(body.booking.instalment_plan).toMatchObject({ plan: 'weekly', count: 8, today_pence: 1250, total_pence: 10000, list_total_pence: 10000, discount_pence: 0 });
@@ -249,9 +265,23 @@ describe('booking with a plan', () => {
     const s = await planBlock();
     const calls = mockStripe([['POST', /^\/v1\/checkout\/sessions$/, () => json(200, { id: rid('cs_test_'), url: 'https://checkout.stripe.com/c/pay/up', livemode: false })]]);
     const r = await book(s.users[0], s.blockId, {});
+    const body = await r.json();
     expect(r.status).toBe(200);
-    expect((await r.json()).url).toBe('https://checkout.stripe.com/c/pay/up');
+    expect(Object.keys(body).sort()).toEqual(['booking_id', 'url']);
+    expect(body.url).toBe('https://checkout.stripe.com/c/pay/up');
     expect(calls[0].body.mode).toBe('payment');
+  });
+
+  it('demo mode: upfront is main\'s exact 201 {booking, url:/checkout/:id}; an instalment plan is 503 PAYMENTS_NOT_READY', async () => {
+    const s = await planBlock();
+    const demo = stripeEnv({ PAYMENT_MODE: 'demo' });
+    const r = await call(s.users[0], 'POST', '/api/bookings', { block_id: s.blockId, checkout_token: crypto.randomUUID() }, demo);
+    const body = await r.json();
+    expect(r.status).toBe(201);
+    expect(Object.keys(body).sort()).toEqual(['booking', 'url']);
+    expect(body.url).toBe('/checkout/' + body.booking.id);
+    const p = await call(s.users[1], 'POST', '/api/bookings', { block_id: s.blockId, checkout_token: crypto.randomUUID(), plan: 'weekly' }, demo);
+    expect([p.status, (await p.json()).code]).toEqual([503, 'PAYMENTS_NOT_READY']);
   });
 
   it('checkout: subscription mode, direct charge on the connected account, no application fee, remainder on payment 1', async () => {
