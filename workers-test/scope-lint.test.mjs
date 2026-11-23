@@ -662,14 +662,21 @@ export const ALLOWED = {
     why: "system: RC-30 plan payment 1, booking matched by handleWebhook (session/subscription ids + account)",
     queries: [
       '1e80b702', // UPDATE bookings SET status=CASE WHEN status='pending' AND expires_at>?
-      'cb4a3370', // UPDATE bookings SET paid_at=coalesce(paid_at,?),payment_error=NULL,pla
+      'dbf11c09', // UPDATE bookings SET paid_at=coalesce(paid_at,?),payment_error=NULL,pla
       'f922d3c6', // UPDATE booking_instalments SET status='paid',paid_at=coalesce(paid_at,
+      '9c1b90c9', // UPDATE booking_instalments SET status='void' (late payment 1: CR m2)
     ]
   },
   '../src/ops/instalment-webhooks.mjs::jobInsert': {
     why: "system: RC-30 plan job keyed by a booking matched by handleWebhook",
     queries: [
       'cee85548', // INSERT OR IGNORE INTO stripe_jobs(id,kind,target_id,actor_id,payload,c
+    ]
+  },
+  '../src/ops/instalment-webhooks.mjs::endJob': {
+    why: "system: RC-30 stop job lookup for a booking matched by handleWebhook or a scoped refund",
+    queries: [
+      'd2792bfd', // SELECT id,status,created_at FROM stripe_jobs WHERE kind='plan_stop' AND target_id=?
     ]
   },
   '../src/ops/instalment-webhooks.mjs::anchorStmt': {
@@ -738,6 +745,12 @@ export const ALLOWED = {
     why: "system cron: RC-30 system plan jobs (actor 'stripe') only",
     queries: [
       '5df73031', // SELECT id FROM stripe_jobs WHERE kind IN ('plan_schedule','plan_stop')
+    ]
+  },
+  '../src/stripe-jobs.mjs::runPlanStops': {
+    why: "system: plan stop jobs of a booking the route just refunded through the scoped prepareRefund",
+    queries: [
+      '7c4141d9', // SELECT id FROM stripe_jobs WHERE kind='plan_stop' AND target_id=?
     ]
   },
   '../src/stripe-jobs.mjs::planJob': {

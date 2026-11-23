@@ -13,6 +13,7 @@ import { resolveConnectPtId } from '../connect-status.mjs';
 import { stripeConnection } from './bookings.mjs';
 import { refundWrites } from './webhooks.mjs';
 import { INTERVAL } from '../instalments.mjs';
+import { endJob } from './instalment-webhooks.mjs';
 
 async function actor(db, userId) {
   const user = await db.get('SELECT id,role,pt_id,email,name,must_change_password FROM users WHERE id=? AND active=1', userId);
@@ -121,8 +122,13 @@ export async function prepareRefund(db, { bookingId, userId, token, mode, now = 
   if (booking.refund_status === 'pending') throw httpError(409, 'Stripe is still processing a refund. Wait for its notification before retrying.');
   const id = 'refund:' + booking.id + ':' + token;
   if (await db.get('SELECT id FROM stripe_jobs WHERE id=?', id)) return id;
+  // CR m2: refunding a plan booking also cancels its subscription (system end job, same batch;
+  // the route runs it after the refund, and the cron drain retries it).
+  const planLive = booking.plan && booking.plan !== 'upfront' && booking.stripe_subscription_id && (['active', 'past_due'].includes(booking.plan_status) || booking.status === 'review');
+  const stop = planLive ? await endJob(db, booking.id, { mode, reason: 'refund', now }) : null;
   try {
     await db.batch([
+      ...(stop ? [stop.stmt] : []),
       // Commit-time: no other refund job became active, and the amount is still refundable.
       db.guard('one_active_refund', "NOT EXISTS(SELECT 1 FROM stripe_jobs WHERE target_id=? AND kind='refund' AND status IN ('pending','retry')) AND EXISTS(SELECT 1 FROM bookings WHERE id=? AND refunded_pence<amount_pence AND refund_status<>'pending')", booking.id, booking.id),
       db.stmt("UPDATE bookings SET refund_status='requested',refund_error=NULL WHERE id=?", booking.id),

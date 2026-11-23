@@ -8,7 +8,7 @@ import { MOTIVATIONS } from './validate.mjs';
 import { parseReviewReason } from './cutover.mjs';
 import { connectStatusView } from './connect-status.mjs';
 import { profileMissing, ptProfile, publicContactFields } from './profile.mjs';
-import { optionsConfig, planView, PAST_DUE_MESSAGE } from './instalments.mjs';
+import { optionsConfig, planView, PAST_DUE_MESSAGE, NEEDS_ATTENTION_MESSAGE } from './instalments.mjs';
 import { httpError } from './util.mjs';
 
 // D1 allows at most 100 bound parameters per statement: IN-lists are chunked.
@@ -96,9 +96,12 @@ export async function dashboard(db, user, { paymentMode, integration, now = Date
 
 // ---- RC-30 instalment plans (PT/admin) ----
 const PLAN_LIVE = ['paid', 'review'];
+/** CR m2: payment 1 landed after the hold lapsed (booking in review, no place). The plan was
+ *  stopped automatically; the trainer decides (refund payment 1, or add a place). */
+const needsAttention = b => b.status === 'review';
 const planCounts = bookings => {
   const plans = bookings.filter(b => b.plan && b.plan !== 'upfront' && PLAN_LIVE.includes(b.status) && b.plan_status);
-  return { past_due_count: plans.filter(b => b.plan_status === 'past_due').length, active_count: plans.filter(b => b.plan_status === 'active').length };
+  return { past_due_count: plans.filter(b => b.plan_status === 'past_due').length, active_count: plans.filter(b => b.plan_status === 'active').length, needs_attention_count: plans.filter(needsAttention).length };
 };
 const PLAN_STATUSES = ['active', 'past_due', 'completed', 'stopped'];
 
@@ -117,10 +120,12 @@ export async function instalmentPlans(db, user, { status = 'all' } = {}) {
   const rows = await instalmentRows(db, chosen.map(b => b.id));
   return {
     past_due_reminder: { show: counts.past_due_count > 0, count: counts.past_due_count, message: counts.past_due_count ? PAST_DUE_MESSAGE(counts.past_due_count) : null },
+    needs_attention: { count: counts.needs_attention_count, message: counts.needs_attention_count ? NEEDS_ATTENTION_MESSAGE(counts.needs_attention_count) : null },
     plans: chosen.map(b => ({
       booking_id: b.id, block_id: b.block_id, block_title: b.title,
       customer: { name: b.customer_name, email: b.customer_email },
       created_at: new Date(b.created_at).toISOString(),
+      needs_attention: needsAttention(b), attention_reason: needsAttention(b) ? 'late_payment' : null,
       ...planView(b, rows, { canStop: user.role === 'pt' })
     }))
   };

@@ -121,6 +121,14 @@ export async function drainPlanJobs(env, db, { mode = env.PAYMENT_MODE || 'demo'
   return { ran, pending: rows.length };
 }
 
+/** CR m2: run a booking's pending plan stop jobs now (after a refund). Failures stay for the drain. */
+export async function runPlanStops(env, db, bookingId, opts) {
+  const rows = await db.all("SELECT id FROM stripe_jobs WHERE kind='plan_stop' AND target_id=? AND status IN ('pending','retry') ORDER BY created_at", bookingId);
+  for (const r of rows) {
+    try { await runJob(env, db, r.id, opts); } catch (error) { console.error('RC-30 plan stop failed:', error.code || error.name || 'Error'); }
+  }
+}
+
 /** app/server.cjs paymentOperation(): follow up to 3 chained jobs (account -> onboard). */
 export async function paymentOperation(env, db, id, opts) {
   for (let i = 0; i < 3; i++) {

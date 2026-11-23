@@ -65,8 +65,9 @@ export function parsePaymentOptions(raw) {
     if (p === undefined || p === null) continue;
     const f = k => `payment_options.${plan}.${k}`;
     if (typeof p !== 'object' || typeof p.enabled !== 'boolean') throw invalid('Instalment option is not valid.', [f('enabled')]);
-    const hasValues = p.amount_pence !== undefined && p.amount_pence !== null && p.count !== undefined && p.count !== null;
-    if (!p.enabled && !hasValues) continue; // disabled with nothing to keep
+    // CR m1: a switched-off plan is accepted with any/zero/missing values; they are ignored and the
+    // saved row (if any) is only switched off (planStmts), so it keeps its saved values.
+    if (!p.enabled) continue;
     if (!isInt(p.amount_pence)) throw invalid('Instalment amount must be whole pence.', [f('amount_pence')]);
     if (!isInt(p.count)) throw invalid('Number of payments must be a whole number.', [f('count')]);
     if (p.amount_pence < MIN_PAYMENT_PENCE || p.amount_pence > MAX_PENCE) throw planInvalid(`Each payment must be between £0.30 and £${MAX_PENCE / 100}.`, [f('amount_pence')]);
@@ -145,6 +146,7 @@ export function paymentView(r) {
   return v;
 }
 
+export const NEEDS_ATTENTION_MESSAGE = n => `${n} plan${n === 1 ? '' : 's'} took a first payment after the booking hold had expired, so there is no place. We stopped further payments. Refund the first payment or add a place.`;
 export const PAST_DUE_MESSAGE = n => `${n} plan${n === 1 ? ' has' : 's have'} a failed payment. Stripe retries automatically. Check what happens after the final retry in your Stripe Billing settings (set it to leave the subscription past due).`;
 
 /** Plan fields for one booking row (from scopeFor) and its instalment rows. `canStop`:

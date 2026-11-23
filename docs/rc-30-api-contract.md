@@ -1,4 +1,9 @@
-# RC-30 instalments: API contract (MVP, v2.1)
+# RC-30 instalments: API contract (MVP, v2.2)
+
+**v2.2 (23 Nov, CR review 6030507512 on PR #26; additive only, nothing removed)**:
+- **m1**: a switched-off plan (`{"enabled": false}` with any, zero or missing values) is always accepted. Its values are ignored and its saved values are kept. It is never a 400.
+- **m2** (PM ruling, "cancel stops future payments"): if payment 1 lands after the booking hold expired (booking `status: "review"`, no place), the plan is **stopped at once**. Future payments become `void` and the subscription is cancelled on the coach's account. Payment 1 stays recorded for the trainer to refund. The PT list gains `needs_attention` and `attention_reason` per plan plus a top-level `needs_attention {count, message}`. `GET /api/dashboard` `instalments` gains `needs_attention_count`. A refund of a plan booking (the existing refund action) also cancels its subscription. The refund response is unchanged.
+- **m3**: an invoice beyond payment N (or after a stop) re-arms the stop job if the last one failed or is over 23 h old, and logs an alert. A mismatched `invoice.paid` amount is acknowledged (200) and recorded for review instead of being retried.
 
 **v2.1 (23 Nov, CR review of Web PR #25, C1 + C2 nits)**:
 - **One price rule** (replaces the contradictory "100p" vs "≥ 0" wording): upfront on → 100–1,000,000 pence; each plan payment ≥ 30p; the stored `price_pence` is the upfront price, or the lowest enabled plan total when upfront is off. See §1.
@@ -37,7 +42,7 @@ The contract Web (M66, branch `rc-30-ui`) builds against. Backend implements it 
 | Upfront off | any `price_pence`, top-level or `upfront.price_pence` | **Ignored**; may be omitted, 0 or anything | the lowest enabled plan total (`amount_pence × count`), a "from" price for listings, with no 100–1,000,000 check |
 | Each enabled plan | `amount_pence`, `count` | `amount_pence` 30–1,000,000 per payment; weekly count 2–52, monthly 2–12; otherwise 400 `PLAN_INVALID` | (in `block_payment_plans`) |
 
-A switched-off plan should be sent as `{ "enabled": false }`. That keeps its saved values and turns it off. If values are sent with it, they are validated by the same rules and saved.
+A switched-off plan is sent as `{ "enabled": false }`. Any values sent with it (zero, missing or invalid) are **ignored**, never a 400 (v2.2, m1). It keeps its saved values and is turned off.
 
 Request (other block fields unchanged):
 ```json
@@ -138,8 +143,10 @@ Errors are as for the quote, plus:
 ```json
 { "past_due_reminder": { "show": true, "count": 1,
     "message": "1 plan has a failed payment. Stripe retries automatically. Check what happens after the final retry in your Stripe Billing settings (set it to leave the subscription past due)." },
+  "needs_attention": { "count": 0, "message": null },
   "plans": [ { "booking_id": "bk_…", "block_id": "blk_…", "block_title": "8-week strength block",
     "customer": { "name": "Sam Lee", "email": "sam@example.com" },
+    "needs_attention": false, "attention_reason": null,
     "plan": "weekly", "status": "past_due", "count": 8,
     "list_total_pence": 10000, "discount_pence": 0, "total_pence": 10000,
     "paid_pence": 2500, "remaining_pence": 7500, "created_at": "2026-11-23T22:00:00Z",
@@ -153,6 +160,8 @@ Errors are as for the quote, plus:
 - Plan `status`: `active` (paying on schedule), `past_due` (a payment failed and Stripe is retrying, or retries are used up and the coach needs to decide), `completed` (all paid, billing ended) or `stopped` (the coach stopped future payments).
 - Payment `status`: `paid`, `upcoming`, `failed` (`next_retry_at: null` means Stripe has stopped retrying) or `void` (cancelled by a stop or an expired checkout; show it as "Cancelled").
 - The place is **kept** in every status. Upfront bookings don't appear in this list.
+- **Needs attention (v2.2, m2)**: `needs_attention: true` with `attention_reason: "late_payment"` means payment 1 arrived after the booking hold had expired, so there is **no place** (the booking `status` is `review`). The plan is already `stopped`: future payments are `void` and the subscription is cancelled. The trainer refunds payment 1 (existing refund action) or adds a place. Top-level `needs_attention.count` and `message` drive a dashboard banner, for example: "1 plan took a first payment after the booking hold had expired, so there is no place. We stopped further payments. Refund the first payment or add a place."
+- **Refund (v2.2, m2)**: `POST /api/bookings/:id/refund` on a plan booking refunds payment 1 (as today) **and** cancels the subscription. Future payments become `void`, and the plan becomes `stopped`, or `completed` if every payment was already paid. The refund response is unchanged.
 - `GET /api/bookings/:id` (customer owner, PT or admin), **C4**: plan bookings gain an `instalment_plan` object. It is nested because the booking already has its own `status`.
   ```json
   "instalment_plan": { "plan": "weekly", "status": "active", "count": 8, "today_pence": 1250, "total_pence": 10000,
@@ -160,7 +169,7 @@ Errors are as for the quote, plus:
     "can_stop": true, "payments": [ { "seq": 1, "amount_pence": 1250, "due_at": "…", "status": "paid", "paid_at": "…" } ] }
   ```
   `can_stop` is present for the PT and admin but true **only for the owning PT** on an active or past-due plan; admins always see false. Customers get **no** `can_stop` key. Upfront bookings have no `instalment_plan`.
-- `GET /api/dashboard` gains `instalments: { "past_due_count": 1, "active_count": 3 }` for the reminder badge.
+- `GET /api/dashboard` gains `instalments: { "past_due_count": 1, "active_count": 3, "needs_attention_count": 0 }` for the reminder badges.
 
 **Stop future payments**: `POST /api/pt/instalment-plans/:booking_id/stop`. Role: **the owning `pt` only** (PM ruling). Admin and customers get 403 `FORBIDDEN`, and another PT's booking is 404 `NOT_FOUND`. In the list, `can_stop` is false for admin.
 ```json
@@ -196,8 +205,8 @@ Idempotency: the same `request_token` returns the same result. Errors:
 These arrive on the existing Connect endpoint and are verified, deduped by `event.id` in the same D1 batch, and safe out of order:
 - `checkout.session.completed` and `checkout.session.async_payment_succeeded` (confirm the booking and attach the end-after-N schedule).
 - `checkout.session.expired` (release the place, void the payments).
-- `invoice.created` (overrun guard).
-- `invoice.paid`.
+- `invoice.created` (overrun guard: an invoice beyond payment N, or any billing invoice after a stop or a late payment 1, (re-)arms the stop job and logs an alert).
+- `invoice.paid` (an amount that doesn't match the payment is answered 200 and recorded for review, not marked paid).
 - `invoice.payment_failed`.
 - `invoice.voided`.
 - `invoice.marked_uncollectible`.

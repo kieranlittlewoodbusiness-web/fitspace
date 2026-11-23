@@ -13,7 +13,7 @@ import { write } from '../src/writer.mjs';
 import { currentUser, requireUser, checkMutation } from '../src/auth.mjs';
 import { verifyWebhook } from '../src/stripe-webhook.mjs';
 import { viewBooking, scopeFor } from '../src/scope.mjs';
-import { drainPlanJobs, paymentOperation, runJob } from '../src/stripe-jobs.mjs';
+import { drainPlanJobs, paymentOperation, runJob, runPlanStops } from '../src/stripe-jobs.mjs';
 import { stripe, validatePlatformKey } from '../src/stripe.mjs';
 import { credentialStatus, open as openCredential, loadCredential, encryptionConfigured } from '../src/pt-credentials.mjs';
 import { dashboard, instalmentPlans } from '../src/views.mjs';
@@ -308,7 +308,9 @@ export async function handle(request, env) {
     if (sub[2] === 'refund') {
       requireUser(user, ['pt', 'admin']);
       requireStripeMode();
-      return operation(await write(env, 'prepareRefund', { bookingId, userId: user.id, token: body.request_token, mode: paymentMode }));
+      const refunded = await operation(await write(env, 'prepareRefund', { bookingId, userId: user.id, token: body.request_token, mode: paymentMode }));
+      await runPlanStops(env, db, bookingId, stripeOpts); // CR m2: a plan refund also cancels the subscription
+      return refunded;
     }
     // cancel: owner customer, owning PT or admin (scopeFor inside the ops)
     requireUser(user);
