@@ -364,8 +364,13 @@ export const ALLOWED = {
       '24050166', // SELECT min(starts_epoch) starts FROM class_sessions WHERE block_id=?
       '54748dd4', // SELECT b.*,p.published pt_published FROM blocks b JOIN pts p ON p.id=b
       '5bec359e', // UPDATE bookings SET status='expired' WHERE status='pending' AND expire
-      '5dc7a5b6', // SELECT id FROM bookings WHERE block_id=? AND customer_id=? AND (status
       'a5475576', // INSERT INTO bookings(id,block_id,customer_id,reference,status,amount_p
+      '166f1ad0', // INSERT INTO bookings(id,block_id,customer_id,reference,status,amount_p
+      '23fa2915', // SELECT max(starts_epoch) ends FROM class_sessions WHERE block_id=?
+      '8aab89d9', // INSERT INTO booking_instalments(id,booking_id,seq,amount_pence,due_at,
+      'af820cf7', // SELECT amount_pence,count FROM block_payment_plans WHERE block_id=? AN
+      'c12d489c', // SELECT id,status FROM bookings WHERE block_id=? AND customer_id=? AND 
+      'c12d489c', // (same lookup again after a unique-index race, for the C3 url)
     ]
   },
   '../src/ops/bookings.mjs::reserve>replay': {
@@ -392,7 +397,7 @@ export const ALLOWED = {
     why: "insert with pt_id = caller PT (admin: named PT); replay goes through scopeFor().blockByCreateKey",
     queries: [
       '4fe10a82', // SELECT id FROM pts WHERE id=? AND deleted_at IS NULL
-      'ba9eb617', // INSERT INTO blocks(id,pt_id,title,description,venue,price_pence,capaci
+      '7c91022e', // INSERT INTO blocks(id,pt_id,title,description,venue,price_pence,capaci
     ]
   },
   '../src/ops/manage.mjs::markAttendance': {
@@ -435,6 +440,10 @@ export const ALLOWED = {
       'cd72c8af', // UPDATE bookings SET status='cancelled' WHERE id=? AND status='pending'
       'd5168560', // SELECT status,result FROM stripe_jobs WHERE id=?
       'dfd197e6', // UPDATE stripe_jobs SET status='done',result=?,last_error=NULL WHERE id
+      '2cb7e25c', // SELECT plan_count,(SELECT count(*) FROM booking_instalments WHERE book
+      '3376837f', // UPDATE bookings SET plan_status=? WHERE id=? AND plan_status IS NOT NU
+      '71f59b84', // UPDATE bookings SET stripe_schedule_id=coalesce(stripe_schedule_id,?) 
+      '9c1b90c9', // UPDATE booking_instalments SET status='void',next_retry_at=NULL WHERE 
     ]
   },
   '../src/ops/stripe-jobs.mjs::expireStmt': {
@@ -612,6 +621,7 @@ export const ALLOWED = {
     why: "the scoping layer: sessions of a booking already scoped",
     queries: [
       'd90f8090', // SELECT s.*,coalesce(a.status,'unmarked') attendance_status FROM class_
+      '2e093b11', // SELECT * FROM booking_instalments WHERE booking_id=? ORDER BY seq
     ]
   },
   '../src/stripe-jobs.mjs::runJob': {
@@ -638,6 +648,7 @@ export const ALLOWED = {
     queries: [
       '8fc10288', // SELECT id,block_id,starts_at,starts_epoch,duration_minutes FROM class_
       '9cfde015', // SELECT block_id, sum(status='paid') paid, sum(status='paid' OR (status
+      '28b6e6b7', // SELECT block_id,plan,enabled,amount_pence,count FROM block_payment_pla
     ]
   },
   '../src/views.mjs::withSessions': {
@@ -645,6 +656,100 @@ export const ALLOWED = {
     queries: [
       '709e41c6', // SELECT * FROM class_sessions WHERE block_id IN (?*)
       '87b914fc', // SELECT booking_id,session_id,status FROM attendance WHERE booking_id I
+    ]
+  },
+  '../src/ops/instalment-webhooks.mjs::confirmFirst': {
+    why: "system: RC-30 plan payment 1, booking matched by handleWebhook (session/subscription ids + account)",
+    queries: [
+      '1e80b702', // UPDATE bookings SET status=CASE WHEN status='pending' AND expires_at>?
+      'cb4a3370', // UPDATE bookings SET paid_at=coalesce(paid_at,?),payment_error=NULL,pla
+      'f922d3c6', // UPDATE booking_instalments SET status='paid',paid_at=coalesce(paid_at,
+    ]
+  },
+  '../src/ops/instalment-webhooks.mjs::jobInsert': {
+    why: "system: RC-30 plan job keyed by a booking matched by handleWebhook",
+    queries: [
+      'cee85548', // INSERT OR IGNORE INTO stripe_jobs(id,kind,target_id,actor_id,payload,c
+    ]
+  },
+  '../src/ops/instalment-webhooks.mjs::anchorStmt': {
+    why: "system: RC-30 plan anchor for a booking matched by handleWebhook",
+    queries: [
+      '6bcad31a', // UPDATE bookings SET plan_anchor=coalesce(plan_anchor,?) WHERE id=?
+    ]
+  },
+  '../src/ops/instalment-webhooks.mjs::planCheckoutReleased': {
+    why: "system: RC-30 void payments of a booking matched by handleWebhook",
+    queries: [
+      '270c8b57', // UPDATE booking_instalments SET status='void' WHERE booking_id=? AND st
+    ]
+  },
+  '../src/ops/instalment-webhooks.mjs::planEvent': {
+    why: "system: RC-30 Stripe-signed invoice/subscription events, matched by subscription id/metadata + connected account",
+    queries: [
+      '20b42ab7', // SELECT * FROM booking_instalments WHERE stripe_invoice_id=?
+      '23733da0', // UPDATE booking_instalments SET status='failed',attempts=max(attempts,?
+      '3a83ef8c', // UPDATE bookings SET stripe_subscription_id=coalesce(stripe_subscriptio
+      '40f6ea8e', // UPDATE booking_instalments SET status='paid',paid_at=coalesce(paid_at,
+      '55a25e61', // SELECT paid_at FROM booking_instalments WHERE booking_id=? AND seq=1 A
+      '683874ff', // UPDATE booking_instalments SET status='failed',next_retry_at=NULL,stri
+      '8d08914e', // UPDATE bookings SET plan_status=CASE WHEN (SELECT count(*) FROM bookin
+      '9c1b90c9', // UPDATE booking_instalments SET status='void',next_retry_at=NULL WHERE 
+      'a91f0003', // SELECT * FROM booking_instalments WHERE booking_id=? AND seq=?
+      'b54dd1e4', // UPDATE booking_instalments SET stripe_invoice_id=coalesce(stripe_invoi
+      'cf25d2f8', // SELECT * FROM bookings WHERE (stripe_subscription_id IS NOT NULL AND s
+      'd044e477', // UPDATE booking_instalments SET status='void',next_retry_at=NULL,stripe
+    ]
+  },
+  '../src/ops/instalment-webhooks.mjs::planStatusStmt': {
+    why: "system: RC-30 plan status recompute for a booking matched by handleWebhook",
+    queries: [
+      'dde9daac', // UPDATE bookings SET plan_status=CASE WHEN plan_status='stopped' THEN '
+    ]
+  },
+  '../src/ops/manage.mjs::planStmts': {
+    why: "RC-30 plan rows for a block id first returned by scopeFor().block() / created by the caller",
+    queries: [
+      '66694588', // INSERT INTO block_payment_plans(block_id,plan,enabled,amount_pence,cou
+      '998a64d2', // UPDATE block_payment_plans SET enabled=0,updated_at=? WHERE block_id=?
+    ]
+  },
+  '../src/ops/stripe-jobs.mjs::planCheckoutData': {
+    why: "RC-30 payment rows of a booking first returned by scopeFor().booking() (customer-own)",
+    queries: [
+      'ef26295e', // SELECT seq,amount_pence FROM booking_instalments WHERE booking_id=? OR
+    ]
+  },
+  '../src/ops/stripe-jobs.mjs::prepareStopPlan': {
+    why: "RC-30 stop job for a booking first returned by scopeFor().booking() (owning PT only)",
+    queries: [
+      '17e84501', // EXISTS(SELECT 1 FROM bookings WHERE id=? AND plan_status IN ('active',
+      'c782b604', // SELECT id FROM stripe_jobs WHERE id=?
+      'e088103e', // SELECT id FROM stripe_jobs WHERE target_id=? AND kind='plan_stop' AND 
+    ]
+  },
+  '../src/public.mjs::quoteBlock': {
+    why: "public: published block of a published, live PT (read-only quote)",
+    queries: [
+      '61047300', // SELECT b.* FROM blocks b JOIN pts p ON p.id=b.pt_id WHERE b.id=? AND b
+    ]
+  },
+  '../src/stripe-jobs.mjs::drainPlanJobs': {
+    why: "system cron: RC-30 system plan jobs (actor 'stripe') only",
+    queries: [
+      '5df73031', // SELECT id FROM stripe_jobs WHERE kind IN ('plan_schedule','plan_stop')
+    ]
+  },
+  '../src/stripe-jobs.mjs::planJob': {
+    why: "system: booking of a persisted plan job (target_id set by a scoped op or a matched webhook)",
+    queries: [
+      '502b6985', // SELECT id,plan,plan_count,plan_status,stripe_account_id,stripe_subscri
+    ]
+  },
+  '../src/views.mjs::instalmentRows': {
+    why: "child rows for booking ids first returned by scopeFor().bookings()",
+    queries: [
+      '63970d30', // SELECT * FROM booking_instalments WHERE booking_id IN (?*)
     ]
   }
 };
@@ -658,6 +763,7 @@ export const NONLITERAL = {
   '../src/db.mjs::createDb>stmt::ident:sql': 'the D1 wrapper itself: every caller is linted at its own call site',
   '../src/ops/password-reset.mjs::requestReset::dynamic::0067fc82': '${limited} is a constant rate-limit predicate built in the same function; values are bound',
   '../src/ops/password-reset.mjs::requestReset::dynamic::aa8ad8ff': '${limited} is a constant rate-limit predicate built in the same function; values are bound',
+  '../src/ops/stripe-jobs.mjs::prepareStopPlan::ident:activeSql': 'local constant literal in the same function (plan_stop jobs by booking id already scoped)',
   '../src/ops/stripe-jobs.mjs::prepareRefund::ident:activeSql': 'local constant literal in the same function (stripe_jobs by booking id already scoped)',
   '../src/ops/manage.mjs::deletePt::ident:noUpcomingSql': 'local constant literal in the same file (upcoming paid/pending bookings for this pt_id)',
   '../src/ops/manage.mjs::deletePt::ident:upcomingBookingsSql': 'local constant literal in the same file (upcoming paid/pending bookings for this pt_id)',

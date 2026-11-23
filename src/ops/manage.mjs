@@ -9,6 +9,32 @@ import { singlePtExistsError } from '../multi-pt.mjs';
 import { viewBlocks } from '../views.mjs';
 import { blockData, branding, email as validEmail, text, MOTIVATIONS } from '../validate.mjs';
 import { noShowInsert } from '../emails.mjs';
+import { INSTALMENT_PLANS, exceedsBlock, fitsBlock, parsePaymentOptions } from '../instalments.mjs';
+
+// RC-30 (contract v2 C1): without payment_options the old validator is unchanged. With them,
+// upfront enabled -> price = upfront.price_pence (or price_pence), checked 100..1,000,000 as
+// before; upfront disabled -> price is not validated and is stored as the lowest enabled plan
+// total (a "from" price for listings).
+function blockFields(body, opts) {
+  if (!opts) return blockData(body);
+  if (opts.upfront.enabled) return blockData(opts.upfront.price_pence !== null ? { ...body, price_pence: opts.upfront.price_pence } : body);
+  const d = blockData({ ...body, price_pence: 100 });
+  d.price = Math.min(...INSTALMENT_PLANS.filter(p => opts[p]?.enabled).map(p => opts[p].amount_pence * opts[p].count));
+  return d;
+}
+/** RC-30: every enabled plan's last payment, projected from now, must fall on or before the final session. */
+function checkPlansFit(opts, sessions, now) {
+  if (!opts) return;
+  const last = sessions[sessions.length - 1].starts_epoch;
+  for (const plan of INSTALMENT_PLANS) if (opts[plan]?.enabled && !fitsBlock(plan, opts[plan].count, last, now)) throw exceedsBlock();
+}
+/** RC-30: upsert the block's plan rows (a plan sent without values is only switched off). */
+function planStmts(db, blockId, opts, now) {
+  if (!opts) return [];
+  return INSTALMENT_PLANS.map(plan => opts[plan]
+    ? db.stmt('INSERT INTO block_payment_plans(block_id,plan,enabled,amount_pence,count,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(block_id,plan) DO UPDATE SET enabled=excluded.enabled,amount_pence=excluded.amount_pence,count=excluded.count,updated_at=excluded.updated_at', blockId, plan, opts[plan].enabled ? 1 : 0, opts[plan].amount_pence, opts[plan].count, now)
+    : db.stmt('UPDATE block_payment_plans SET enabled=0,updated_at=? WHERE block_id=? AND plan=?', now, blockId, plan));
+}
 
 /** Re-read the acting user inside the Writer (never trust a stale role or pt_id). */
 async function actor(db, userId) {
@@ -76,8 +102,11 @@ export async function createBlock(db, { userId, body, now = Date.now() }) {
   const scope = scopeFor(db, user);
   // A PT always creates for their own pt_id; body.pt_id is honoured for admins only.
   const ptId = user.role === 'pt' ? user.pt_id : text(body.pt_id, 'PT', 80);
-  const d = blockData(body), id = uid();
-  const hash = payloadHash({ ptId, ...d, sessions: d.sessions.map(x => [x.starts_at, x.duration_minutes]) });
+  const opts = parsePaymentOptions(body.payment_options);
+  const d = blockFields(body, opts), id = uid();
+  checkPlansFit(opts, d.sessions, now);
+  // RC-30: payment options join the hash only when sent, so existing create keys keep their hash.
+  const hash = payloadHash({ ptId, ...d, sessions: d.sessions.map(x => [x.starts_at, x.duration_minutes]), ...(opts ? { payment_options: opts } : {}) });
   const replay = async () => {
     const existing = await scope.blockByCreateKey(key);
     if (existing === undefined) throw httpError(409, 'This request key was already used. Refresh the page and try again.', { code: 'CREATE_KEY_REUSED' });
@@ -89,8 +118,9 @@ export async function createBlock(db, { userId, body, now = Date.now() }) {
   if (!(await db.get('SELECT id FROM pts WHERE id=? AND deleted_at IS NULL', ptId))) throw httpError(404, 'Trainer not found.');
   try {
     await db.batch([
-      db.stmt('INSERT INTO blocks(id,pt_id,title,description,venue,price_pence,capacity,published,created_at,create_key,create_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)', id, ptId, d.title, d.description, d.venue, d.price, d.capacity, d.published, now, key, hash),
+      db.stmt('INSERT INTO blocks(id,pt_id,title,description,venue,price_pence,capacity,published,created_at,create_key,create_hash,upfront_enabled) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', id, ptId, d.title, d.description, d.venue, d.price, d.capacity, d.published, now, key, hash, opts && !opts.upfront.enabled ? 0 : 1),
       ...sessionRows(db, id, d.sessions),
+      ...planStmts(db, id, opts, now),
       audit(db, user.id, 'block_created', id, now)
     ]);
   } catch (error) {
@@ -117,7 +147,9 @@ export async function updateBlock(db, { userId, blockId, body, now = Date.now() 
   const scope = scopeFor(db, user);
   const block = await scope.block(blockId);
   if (!block) throw httpError(404, 'Class not found.');
-  const d = blockData(body);
+  const opts = parsePaymentOptions(body.payment_options);
+  const d = blockFields(body, opts);
+  checkPlansFit(opts, d.sessions, now);
   const hasBookings = (await db.get('SELECT count(*) n FROM bookings WHERE block_id=?', block.id)).n;
   const old = await db.all('SELECT starts_at,duration_minutes FROM class_sessions WHERE block_id=? ORDER BY starts_epoch', block.id);
   if (hasBookings && JSON.stringify(old) !== JSON.stringify(d.sessions.map(s => ({ starts_at: s.starts_at, duration_minutes: s.duration_minutes })))) throw httpError(409, 'Dates are locked once bookings exist. Create a new block for a different schedule.');
@@ -130,7 +162,9 @@ export async function updateBlock(db, { userId, blockId, body, now = Date.now() 
     db.guard('capacity_not_below_holds', "(SELECT count(*) FROM bookings WHERE block_id=? AND status IN ('paid','pending'))<=?", block.id, d.capacity)
   ];
   if (!hasBookings) writes.push(db.guard('dates_unlocked', 'NOT EXISTS(SELECT 1 FROM bookings WHERE block_id=?)', block.id));
-  writes.push(scope.updateBlockStmt(block.id, { title: d.title, description: d.description, venue: d.venue, price_pence: d.price, capacity: d.capacity, published: d.published, closed: body.closed ? 1 : 0, updated_at: now }));
+  // RC-30: bookings keep their own price snapshot, so price/plan edits only affect new bookings.
+  writes.push(scope.updateBlockStmt(block.id, { title: d.title, description: d.description, venue: d.venue, price_pence: d.price, capacity: d.capacity, published: d.published, closed: body.closed ? 1 : 0, updated_at: now, ...(opts ? { upfront_enabled: opts.upfront.enabled ? 1 : 0 } : {}) }));
+  writes.push(...planStmts(db, block.id, opts, now));
   if (!hasBookings) writes.push(db.stmt('DELETE FROM class_sessions WHERE block_id=?', block.id), ...sessionRows(db, block.id, d.sessions));
   writes.push(audit(db, user.id, 'block_updated', block.id, now));
   try {
@@ -139,7 +173,7 @@ export async function updateBlock(db, { userId, blockId, body, now = Date.now() 
     if (isGuardFailure(error)) throw httpError(409, 'Bookings changed while you were saving. Refresh and try again.', { code: 'BOOKINGS_CHANGED', retryable: true, retry_after_seconds: 1 });
     throw error;
   }
-  return { ok: true };
+  return { ok: true, block: (await viewBlocks(db, [await scope.block(block.id)], now))[0] };
 }
 
 export async function markAttendance(db, { userId, bookingId, sessionId, status, emailMode = 'preview', now = Date.now() }) {
