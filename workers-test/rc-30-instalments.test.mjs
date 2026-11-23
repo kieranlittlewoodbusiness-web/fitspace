@@ -4,6 +4,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { env } from 'cloudflare:workers';
 import worker from '../worker/index.mjs';
 import { drainPlanJobs } from '../src/stripe-jobs.mjs';
+import { prepareStopPlan } from '../src/ops/stripe-jobs.mjs';
 import { planAmounts, seqFromPeriod, parsePaymentOptions, addMonths, dueAt } from '../src/instalments.mjs';
 import { db, seedBlock, seedUser, insertBooking, jsonRequest, getRequest, signedWebhook, ORIGIN } from './helpers.mjs';
 import nodeCrypto from 'node:crypto';
@@ -490,5 +491,189 @@ describe('stop (trainer only) and authz', () => {
     // An upfront booking has no instalment_plan.
     const up = await insertBooking({ blockId: s.blockId, customerId: s.users[2].id });
     expect((await (await get(s.users[2], '/api/bookings/' + up)).json()).booking).not.toHaveProperty('instalment_plan');
+  });
+});
+
+// ---- CR review 6030507512 (PR #26 at 11622e59): m1-m4 ----
+const refundRoute = ['POST', /^\/v1\/refunds$/, info => json(200, { id: rid('re_test_'), status: 'pending', amount: Number(info.body.amount), currency: 'gbp', payment_intent: info.body.payment_intent, livemode: false })];
+
+describe('CR m1: switched-off plans are never a 400', () => {
+  const blockBody = (over = {}) => ({ create_key: crypto.randomUUID(), title: 'Strength block', description: 'Eight weeks', venue: 'Studio', capacity: 5, sessions: [{ starts_at: '2099-01-05T18:30', duration_minutes: 60 }], ...over });
+  it('accepts {enabled:false} with zero, missing or junk values, ignores them, and keeps saved values', async () => {
+    expect(parsePaymentOptions({ weekly: { enabled: false, amount_pence: 0, count: 0 }, monthly: { enabled: false, amount_pence: 'x' } })).toEqual({ upfront: { enabled: true, price_pence: null }, weekly: null, monthly: null });
+    const s = await seedBlock({ customers: 0 });
+    const pt = await seedUser({ role: 'pt', ptId: s.ptId });
+    for (const off of [{ enabled: false, amount_pence: 0, count: 0 }, { enabled: false }, { enabled: false, amount_pence: 'x', count: -1 }]) {
+      const r = await call(pt, 'POST', '/api/blocks', blockBody({ payment_options: { upfront: { enabled: true, price_pence: 10000 }, weekly: off, monthly: off } }));
+      expect(r.status).toBe(201);
+      const b = await r.json();
+      expect(await db().all('SELECT plan FROM block_payment_plans WHERE block_id=?', b.block?.id ?? b.id)).toEqual([]);
+    }
+    // Saved weekly 1250 x 8, then switched off with zeros: values kept, enabled 0.
+    const created = await (await call(pt, 'POST', '/api/blocks', blockBody({ payment_options: { upfront: { enabled: true, price_pence: 10000 }, weekly: { enabled: true, amount_pence: 1250, count: 8 } } }))).json();
+    const id = created.block?.id ?? created.id;
+    const put = await call(pt, 'PUT', '/api/blocks/' + id, blockBody({ payment_options: { upfront: { enabled: true, price_pence: 10000 }, weekly: { enabled: false, amount_pence: 0, count: 0 } } }));
+    expect(put.status).toBe(200);
+    expect(await db().get('SELECT enabled,amount_pence,count FROM block_payment_plans WHERE block_id=? AND plan=?', id, 'weekly')).toEqual({ enabled: 0, amount_pence: 1250, count: 8 });
+    // Turning everything off is still NO_PAYMENT_OPTION (an off plan's values never count as on).
+    const none = await call(pt, 'POST', '/api/blocks', blockBody({ payment_options: { upfront: { enabled: false }, weekly: { enabled: false, amount_pence: 1250, count: 8 } } }));
+    expect([none.status, (await none.json()).code]).toEqual([400, 'NO_PAYMENT_OPTION']);
+  });
+});
+
+describe('CR m2: late payment 1 and refunds cancel the plan', () => {
+  it('payment 1 after the hold lapsed: review, plan stopped, future payments void, subscription cancelled once, PT flagged', async () => {
+    const { s, id, sub, completed } = await openPlanCheckout();
+    await db().run('UPDATE bookings SET expires_at=? WHERE id=?', Date.now() - 1000, id);
+    const calls = mockStripe([...scheduleRoutes(), cancelRoute]);
+    expect((await hook(completed())).status).toBe(200);
+    expect(await bookingRow(id)).toMatchObject({ status: 'review', plan_status: 'stopped', stripe_subscription_id: sub, stripe_schedule_id: null });
+    expect((await instRows(id)).map(r => r.status)).toEqual(['paid', 'void', 'void']);
+    expect(calls.filter(c => c.path.startsWith('/v1/subscription_schedules'))).toHaveLength(0);
+    const del = calls.filter(c => c.method === 'DELETE');
+    expect(del).toHaveLength(1);
+    expect(del[0]).toMatchObject({ path: '/v1/subscriptions/' + sub, account: s.account, idempotency: 'end:' + id });
+    expect(await db().get("SELECT action FROM audit_log WHERE id=?", 'late:' + id)).toEqual({ action: 'instalment_late_payment_stopped' });
+    expect((await db().get("SELECT count(*) n FROM email_outbox WHERE kind='confirmation' AND dedupe_key LIKE ?", '%' + id + '%')).n).toBe(0);
+    // Payment 1's own invoice.paid redelivered later: still stopped, no second cancel.
+    expect((await hook(evt('invoice.paid', invoice(s, id, { sub, seq: 1, reason: 'subscription_create' }), { account: s.account }))).status).toBe(200);
+    expect(calls.filter(c => c.method === 'DELETE')).toHaveLength(1);
+    // Flag on the PT list and dashboard.
+    const list = await (await get(s.pt, '/api/pt/instalment-plans')).json();
+    const mine = list.plans.find(p => p.booking_id === id);
+    expect(mine).toMatchObject({ needs_attention: true, attention_reason: 'late_payment', status: 'stopped', can_stop: false });
+    expect(list.needs_attention.count).toBe(1);
+    expect(list.needs_attention.message).toMatch(/no place/);
+    expect((await (await get(s.pt, '/api/dashboard')).json()).instalments).toMatchObject({ needs_attention_count: 1 });
+    // An on-time plan is not flagged.
+    const ok = await planBooking(s, s.users[1].id);
+    expect((await (await get(s.pt, '/api/pt/instalment-plans')).json()).plans.find(p => p.booking_id === ok.id)).toMatchObject({ needs_attention: false, attention_reason: null });
+  });
+
+  it('a renewal invoice after a late stop re-triggers the stop (halted plan)', async () => {
+    const s = await planBlock();
+    const { id, sub } = await planBooking(s, s.users[0].id, { count: 3, planStatus: 'stopped' });
+    await db().run("UPDATE bookings SET status='review' WHERE id=?", id);
+    const calls = mockStripe([cancelRoute]);
+    expect((await hook(evt('invoice.created', { ...invoice(s, id, { sub, seq: 2 }), status: 'draft' }, { account: s.account }))).status).toBe(200);
+    expect(calls.filter(c => c.method === 'DELETE' && c.path === '/v1/subscriptions/' + sub)).toHaveLength(1);
+  });
+
+  it('refunding a plan booking also cancels the subscription (idempotent); an upfront refund does not', async () => {
+    const s = await planBlock();
+    const { id, sub } = await planBooking(s, s.users[0].id, { count: 4, paid: 2 });
+    const calls = mockStripe([refundRoute, cancelRoute]);
+    const token = crypto.randomUUID();
+    const r = await call(s.pt, 'POST', `/api/bookings/${id}/refund`, { request_token: token });
+    const body = await r.json();
+    expect(r.status).toBe(200);
+    expect(body).toMatchObject({ ok: true, refund_status: 'pending' });
+    expect(body).not.toHaveProperty('voided_payments');
+    const del = calls.filter(c => c.method === 'DELETE');
+    expect(del).toHaveLength(1);
+    expect(del[0]).toMatchObject({ path: '/v1/subscriptions/' + sub, account: s.account, idempotency: 'end:' + id });
+    expect((await instRows(id)).map(x => x.status)).toEqual(['paid', 'paid', 'void', 'void']);
+    expect((await bookingRow(id)).plan_status).toBe('stopped');
+    // The same refund request again (main answers 409 while Stripe's refund is pending): no second refund, no second cancel.
+    expect([200, 409]).toContain((await call(s.pt, 'POST', `/api/bookings/${id}/refund`, { request_token: token })).status);
+    expect(calls.filter(c => c.method === 'DELETE')).toHaveLength(1);
+    expect(calls.filter(c => c.path === '/v1/refunds')).toHaveLength(1);
+    // Upfront refund: no subscription call.
+    const up = await insertBooking({ blockId: s.blockId, customerId: s.users[1].id, mode: 'stripe_test', extra: { stripe_account_id: s.account, stripe_routing: 'connected', payment_intent: rid('pi_test_') } });
+    expect((await call(s.pt, 'POST', `/api/bookings/${up}/refund`, { request_token: crypto.randomUUID() })).status).toBe(200);
+    expect(calls.filter(c => c.method === 'DELETE')).toHaveLength(1);
+  });
+
+  it('a failed refund-time cancel stays for the cron drain', async () => {
+    const s = await planBlock();
+    const { id, sub } = await planBooking(s, s.users[0].id, { count: 3 });
+    mockStripe([refundRoute, ['DELETE', /^\/v1\/subscriptions\//, () => json(500, { error: { message: 'fixture outage' } })]]);
+    expect((await call(s.pt, 'POST', `/api/bookings/${id}/refund`, { request_token: crypto.randomUUID() })).status).toBe(200);
+    expect((await db().get('SELECT status,actor_id FROM stripe_jobs WHERE id=?', 'end:' + id))).toEqual({ status: 'retry', actor_id: 'stripe' });
+    vi.restoreAllMocks();
+    const calls = mockStripe([cancelRoute]);
+    await drainPlanJobs(stripeEnv(), db(), { limit: 100 });
+    expect(calls.some(c => c.method === 'DELETE' && c.path === '/v1/subscriptions/' + sub)).toBe(true);
+    expect((await bookingRow(id)).plan_status).toBe('stopped');
+  });
+});
+
+describe('CR m3 + m4: end job re-arm, over-N alert, mutation killers', () => {
+  const overrun = (s, id, sub, seq = 3) => evt('invoice.created', { ...invoice(s, id, { sub, seq }), status: 'draft' }, { account: s.account });
+  const seedEndJob = (id, status, createdAt) => db().run("INSERT INTO stripe_jobs(id,kind,target_id,actor_id,payload,status,created_at) VALUES(?,?,?,'stripe',?,?,?)", 'end:' + id, 'plan_stop', id, JSON.stringify({ mode: 'stripe_test', system: true }), status, createdAt);
+
+  it('m4: an invoice beyond N on a completed plan (schedule attached) stops billing and alerts', async () => {
+    const s = await planBlock();
+    const { id, sub } = await planBooking(s, s.users[0].id, { count: 2, paid: 2, planStatus: 'completed', schedule: 'sub_sched_done' });
+    const calls = mockStripe([cancelRoute]);
+    const alert = vi.spyOn(console, 'error');
+    expect((await hook(overrun(s, id, sub))).status).toBe(200);
+    const del = calls.filter(c => c.method === 'DELETE');
+    // The subscription cancel, then the draft overrun invoice is deleted too.
+    expect(del.map(c => c.idempotency)).toEqual(['end:' + id, 'end:' + id + ':invoice']);
+    expect(del[1].path).toMatch(/^\/v1\/invoices\/in_/);
+    expect(del[0]).toMatchObject({ path: '/v1/subscriptions/' + sub, idempotency: 'end:' + id });
+    expect(alert.mock.calls.some(a => String(a[0]).startsWith('RC-30 ALERT: billing past plan_count') && a.includes(id) && a.includes(3))).toBe(true);
+    expect(await db().get("SELECT action FROM audit_log WHERE target_id=? AND action LIKE 'instalment_overrun:%'", id)).toEqual({ action: 'instalment_overrun:seq=3' });
+    expect((await bookingRow(id)).plan_status).toBe('completed');
+  });
+
+  it('m3: a FAILED end job is re-armed with a fresh id (and alerted); a done one is not re-run', async () => {
+    const s = await planBlock();
+    const { id, sub } = await planBooking(s, s.users[0].id, { count: 2, paid: 2, planStatus: 'completed', schedule: 'sub_sched_x' });
+    await seedEndJob(id, 'failed', Date.now() - 60000);
+    const calls = mockStripe([cancelRoute]);
+    const alert = vi.spyOn(console, 'error');
+    expect((await hook(overrun(s, id, sub))).status).toBe(200);
+    const del = calls.filter(c => c.method === 'DELETE' && c.path.startsWith('/v1/subscriptions/'));
+    expect(del).toHaveLength(1);
+    expect(del[0].idempotency).toMatch(new RegExp('^end:' + id + ':[0-9a-f-]{8,}$'));
+    expect(alert.mock.calls.some(a => String(a[0]).startsWith('RC-30 ALERT: re-armed the stop job') && a.includes(id))).toBe(true);
+    expect((await db().get('SELECT status FROM stripe_jobs WHERE id=?', del[0].idempotency)).status).toBe('done');
+    // Another extra invoice: the latest (done) job is reused, so no new Stripe call.
+    expect((await hook(overrun(s, id, sub, 4))).status).toBe(200);
+    expect(calls.filter(c => c.method === 'DELETE' && c.path.startsWith('/v1/subscriptions/'))).toHaveLength(1);
+  });
+
+  it('m3: a pending end job older than 23h is re-armed; a fresh pending one is reused', async () => {
+    const s = await planBlock();
+    const a = await planBooking(s, s.users[0].id, { count: 2, paid: 2, planStatus: 'completed', schedule: 'sub_sched_a' });
+    await seedEndJob(a.id, 'pending', Date.now() - 24 * 3600000);
+    let calls = mockStripe([cancelRoute]);
+    expect((await hook(overrun(s, a.id, a.sub))).status).toBe(200);
+    expect(calls.filter(c => c.method === 'DELETE')[0].idempotency).toMatch(new RegExp('^end:' + a.id + ':'));
+    vi.restoreAllMocks();
+    const b = await planBooking(s, s.users[1].id, { count: 2, paid: 2, planStatus: 'completed', schedule: 'sub_sched_b' });
+    await seedEndJob(b.id, 'retry', Date.now() - 3600000);
+    calls = mockStripe([cancelRoute]);
+    expect((await hook(overrun(s, b.id, b.sub))).status).toBe(200);
+    expect(calls.filter(c => c.method === 'DELETE')[0].idempotency).toBe('end:' + b.id);
+    expect((await db().all("SELECT id FROM stripe_jobs WHERE target_id=? AND kind='plan_stop'", b.id))).toHaveLength(1);
+  });
+
+  it('m4: invoice.paid with the wrong amount is not marked paid (audit + 200, recorded once)', async () => {
+    const s = await planBlock();
+    const { id, sub } = await planBooking(s, s.users[0].id, { count: 3, amount: 1000, paid: 1 });
+    mockStripe([cancelRoute]);
+    const e = evt('invoice.paid', invoice(s, id, { sub, seq: 2, amount: 999 }), { account: s.account });
+    expect((await hook(e)).status).toBe(200);
+    expect((await instRows(id)).map(r => r.status)).toEqual(['paid', 'upcoming', 'upcoming']);
+    expect(await db().get("SELECT action FROM audit_log WHERE id=?", 'mismatch:' + e.id)).toEqual({ action: 'instalment_amount_mismatch:seq=2:paid=999:due=1000' });
+    expect((await hook(e)).body).toMatchObject({ duplicate: true });
+    // The right amount is then accepted.
+    expect((await hook(evt('invoice.paid', invoice(s, id, { sub, seq: 2, amount: 1000 }), { account: s.account }))).status).toBe(200);
+    expect((await instRows(id)).map(r => r.status)).toEqual(['paid', 'paid', 'upcoming']);
+  });
+
+  it('m4: the op itself refuses admin and customers (not just the route)', async () => {
+    const s = await planBlock();
+    const admin = await seedUser({ role: 'admin' });
+    const { id } = await planBooking(s, s.users[0].id);
+    for (const userId of [admin.id, s.users[0].id]) {
+      const err = await prepareStopPlan(db(), { bookingId: id, userId, token: crypto.randomUUID(), mode: 'stripe_test' }).catch(e => e);
+      expect([err.status, err.code]).toEqual([403, 'FORBIDDEN']);
+    }
+    expect(await db().get("SELECT count(*) n FROM stripe_jobs WHERE target_id=?", id)).toEqual({ n: 0 });
+    expect(typeof (await prepareStopPlan(db(), { bookingId: id, userId: s.pt.id, token: crypto.randomUUID(), mode: 'stripe_test' }))).toBe('string');
   });
 });
