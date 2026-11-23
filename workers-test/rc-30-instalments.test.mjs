@@ -331,7 +331,8 @@ describe('webhooks', () => {
     expect(update.body).toMatchObject({ end_behavior: 'cancel', proration_behavior: 'none', 'phases[0][duration][interval]': 'week', 'phases[0][duration][interval_count]': '3' });
     const dup = await hook(e);
     expect(dup).toMatchObject({ status: 200, body: { duplicate: true } });
-    expect(calls).toHaveLength(2);
+    // schedule create + update, then the first-invoice read (QA 7116489818); the duplicate adds nothing.
+    expect(calls.map(c => c.method + ' ' + c.path.replace(/\/(sub_sched|in)_[^/]+$/, '/:id'))).toEqual(['POST /v1/subscription_schedules', 'POST /v1/subscription_schedules/:id', 'GET /v1/invoices/:id']);
     expect((await db().get("SELECT count(*) n FROM email_outbox WHERE kind='confirmation' AND dedupe_key LIKE ?", '%' + id + '%')).n).toBe(1);
   });
 
@@ -675,5 +676,88 @@ describe('CR m3 + m4: end job re-arm, over-N alert, mutation killers', () => {
     }
     expect(await db().get("SELECT count(*) n FROM stripe_jobs WHERE target_id=?", id)).toEqual({ n: 0 });
     expect(typeof (await prepareStopPlan(db(), { bookingId: id, userId: s.pt.id, token: crypto.randomUUID(), mode: 'stripe_test' }))).toBe('string');
+  });
+});
+
+// ---- QA FAIL 7116489818: plan refund 409 (payment_intent never recorded) ----
+const firstInvoice = ({ id, pi, start = 1900000000, payments = true }) => ({ id, object: 'invoice', currency: 'gbp', livemode: false, status: 'paid', billing_reason: 'subscription_create',
+  payments: { object: 'list', data: payments ? [{ object: 'invoice_payment', status: 'paid', payment: { type: 'payment_intent', payment_intent: pi } }] : [] },
+  lines: { data: [{ period: { start, end: start } }, { period: { start, end: start + WEEK } }] } });
+const invoiceGet = inv => ['GET', /^\/v1\/invoices\/in_/, info => json(200, typeof inv === 'function' ? inv(info) : inv)];
+
+describe('QA 7116489818: plan refund through the real webhook path', () => {
+  it('book weekly -> checkout -> signed webhook -> PT refund: 200, payment 1 refunded, subscription cancelled, rest void, stopped', async () => {
+    // Fixture: a connected PT and a block offering weekly 3 x £10 (same as every webhook test). The booking,
+    // checkout, payment and refund all go through the real routes: no SQL on bookings or instalments.
+    const s = await planBlock({ weekly: { amount: 1000, count: 3 } });
+    const { account, pt } = s;
+    const customer = s.users[0];
+    const booked = await book(customer, s.blockId, { plan: 'weekly' });
+    expect(booked.status).toBe(201);
+    const { booking_id: id } = await booked.json();
+    const cs = rid('cs_test_'), sub = rid('sub_test_'), inv = rid('in_test_'), pi = rid('pi_test_'), start = Math.floor(Date.now() / 1000);
+    const calls = mockStripe([
+      ['POST', /^\/v1\/checkout\/sessions$/, () => json(200, { id: cs, url: 'https://checkout.stripe.com/c/pay/qa', livemode: false })],
+      ...scheduleRoutes('sub_sched_QA'), invoiceGet(firstInvoice({ id: inv, pi, start })), refundRoute, cancelRoute
+    ]);
+    expect((await call(customer, 'POST', `/api/bookings/${id}/checkout`)).status).toBe(200);
+    // Stripe's real session payload: invoice is an id string (not expanded), no payment_intent.
+    const completed = evt('checkout.session.completed', { id: cs, object: 'checkout.session', mode: 'subscription', payment_status: 'paid', status: 'complete', amount_total: 1000, currency: 'gbp',
+      metadata: { booking_id: id, pt_id: s.ptId }, subscription: sub, customer: 'cus_test_qa', invoice: inv, payment_intent: null }, { account });
+    expect((await hook(completed)).status).toBe(200);
+    const after = await db().get('SELECT status,plan_status,payment_intent,plan_anchor,stripe_subscription_id FROM bookings WHERE id=?', id);
+    expect(after).toEqual({ status: 'paid', plan_status: 'active', payment_intent: pi, plan_anchor: start, stripe_subscription_id: sub });
+    const get = calls.find(c => c.method === 'GET');
+    expect(get).toMatchObject({ path: '/v1/invoices/' + inv, account });
+    // Duplicate delivery and payment 1's own invoice.paid (no payments list in the event) change nothing.
+    expect((await hook(completed)).body).toMatchObject({ duplicate: true });
+    const paid1 = { id: inv, object: 'invoice', currency: 'gbp', customer: 'cus_test_qa', amount_paid: 1000, billing_reason: 'subscription_create', status: 'paid',
+      parent: { subscription_details: { subscription: sub, metadata: { booking_id: id } } }, lines: { data: [{ period: { start, end: start + WEEK } }] } };
+    expect((await hook(evt('invoice.paid', paid1, { account }))).status).toBe(200);
+    expect(await db().get('SELECT payment_intent,plan_anchor FROM bookings WHERE id=?', id)).toEqual({ payment_intent: pi, plan_anchor: start });
+    expect(calls.filter(c => c.method === 'GET')).toHaveLength(1);
+    // The PT refund.
+    const r = await call(pt, 'POST', `/api/bookings/${id}/refund`, { request_token: crypto.randomUUID() });
+    const body = await r.json();
+    expect(r.status).toBe(200);
+    expect(body).toMatchObject({ ok: true, refund_status: 'pending' });
+    const refund = calls.find(c => c.path === '/v1/refunds');
+    expect(refund).toMatchObject({ account, body: { payment_intent: pi, amount: '1000' } });
+    const del = calls.filter(c => c.method === 'DELETE');
+    expect(del).toHaveLength(1);
+    expect(del[0]).toMatchObject({ path: '/v1/subscriptions/' + sub, account, idempotency: 'end:' + id });
+    expect((await instRows(id)).map(x => x.status)).toEqual(['paid', 'void', 'void']);
+    expect((await bookingRow(id)).plan_status).toBe('stopped');
+  });
+
+  it('an expanded session invoice sets both directly (no Stripe read); invoice.paid first is never overwritten', async () => {
+    const { id, completed } = await openPlanCheckout();
+    const calls = mockStripe([...scheduleRoutes(), invoiceGet(() => { throw new Error('must not read the invoice'); })]);
+    const inv = firstInvoice({ id: rid('in_'), pi: 'pi_test_expanded', start: 1900000000 });
+    expect((await hook(completed({ invoice: inv }))).status).toBe(200);
+    expect(await db().get('SELECT payment_intent,plan_anchor FROM bookings WHERE id=?', id)).toEqual({ payment_intent: 'pi_test_expanded', plan_anchor: 1900000000 });
+    expect(calls.filter(c => c.method === 'GET')).toHaveLength(0);
+    // Second booking: invoice.paid (with payments) arrives first, then the session: no read, value kept.
+    const b = await openPlanCheckout();
+    vi.restoreAllMocks();
+    const calls2 = mockStripe([...scheduleRoutes(), invoiceGet(firstInvoice({ id: 'in_x', pi: 'pi_test_other' }))]);
+    const early = { ...invoice(b.s, b.id, { sub: b.sub, seq: 1, reason: 'subscription_create' }), payments: { data: [{ payment: { payment_intent: 'pi_test_first' } }] } };
+    expect((await hook(evt('invoice.paid', early, { account: b.s.account }))).status).toBe(200);
+    expect((await hook(b.completed())).status).toBe(200);
+    expect((await db().get('SELECT payment_intent FROM bookings WHERE id=?', b.id)).payment_intent).toBe('pi_test_first');
+    expect(calls2.filter(c => c.method === 'GET')).toHaveLength(0);
+  });
+
+  it('the invoice read retries until Stripe records the payment (cron drain), and never writes null', async () => {
+    const { id, completed } = await openPlanCheckout();
+    mockStripe([...scheduleRoutes(), invoiceGet(info => firstInvoice({ id: info.path.split('/').pop(), pi: null, payments: false }))]);
+    expect((await hook(completed())).status).toBe(200);
+    expect(await db().get('SELECT payment_intent,plan_anchor FROM bookings WHERE id=?', id)).toEqual({ payment_intent: null, plan_anchor: null });
+    expect((await db().get('SELECT status FROM stripe_jobs WHERE id=?', 'invoice:' + id)).status).toBe('retry');
+    vi.restoreAllMocks();
+    mockStripe([invoiceGet(info => firstInvoice({ id: info.path.split('/').pop(), pi: 'pi_test_later', start: 1900000123 }))]);
+    await drainPlanJobs(stripeEnv(), db(), { limit: 100 });
+    expect(await db().get('SELECT payment_intent,plan_anchor FROM bookings WHERE id=?', id)).toEqual({ payment_intent: 'pi_test_later', plan_anchor: 1900000123 });
+    expect((await db().get('SELECT stripe_payment_intent p FROM booking_instalments WHERE booking_id=? AND seq=1', id)).p).toBe('pi_test_later');
   });
 });
