@@ -228,6 +228,12 @@ export async function completeJob(db, { id, result, now = Date.now() }) {
   } else if (row.kind === 'cancel') {
     writes.push(db.stmt("UPDATE bookings SET status='cancelled' WHERE id=? AND status='pending'", row.target_id));
     out = { ok: true };
+  } else if (row.kind === 'plan_invoice') {
+    // QA 7116489818: never overwrite a value already set (by invoice.paid) and never write null.
+    if (!/^pi_/.test(result.payment_intent || '')) throw httpError(409, 'Stripe did not return the first payment.', { retryable: true });
+    writes.push(db.stmt('UPDATE bookings SET payment_intent=coalesce(payment_intent,?),plan_anchor=coalesce(plan_anchor,?) WHERE id=?', result.payment_intent, Number.isFinite(result.period_start) ? result.period_start : null, row.target_id));
+    writes.push(db.stmt('UPDATE booking_instalments SET stripe_payment_intent=coalesce(stripe_payment_intent,?) WHERE booking_id=? AND seq=1', result.payment_intent, row.target_id));
+    out = { ok: true, payment_intent: result.payment_intent };
   } else if (row.kind === 'plan_schedule') {
     // RC-30: the schedule that ends billing after the final payment.
     writes.push(db.stmt('UPDATE bookings SET stripe_schedule_id=coalesce(stripe_schedule_id,?) WHERE id=?', result.id ?? null, row.target_id));

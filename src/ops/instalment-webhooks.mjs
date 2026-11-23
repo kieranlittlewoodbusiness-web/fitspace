@@ -9,7 +9,7 @@
 // Failed payments keep the booking (PM default): only the payment row and plan_status change.
 import { confirmationInsert } from '../emails.mjs';
 import { httpError, uid } from '../util.mjs';
-import { seqFromPeriod } from '../instalments.mjs';
+import { invoicePaymentIntent, invoicePeriodStart, seqFromPeriod } from '../instalments.mjs';
 
 const idOf = v => (typeof v === 'object' && v ? v.id : v) || null;
 const jobInsert = (db, id, kind, bookingId, payload, now) =>
@@ -60,17 +60,25 @@ async function confirmFirst(db, row, { sub, customer, invoice, pi, anchor, event
          stripe_payment_intent=coalesce(stripe_payment_intent,?),next_retry_at=NULL,failure=NULL,event_time=max(event_time,?)
        WHERE booking_id=? AND seq=1`, now, invoice ?? null, pi ?? null, eventTime, row.id)
   ];
+  // QA 7116489818: payment 1's PaymentIntent (needed for refunds) and the plan anchor come from
+  // the first invoice. When this event did not carry them, a system job retrieves the invoice on
+  // the connected account (outside the Writer) and fills them in with coalesce (never nulls).
+  const jobs = [];
+  if (!pi && !row.payment_intent && /^in_/.test(invoice || '')) {
+    writes.push(jobInsert(db, 'invoice:' + row.id, 'plan_invoice', row.id, { mode, system: true, invoice }, now));
+    jobs.push('invoice:' + row.id);
+  }
   if (late) {
     writes.push(db.stmt("UPDATE booking_instalments SET status='void',next_retry_at=NULL WHERE booking_id=? AND status IN ('upcoming','failed')", row.id));
     const end = await endJob(db, row.id, { mode, reason: 'late_payment', now });
     if (!row.paid_at) writes.push(db.stmt('INSERT OR IGNORE INTO audit_log VALUES(?,?,?,?,?)', 'late:' + row.id, null, 'instalment_late_payment_stopped', row.id, now));
     writes.push(end.stmt);
-    return { writes, jobs: [end.id] };
+    return { writes, jobs: [...jobs, end.id] };
   }
   writes.push(jobInsert(db, 'schedule:' + row.id, 'plan_schedule', row.id, { mode, system: true }, now));
   if (!row.paid_at) writes.push(await confirmationInsert(db, row.id, { emailMode, now }));
   writes.push(planStatusStmt(db, row.id));
-  return { writes, jobs: ['schedule:' + row.id] };
+  return { writes, jobs: ['schedule:' + row.id, ...jobs] };
 }
 
 /** checkout.session.completed / async_payment_succeeded for a plan (mode=subscription). */
@@ -78,7 +86,9 @@ export async function planCheckoutPaid(db, row, obj, { mode, emailMode, eventTim
   const sub = idOf(obj.subscription), customer = idOf(obj.customer), invoice = idOf(obj.invoice);
   if (!/^sub_/.test(sub || '') || !/^cus_/.test(customer || '')) throw httpError(400, 'Missing subscription reference.');
   if (row.stripe_subscription_id && row.stripe_subscription_id !== sub) throw httpError(400, 'Subscription reference mismatch.');
-  return confirmFirst(db, row, { sub, customer, invoice, eventTime, mode, emailMode, now });
+  // An expanded first invoice carries the PaymentIntent and the billing period directly.
+  const inv = typeof obj.invoice === 'object' && obj.invoice ? obj.invoice : null;
+  return confirmFirst(db, row, { sub, customer, invoice, pi: invoicePaymentIntent(inv), anchor: invoicePeriodStart(inv), eventTime, mode, emailMode, now });
 }
 
 /** Expired/failed plan checkout: its upcoming payments become void once the booking is released. */
@@ -118,8 +128,7 @@ export async function planEvent(db, { event, mode, matches, emailMode, now }) {
 
   // ---- invoices ----
   if (obj.currency && obj.currency !== 'gbp') throw httpError(400, 'Invoice currency mismatch.');
-  const line = obj.lines?.data?.find(l => l?.period?.start) || null;
-  const periodStart = line?.period?.start ?? obj.period_start;
+  const periodStart = invoicePeriodStart(obj);
   const bound = obj.id ? await db.get('SELECT * FROM booking_instalments WHERE stripe_invoice_id=?', obj.id) : null;
   if (bound && bound.booking_id !== row.id) throw httpError(400, 'Invoice belongs to another booking.');
   let seq;
@@ -134,7 +143,7 @@ export async function planEvent(db, { event, mode, matches, emailMode, now }) {
     if (!seq) throw httpError(400, 'Invoice period does not match this plan.');
   }
   const inst = seq <= row.plan_count ? await db.get('SELECT * FROM booking_instalments WHERE booking_id=? AND seq=?', row.id, seq) : null;
-  const pi = idOf(obj.payments?.data?.find(p => p?.payment?.payment_intent)?.payment?.payment_intent) || idOf(obj.payment_intent);
+  const pi = invoicePaymentIntent(obj);
   const dueMs = Number.isFinite(periodStart) ? periodStart * 1000 : null;
 
   // Billing must end after the final payment: an invoice beyond N, or any billing invoice after a

@@ -138,6 +138,23 @@ export function seqFromPeriod(plan, anchorSec, periodStartSec) {
   return k + 1;
 }
 
+const refId = v => (typeof v === 'object' && v ? v.id : v) || null;
+/** QA 7116489818: the PaymentIntent that paid an invoice. 2026-09-30.endive lists it under
+ *  invoice.payments[].payment.payment_intent (expand[]=payments); older shapes had invoice.payment_intent. */
+export function invoicePaymentIntent(inv) {
+  if (!inv || typeof inv !== 'object') return null;
+  const id = refId(inv.payments?.data?.find(p => p?.payment?.payment_intent)?.payment?.payment_intent) || refId(inv.payment_intent);
+  return /^pi_/.test(id || '') ? id : null;
+}
+/** The billing period start (unix s) of an invoice: its subscription line (a period that spans
+ *  time) first, then any line with a period, then invoice.period_start. */
+export function invoicePeriodStart(inv) {
+  const lines = inv?.lines?.data || [];
+  const line = lines.find(l => l?.period?.start && l.period.end > l.period.start) || lines.find(l => l?.period?.start);
+  const v = line?.period?.start ?? inv?.period_start;
+  return Number.isFinite(v) ? v : null;
+}
+
 /** API view of one instalment row. */
 export function paymentView(r) {
   const v = { seq: r.seq, amount_pence: r.amount_pence, due_at: iso(r.due_at), status: r.status };

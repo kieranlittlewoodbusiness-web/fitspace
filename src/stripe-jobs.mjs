@@ -6,7 +6,7 @@ import { stripe } from './stripe.mjs';
 import { loadCredential } from './pt-credentials.mjs';
 import { write } from './writer.mjs';
 import { errorExtras, httpError, isStripe, live } from './util.mjs';
-import { INTERVAL } from './instalments.mjs';
+import { INTERVAL, invoicePaymentIntent, invoicePeriodStart } from './instalments.mjs';
 
 const validRedirect = (value, hosts) => { try { const u = new URL(value); return u.protocol === 'https:' && hosts.includes(u.hostname); } catch { return false; } };
 
@@ -46,7 +46,7 @@ export async function runJob(env, db, id, { mode, integration }) {
         if (session.status === 'open') await stripe(env, '/v1/checkout/sessions/' + encodeURIComponent(fresh.checkout_session) + '/expire', {}, { ...opts, account, idempotency: id });
       }
       result = {};
-    } else if (row.kind === 'plan_schedule' || row.kind === 'plan_stop') {
+    } else if (row.kind === 'plan_schedule' || row.kind === 'plan_stop' || row.kind === 'plan_invoice') {
       result = await planJob(env, db, row, id, opts);
     } else {
       result = await stripe(env, p.path, p.data, { ...opts, account: p.account, idempotency: id, v2: p.v2, method: p.method || 'POST' });
@@ -76,10 +76,20 @@ export async function runJob(env, db, id, { mode, integration }) {
  *    cancelled/missing subscription counts as done. A system end-guard job may also delete a
  *    draft invoice for a payment beyond the plan (best effort). */
 async function planJob(env, db, row, id, opts) {
-  const b = await db.get('SELECT id,plan,plan_count,plan_status,stripe_account_id,stripe_subscription_id,stripe_schedule_id FROM bookings WHERE id=?', row.target_id);
+  const b = await db.get('SELECT id,plan,plan_count,plan_status,payment_intent,plan_anchor,stripe_account_id,stripe_subscription_id,stripe_schedule_id FROM bookings WHERE id=?', row.target_id);
   if (!b || !b.plan || b.plan === 'upfront') throw httpError(404, 'Instalment plan not found.', { code: 'NOT_FOUND' });
   const account = b.stripe_account_id || undefined;
   const p = JSON.parse(row.payload);
+  if (row.kind === 'plan_invoice') {
+    // QA 7116489818: payment 1's PaymentIntent + period start from the first invoice (read only).
+    if (b.payment_intent && b.plan_anchor) return { payment_intent: b.payment_intent, period_start: b.plan_anchor };
+    if (!/^in_/.test(p.invoice || '')) throw httpError(409, 'No first invoice recorded for this plan.');
+    const inv = await stripe(env, '/v1/invoices/' + encodeURIComponent(p.invoice) + '?expand%5B%5D=payments', null, { ...opts, account, method: 'GET' });
+    const pi = invoicePaymentIntent(inv);
+    if (inv.id !== p.invoice || inv.currency !== 'gbp') throw httpError(409, 'Stripe returned a different invoice.', { retryable: true, stripeSucceeded: true });
+    if (!pi) throw httpError(409, 'Stripe has not recorded the first payment on the invoice yet.', { retryable: true, stripeSucceeded: true });
+    return { invoice: inv.id, payment_intent: pi, period_start: invoicePeriodStart(inv) };
+  }
   if (row.kind === 'plan_schedule') {
     if (b.stripe_schedule_id) return { id: b.stripe_schedule_id };
     if (['stopped', 'completed'].includes(b.plan_status)) return {};
@@ -115,7 +125,7 @@ async function planJob(env, db, row, id, opts) {
  *  Payment-mode bound; at most `limit` per tick; the 23-hour reconcile guard still applies. */
 export async function drainPlanJobs(env, db, { mode = env.PAYMENT_MODE || 'demo', integration = env.STRIPE_INTEGRATION || 'pt_direct', limit = 10, now = Date.now() } = {}) {
   if (!isStripe(mode) || integration !== 'connect') return { ran: 0 };
-  const rows = await db.all("SELECT id FROM stripe_jobs WHERE kind IN ('plan_schedule','plan_stop') AND actor_id='stripe' AND status IN ('pending','retry') AND created_at>? ORDER BY created_at LIMIT ?", now - 23 * 3600000, limit);
+  const rows = await db.all("SELECT id FROM stripe_jobs WHERE kind IN ('plan_schedule','plan_stop','plan_invoice') AND actor_id='stripe' AND status IN ('pending','retry') AND created_at>? ORDER BY created_at LIMIT ?", now - 23 * 3600000, limit);
   let ran = 0;
   for (const r of rows) { const o = await runJob(env, db, r.id, { mode, integration }); if (o.status === 200) ran++; }
   return { ran, pending: rows.length };

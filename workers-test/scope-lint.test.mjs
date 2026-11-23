@@ -443,6 +443,8 @@ export const ALLOWED = {
       '2cb7e25c', // SELECT plan_count,(SELECT count(*) FROM booking_instalments WHERE book
       '3376837f', // UPDATE bookings SET plan_status=? WHERE id=? AND plan_status IS NOT NU
       '71f59b84', // UPDATE bookings SET stripe_schedule_id=coalesce(stripe_schedule_id,?) 
+      '00fb7eae', // UPDATE bookings SET payment_intent=coalesce(payment_intent,?),plan_anchor= (QA 7116489818)
+      'a4968998', // UPDATE booking_instalments SET stripe_payment_intent=coalesce(...) seq=1 (QA 7116489818)
       '9c1b90c9', // UPDATE booking_instalments SET status='void',next_retry_at=NULL WHERE 
     ]
   },
@@ -744,7 +746,7 @@ export const ALLOWED = {
   '../src/stripe-jobs.mjs::drainPlanJobs': {
     why: "system cron: RC-30 system plan jobs (actor 'stripe') only",
     queries: [
-      '5df73031', // SELECT id FROM stripe_jobs WHERE kind IN ('plan_schedule','plan_stop')
+      '846eddc4', // SELECT id FROM stripe_jobs WHERE kind IN ('plan_schedule','plan_stop','plan_invoice')
     ]
   },
   '../src/stripe-jobs.mjs::runPlanStops': {
@@ -756,7 +758,7 @@ export const ALLOWED = {
   '../src/stripe-jobs.mjs::planJob': {
     why: "system: booking of a persisted plan job (target_id set by a scoped op or a matched webhook)",
     queries: [
-      '502b6985', // SELECT id,plan,plan_count,plan_status,stripe_account_id,stripe_subscri
+      '09ec8eb1', // SELECT id,plan,plan_count,plan_status,payment_intent,plan_anchor,stripe_
     ]
   },
   '../src/views.mjs::instalmentRows': {
