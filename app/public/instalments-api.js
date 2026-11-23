@@ -398,10 +398,11 @@ function createLiveApi(request) {
       return request('/api/bookings/quote', { method: 'POST', body: { block_id, plan, discount_code: discount_code || null } });
     },
     async createBooking({ block_id, checkout_token, plan = 'upfront', discount_code = null }) {
+      // Contract: 201 { booking, booking_id, url } with an in-app /checkout/:id url for every plan.
+      // Tolerant of a missing booking_id when booking.id is present.
       const result = await request('/api/bookings', { method: 'POST', body: { block_id, checkout_token, plan, discount_code: discount_code || null } });
       const booking_id = result.booking_id || result.booking?.id;
-      const url = result.url;
-      return { ...result, booking_id, url };
+      return { ...result, booking_id, url: result.url };
     },
     async listInstalmentPlans({ status = 'all' } = {}) {
       const query = status && status !== 'all' ? '?status=' + encodeURIComponent(status) : '?status=all';
