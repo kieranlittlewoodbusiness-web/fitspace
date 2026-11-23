@@ -143,3 +143,33 @@ input[type=time]::-webkit-date-and-time-value{text-align:left}
 .theme-settings .form-buttons .btn{min-height:44px}
 .theme-settings #themeStatus[data-state=error]{color:#7c2520}
 .theme-settings #themeStatus[data-state=success]{color:#0f5c32}
+
+/* RC-30 instalments: class-block plans, checkout quotes, trainer dashboard. */
+.payment-options,.plan-picker{margin:18px 0;padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--soft,#f6f6f4);min-width:0}
+.payment-options legend,.plan-picker legend{font-size:14px;font-weight:700;padding:0 6px}
+.payment-options .form-help,.plan-picker .form-help{display:block;font-weight:400;margin:0 0 12px;color:var(--muted)}
+.payment-options .plan-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:0 0 16px 28px}
+.payment-options .plan-fields:has(input:disabled){opacity:.45}
+.plan-choice{display:flex;gap:10px;align-items:flex-start;margin:0 0 10px;font-weight:400}
+.plan-choice input{margin-top:3px}
+.payment-quote,.payment-dates ol{margin:0;padding:0;list-style:none}
+.payment-dates ol{display:flex;flex-direction:column;gap:6px}
+.payment-dates li,.payment-timeline li{margin:0}
+.discount-field{margin:14px 0 8px}
+.instalment-list{display:flex;flex-direction:column;gap:16px}
+.instalment-card h2{font-size:22px;margin-bottom:8px}
+.payment-timeline{margin:12px 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
+.payment-timeline li{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card,#fff);min-width:0}
+.payment-timeline small{color:var(--muted)}
+.price-plans{display:flex;flex-direction:column;gap:8px}
+.price-plans small{display:block;font-weight:400;color:var(--muted)}
+.modal-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+.modal-actions .btn{flex:1 1 140px}
+@media(max-width:768px){
+  .payment-options .plan-fields{grid-template-columns:minmax(0,1fr);margin-left:0}
+  .instalment-card .panel-head{flex-direction:column;align-items:flex-start;gap:8px}
+}
+@media(max-width:390px){
+  .price-plans,.payment-quote{font-size:14px}
+  .payment-options,.plan-picker{padding:12px}
+}
