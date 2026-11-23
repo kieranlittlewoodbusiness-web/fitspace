@@ -6,12 +6,13 @@
 //   admin    -> unscoped
 // A missing row and a row owned by someone else are indistinguishable (both null -> 404).
 import { httpError } from './util.mjs';
+import { planView } from './instalments.mjs';
 
 const BOOKING_VIEW = 'SELECT b.*,c.title,c.venue,c.description,c.pt_id,p.slug,p.brand_name,u.name customer_name,u.email customer_email FROM bookings b JOIN blocks c ON c.id=b.block_id JOIN pts p ON p.id=c.pt_id JOIN users u ON u.id=b.customer_id';
 
 // Columns a PT/admin may change on their own block. pt_id and id are never updatable.
 export const BLOCK_UPDATE_COLUMNS = new Set(['title', 'description', 'venue', 'price_pence', 'capacity', 'published', 'closed', 'updated_at',
-  'kind', 'weeks', 'duration_minutes', 'location_type', 'online_url', 'cancellation_policy']);
+  'kind', 'weeks', 'duration_minutes', 'location_type', 'online_url', 'cancellation_policy', 'upfront_enabled']);
 
 export function scopeFor(db, user) {
   if (!user) throw httpError(401, 'Please sign in to continue.');
@@ -83,5 +84,10 @@ export async function viewBooking(db, user, id) {
   delete booking.checkout_token;
   delete booking.checkout_url;
   booking.sessions = await db.all("SELECT s.*,coalesce(a.status,'unmarked') attendance_status FROM class_sessions s LEFT JOIN attendance a ON a.session_id=s.id AND a.booking_id=? WHERE s.block_id=? ORDER BY s.starts_epoch", id, booking.block_id);
+  // RC-30: instalment plan state (customers get no can_stop: only the trainer can stop a plan).
+  if (booking.plan && booking.plan !== 'upfront') {
+    const rows = await db.all('SELECT * FROM booking_instalments WHERE booking_id=? ORDER BY seq', id);
+    booking.instalment_plan = planView(booking, rows, { canStop: user.role === 'customer' ? undefined : user.role === 'pt' });
+  }
   return booking;
 }

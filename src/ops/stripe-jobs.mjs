@@ -12,6 +12,8 @@ import { platformLinkDisabledError, singleConnectExistsError } from '../multi-pt
 import { resolveConnectPtId } from '../connect-status.mjs';
 import { stripeConnection } from './bookings.mjs';
 import { refundWrites } from './webhooks.mjs';
+import { INTERVAL } from '../instalments.mjs';
+import { endJob } from './instalment-webhooks.mjs';
 
 async function actor(db, userId) {
   const user = await db.get('SELECT id,role,pt_id,email,name,must_change_password FROM users WHERE id=? AND active=1', userId);
@@ -37,13 +39,64 @@ export async function prepareCheckout(db, { bookingId, userId, origin, mode, int
   if (await db.get('SELECT id FROM stripe_jobs WHERE id=?', id)) return id;
   const c = await stripeConnection(db, booking.pt_id, mode, integration);
   if (!c?.ready || booking.stripe_account_id !== c.account_id || booking.stripe_routing !== c.routing || booking.stripe_credential_id !== (c.credential_id || null)) throw httpError(409, 'This trainer is not ready for payments in this mode.');
-  const data = {
+  const data = booking.plan && booking.plan !== 'upfront' ? await planCheckoutData(db, booking, user, origin) : {
     mode: 'payment', 'payment_method_types[0]': 'card', 'line_items[0][price_data][currency]': 'gbp', 'line_items[0][price_data][unit_amount]': String(booking.amount_pence),
     'line_items[0][price_data][product_data][name]': booking.title, 'line_items[0][quantity]': '1', customer_email: user.email, client_reference_id: booking.id,
     'metadata[booking_id]': booking.id, 'metadata[pt_id]': booking.pt_id, 'payment_intent_data[metadata][booking_id]': booking.id, 'payment_intent_data[metadata][pt_id]': booking.pt_id,
     success_url: origin + '/booking/' + booking.id + '?stripe=return', cancel_url: origin + '/checkout/' + booking.id + '?stripe=cancel', expires_at: String(Math.floor(booking.expires_at / 1000))
   };
   return job(db, id, 'checkout', booking.id, user.id, { mode, credential_id: booking.stripe_credential_id || undefined, path: '/v1/checkout/sessions', account: booking.stripe_routing === 'platform' ? undefined : booking.stripe_account_id, data }, now);
+}
+
+/** RC-30: Checkout in subscription mode on the PT's connected account (direct charge via the
+ *  job's Stripe-Account; no application fee). Payment 1 is the first invoice. The recurring
+ *  price is the level payment (seq 2..N); any rounding remainder on payment 1 is a one-off line
+ *  on that first invoice only. Billing ends via the plan_schedule job after checkout. */
+async function planCheckoutData(db, booking, user, origin) {
+  const rows = await db.all('SELECT seq,amount_pence FROM booking_instalments WHERE booking_id=? ORDER BY seq', booking.id);
+  if (rows.length !== booking.plan_count || rows[0].amount_pence !== booking.amount_pence) throw httpError(409, 'This instalment plan is incomplete. Book a fresh place.', { code: 'PLAN_INVALID' });
+  const level = rows.length > 1 ? rows[1].amount_pence : rows[0].amount_pence, extra = rows[0].amount_pence - level;
+  const data = {
+    mode: 'subscription', 'payment_method_types[0]': 'card',
+    'line_items[0][price_data][currency]': 'gbp', 'line_items[0][price_data][unit_amount]': String(level),
+    'line_items[0][price_data][recurring][interval]': INTERVAL[booking.plan], 'line_items[0][price_data][product_data][name]': booking.title, 'line_items[0][quantity]': '1',
+    customer_email: user.email, client_reference_id: booking.id,
+    'metadata[booking_id]': booking.id, 'metadata[pt_id]': booking.pt_id,
+    'subscription_data[metadata][booking_id]': booking.id, 'subscription_data[metadata][pt_id]': booking.pt_id, 'subscription_data[metadata][plan]': booking.plan,
+    success_url: origin + '/booking/' + booking.id + '?stripe=return', cancel_url: origin + '/checkout/' + booking.id + '?stripe=cancel', expires_at: String(Math.floor(booking.expires_at / 1000))
+  };
+  if (extra > 0) Object.assign(data, { 'line_items[1][price_data][currency]': 'gbp', 'line_items[1][price_data][unit_amount]': String(extra), 'line_items[1][price_data][product_data][name]': booking.title + ' (first payment adjustment)', 'line_items[1][quantity]': '1' });
+  return data;
+}
+
+/** RC-30: POST /api/pt/instalment-plans/:id/stop. The owning PT only (PM ruling: admin and
+ *  customers get 403). Cancels the subscription; future payments become void; nothing is refunded.
+ *  Job id stop:<booking>:<request_token>, so a repeat of the same token returns the same result. */
+export async function prepareStopPlan(db, { bookingId, userId, token, mode, now = Date.now() }) {
+  const user = await actor(db, userId);
+  if (user.role !== 'pt') throw httpError(403, 'Only the trainer can stop an instalment plan.', { code: 'FORBIDDEN' });
+  if (!/^[a-zA-Z0-9-]{12,80}$/.test(token || '')) throw httpError(400, 'Refresh the page and try again.', { code: 'FIELDS_INVALID', fields: ['request_token'] });
+  const booking = await scopeFor(db, user).booking(bookingId);
+  if (!booking || !booking.plan || booking.plan === 'upfront') throw httpError(404, 'Instalment plan not found.', { code: 'NOT_FOUND' });
+  const id = 'stop:' + booking.id + ':' + token;
+  if (await db.get('SELECT id FROM stripe_jobs WHERE id=?', id)) return id;
+  const notActive = () => httpError(409, 'This plan is not taking payments any more.', { code: 'PLAN_NOT_ACTIVE' });
+  if (!isStripe(booking.mode) || booking.mode !== mode || !['active', 'past_due'].includes(booking.plan_status)) throw notActive();
+  const activeSql = "SELECT id FROM stripe_jobs WHERE target_id=? AND kind='plan_stop' AND status IN ('pending','retry') ORDER BY created_at DESC LIMIT 1";
+  const active = await db.get(activeSql, booking.id);
+  if (active) return active.id;
+  try {
+    await db.batch([
+      db.guard('plan_stoppable', "EXISTS(SELECT 1 FROM bookings WHERE id=? AND plan_status IN ('active','past_due')) AND NOT EXISTS(SELECT 1 FROM stripe_jobs WHERE target_id=? AND kind='plan_stop' AND status IN ('pending','retry'))", booking.id, booking.id),
+      jobStmt(db, id, 'plan_stop', booking.id, user.id, { mode, reason: 'trainer' }, now)
+    ]);
+  } catch (error) {
+    if (!isGuardFailure(error)) throw error;
+    const other = await db.get(activeSql, booking.id);
+    if (other) return other.id;
+    throw notActive();
+  }
+  return id;
 }
 
 /** POST /api/bookings/:id/cancel for an unpaid Stripe checkout (scoped by the route). */
@@ -69,8 +122,13 @@ export async function prepareRefund(db, { bookingId, userId, token, mode, now = 
   if (booking.refund_status === 'pending') throw httpError(409, 'Stripe is still processing a refund. Wait for its notification before retrying.');
   const id = 'refund:' + booking.id + ':' + token;
   if (await db.get('SELECT id FROM stripe_jobs WHERE id=?', id)) return id;
+  // CR m2: refunding a plan booking also cancels its subscription (system end job, same batch;
+  // the route runs it after the refund, and the cron drain retries it).
+  const planLive = booking.plan && booking.plan !== 'upfront' && booking.stripe_subscription_id && (['active', 'past_due'].includes(booking.plan_status) || booking.status === 'review');
+  const stop = planLive ? await endJob(db, booking.id, { mode, reason: 'refund', now }) : null;
   try {
     await db.batch([
+      ...(stop ? [stop.stmt] : []),
       // Commit-time: no other refund job became active, and the amount is still refundable.
       db.guard('one_active_refund', "NOT EXISTS(SELECT 1 FROM stripe_jobs WHERE target_id=? AND kind='refund' AND status IN ('pending','retry')) AND EXISTS(SELECT 1 FROM bookings WHERE id=? AND refunded_pence<amount_pence AND refund_status<>'pending')", booking.id, booking.id),
       db.stmt("UPDATE bookings SET refund_status='requested',refund_error=NULL WHERE id=?", booking.id),
@@ -170,6 +228,24 @@ export async function completeJob(db, { id, result, now = Date.now() }) {
   } else if (row.kind === 'cancel') {
     writes.push(db.stmt("UPDATE bookings SET status='cancelled' WHERE id=? AND status='pending'", row.target_id));
     out = { ok: true };
+  } else if (row.kind === 'plan_invoice') {
+    // QA 7116489818: never overwrite a value already set (by invoice.paid) and never write null.
+    if (!/^pi_/.test(result.payment_intent || '')) throw httpError(409, 'Stripe did not return the first payment.', { retryable: true });
+    writes.push(db.stmt('UPDATE bookings SET payment_intent=coalesce(payment_intent,?),plan_anchor=coalesce(plan_anchor,?) WHERE id=?', result.payment_intent, Number.isFinite(result.period_start) ? result.period_start : null, row.target_id));
+    writes.push(db.stmt('UPDATE booking_instalments SET stripe_payment_intent=coalesce(stripe_payment_intent,?) WHERE booking_id=? AND seq=1', result.payment_intent, row.target_id));
+    out = { ok: true, payment_intent: result.payment_intent };
+  } else if (row.kind === 'plan_schedule') {
+    // RC-30: the schedule that ends billing after the final payment.
+    writes.push(db.stmt('UPDATE bookings SET stripe_schedule_id=coalesce(stripe_schedule_id,?) WHERE id=?', result.id ?? null, row.target_id));
+    out = { ok: true, schedule_id: result.id ?? null };
+  } else if (row.kind === 'plan_stop') {
+    // RC-30: subscription cancelled (trainer stop, or the system end guard). Future payments void;
+    // nothing refunded; the booking and its place stay.
+    const b = await db.get("SELECT plan_count,(SELECT count(*) FROM booking_instalments WHERE booking_id=bookings.id AND status='paid') paid,(SELECT count(*) FROM booking_instalments WHERE booking_id=bookings.id AND status IN ('upcoming','failed')) open FROM bookings WHERE id=?", row.target_id);
+    const status = b.paid >= b.plan_count ? 'completed' : 'stopped';
+    writes.push(db.stmt("UPDATE booking_instalments SET status='void',next_retry_at=NULL WHERE booking_id=? AND status IN ('upcoming','failed')", row.target_id));
+    writes.push(db.stmt("UPDATE bookings SET plan_status=? WHERE id=? AND plan_status IS NOT NULL", status, row.target_id));
+    out = { booking_id: row.target_id, status, voided_payments: b.open, refunded_pence: 0 };
   } else throw httpError(400, 'Unknown Stripe operation.');
   writes.push(db.stmt("UPDATE stripe_jobs SET status='done',result=?,last_error=NULL WHERE id=? AND status<>'done'", JSON.stringify(out), id));
   try {

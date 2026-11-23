@@ -8,6 +8,8 @@ import { MOTIVATIONS } from './validate.mjs';
 import { parseReviewReason } from './cutover.mjs';
 import { connectStatusView } from './connect-status.mjs';
 import { profileMissing, ptProfile, publicContactFields } from './profile.mjs';
+import { optionsConfig, planView, PAST_DUE_MESSAGE, NEEDS_ATTENTION_MESSAGE } from './instalments.mjs';
+import { httpError } from './util.mjs';
 
 // D1 allows at most 100 bound parameters per statement: IN-lists are chunked.
 async function inChunks(db, sql, ids, ...before) {
@@ -28,10 +30,12 @@ export async function viewBlocks(db, blocks, now = Date.now()) {
   const sessions = (await inChunks(db, 'SELECT id,block_id,starts_at,starts_epoch,duration_minutes FROM class_sessions WHERE block_id IN (?*)', ids)).sort((a, b) => a.starts_epoch - b.starts_epoch);
   const counts = await inChunks(db, "SELECT block_id, sum(status='paid') paid, sum(status='paid' OR (status='pending' AND expires_at>?)) used FROM bookings WHERE block_id IN (?*) GROUP BY block_id", ids, now);
   const byBlock = Object.fromEntries(counts.map(c => [c.block_id, c]));
+  // RC-30: saved payment options (PT form shape); the public page swaps in enabled quotes.
+  const plans = await inChunks(db, 'SELECT block_id,plan,enabled,amount_pence,count FROM block_payment_plans WHERE block_id IN (?*)', ids);
   return blocks.map(({ create_key, ...b }) => {
     const s = sessions.filter(x => x.block_id === b.id).map(({ block_id, ...rest }) => rest);
     const c = byBlock[b.id] || { paid: 0, used: 0 };
-    return { ...b, sessions: s, available: Math.max(0, b.capacity - (c.used || 0)), paid_count: c.paid || 0, can_book: Boolean(b.published && !b.closed && s.length && s[0].starts_epoch > now) };
+    return { ...b, sessions: s, available: Math.max(0, b.capacity - (c.used || 0)), paid_count: c.paid || 0, can_book: Boolean(b.published && !b.closed && s.length && s[0].starts_epoch > now), ...optionsConfig(b, plans.filter(p => p.block_id === b.id)) };
   });
 }
 
@@ -64,6 +68,7 @@ export async function dashboard(db, user, { paymentMode, integration, now = Date
     return {
       pt: { ...publicPt(pt), ...ptProfile(pt), profile_missing: profileMissing(pt), stripe_account_id: c?.account_id || null, stripe_routing: c?.routing || null, stripe_connected: Boolean(c), stripe_ready: Boolean(c?.ready), stripe: connectStatusView(c, { mode: paymentMode }) },
       blocks, bookings, outbox,
+      instalments: planCounts(bookings),
       stats: {
         confirmed: bookings.filter(b => b.status === 'paid').length,
         revenue_pence: bookings.filter(b => b.paid_at && b.mode === paymentMode && isStripe(b.mode)).reduce((n, b) => n + b.amount_pence - b.refunded_pence, 0),
@@ -83,8 +88,45 @@ export async function dashboard(db, user, { paymentMode, integration, now = Date
   }
   const bookings = await withSessions(db, await scope.bookings(), { reasons: true });
   return {
-    pts, bookings, outbox: await scope.outbox(100),
+    pts, bookings, outbox: await scope.outbox(100), instalments: planCounts(bookings),
     stats: { pts: pts.length, customers: (await db.get("SELECT count(*) n FROM users WHERE role='customer'")).n, confirmed: bookings.filter(b => b.status === 'paid').length },
     quotes: MOTIVATIONS
+  };
+}
+
+// ---- RC-30 instalment plans (PT/admin) ----
+const PLAN_LIVE = ['paid', 'review'];
+/** CR m2: payment 1 landed after the hold lapsed (booking in review, no place). The plan was
+ *  stopped automatically; the trainer decides (refund payment 1, or add a place). */
+const needsAttention = b => b.status === 'review';
+const planCounts = bookings => {
+  const plans = bookings.filter(b => b.plan && b.plan !== 'upfront' && PLAN_LIVE.includes(b.status) && b.plan_status);
+  return { past_due_count: plans.filter(b => b.plan_status === 'past_due').length, active_count: plans.filter(b => b.plan_status === 'active').length, needs_attention_count: plans.filter(needsAttention).length };
+};
+const PLAN_STATUSES = ['active', 'past_due', 'completed', 'stopped'];
+
+/** Instalment rows for already-scoped booking ids. */
+export async function instalmentRows(db, bookingIds) {
+  if (!bookingIds.length) return [];
+  return (await inChunks(db, 'SELECT * FROM booking_instalments WHERE booking_id IN (?*)', bookingIds)).sort((a, b) => a.seq - b.seq);
+}
+/** GET /api/pt/instalment-plans: the caller's (PT) or every (admin) instalment plan. */
+export async function instalmentPlans(db, user, { status = 'all' } = {}) {
+  if (status !== 'all' && !PLAN_STATUSES.includes(status)) throw httpError(400, 'Unknown plan status filter.', { code: 'FIELDS_INVALID', fields: ['status'] });
+  const scope = scopeFor(db, user);
+  const all = (await scope.bookings()).filter(b => b.plan && b.plan !== 'upfront' && PLAN_LIVE.includes(b.status) && b.plan_status);
+  const counts = planCounts(all);
+  const chosen = status === 'all' ? all : all.filter(b => b.plan_status === status);
+  const rows = await instalmentRows(db, chosen.map(b => b.id));
+  return {
+    past_due_reminder: { show: counts.past_due_count > 0, count: counts.past_due_count, message: counts.past_due_count ? PAST_DUE_MESSAGE(counts.past_due_count) : null },
+    needs_attention: { count: counts.needs_attention_count, message: counts.needs_attention_count ? NEEDS_ATTENTION_MESSAGE(counts.needs_attention_count) : null },
+    plans: chosen.map(b => ({
+      booking_id: b.id, block_id: b.block_id, block_title: b.title,
+      customer: { name: b.customer_name, email: b.customer_email },
+      created_at: new Date(b.created_at).toISOString(),
+      needs_attention: needsAttention(b), attention_reason: needsAttention(b) ? 'late_payment' : null,
+      ...planView(b, rows, { canStop: user.role === 'pt' })
+    }))
   };
 }

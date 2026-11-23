@@ -5,7 +5,7 @@
 // PT-owned (or per-tenant secret) tables. CR 5940914487 M4: also pts, users and the Stripe
 // account/credential tables; table names may be quoted ("x", `x`, [x]), schema-qualified
 // (main.x) or separated from the keyword by comments (FROM/**/x, FROM -- c\n x).
-export const TABLES = ['blocks', 'bookings', 'class_sessions', 'attendance', 'email_outbox', 'discount_codes', 'discount_redemptions', 'waitlist_entries', 'stripe_refunds', 'stripe_jobs', 'pts', 'users', 'stripe_connections', 'pt_stripe_credentials', 'pt_subscriptions'];
+export const TABLES = ['blocks', 'bookings', 'class_sessions', 'attendance', 'email_outbox', 'discount_codes', 'discount_redemptions', 'waitlist_entries', 'stripe_refunds', 'stripe_jobs', 'pts', 'users', 'stripe_connections', 'pt_stripe_credentials', 'pt_subscriptions', 'block_payment_plans', 'booking_instalments'];
 const GAP = '(?:\\s|/\\*[\\s\\S]*?\\*/|--[^\\n]*(?:\\n|$))';
 const OPEN = '["\\u0060\\[]?', CLOSE = '["\\u0060\\]]?';
 const NAME = OPEN + '(?:' + TABLES.join('|') + ')' + CLOSE;

@@ -13,12 +13,12 @@ import { write } from '../src/writer.mjs';
 import { currentUser, requireUser, checkMutation } from '../src/auth.mjs';
 import { verifyWebhook } from '../src/stripe-webhook.mjs';
 import { viewBooking, scopeFor } from '../src/scope.mjs';
-import { paymentOperation } from '../src/stripe-jobs.mjs';
+import { drainPlanJobs, paymentOperation, runJob, runPlanStops } from '../src/stripe-jobs.mjs';
 import { stripe, validatePlatformKey } from '../src/stripe.mjs';
 import { credentialStatus, open as openCredential, loadCredential, encryptionConfigured } from '../src/pt-credentials.mjs';
-import { dashboard } from '../src/views.mjs';
+import { dashboard, instalmentPlans } from '../src/views.mjs';
 import { login, signup, logout, safeUser, sessionCookie, clearCookie } from '../src/sessions.mjs';
-import { defaultSlug, publishedPts, publishedPtPage, publicSite, publishedCoach, expireHolds, adminSetupStatus, credentialById, markWebhookSeen } from '../src/public.mjs';
+import { defaultSlug, publishedPts, publishedPtPage, publicSite, publishedCoach, expireHolds, adminSetupStatus, credentialById, markWebhookSeen, quoteBlock } from '../src/public.mjs';
 import { bookingPathFor, isHiddenMultiPtRoute, multiPtDisabledError, multiPtEnabled } from '../src/multi-pt.mjs';
 import { configured as resetConfigured, MESSAGE as RESET_MESSAGE } from '../src/ops/password-reset.mjs';
 import { runScheduled } from '../src/mail.mjs';
@@ -121,7 +121,13 @@ export async function handle(request, env) {
     if (!isStripe(paymentMode)) throw httpError(503, 'Stripe sandbox mode is not enabled.');
     const raw = await boundedText(request, 1048576);
     const event = verifyWebhook(raw, request.headers.get('stripe-signature'), [env.STRIPE_WEBHOOK_SECRET, env.STRIPE_CONNECT_WEBHOOK_SECRET], paymentMode);
-    return json(200, await write(env, 'handleWebhook', { event, mode: paymentMode, emailMode }));
+    const { jobs, ...outcome } = await write(env, 'handleWebhook', { event, mode: paymentMode, emailMode });
+    // RC-30: plan jobs (end-after-N schedule, end guard) run after the event committed. A failure
+    // leaves the job pending for the cron drain; the event itself is already applied.
+    for (const id of jobs || []) {
+      try { await runJob(env, db, id, stripeOpts); } catch (error) { console.error('RC-30 plan job failed:', error.code || error.name || 'Error'); }
+    }
+    return json(200, outcome);
   }
   // Legacy pt_direct per-PT endpoint (app/server.cjs:32): the PT's own webhook secret, then
   // the event is re-fetched from Stripe with the PT's key (authoritative copy) before applying.
@@ -273,9 +279,18 @@ export async function handle(request, env) {
   // ---- bookings ----
   if (method === 'POST' && route === '/api/bookings') {
     requireUser(user, ['customer']);
-    const booking = await write(env, 'reserve', { userId: user.id, blockId: idParam(body.block_id, 'class'), token: body.checkout_token, mode: paymentMode, integration });
-    if (isStripe(paymentMode) && booking.status === 'pending') return operation(await write(env, 'prepareCheckout', { bookingId: booking.id, userId: user.id, origin: paymentOrigin, mode: paymentMode, integration }));
-    return json(201, { booking: await viewBooking(db, user, booking.id), url: (booking.status === 'paid' ? '/booking/' : '/checkout/') + booking.id });
+    const booking = await write(env, 'reserve', { userId: user.id, blockId: idParam(body.block_id, 'class'), token: body.checkout_token, mode: paymentMode, integration, plan: body.plan, discountCode: body.discount_code ?? null });
+    // RC-30 contract C2: instalment plans use the in-app /checkout/:id flow (its pay button calls
+    // POST /api/bookings/:id/checkout). Upfront is unchanged from main.
+    const instalments = booking.plan && booking.plan !== 'upfront';
+    if (!instalments && isStripe(paymentMode) && booking.status === 'pending') return operation(await write(env, 'prepareCheckout', { bookingId: booking.id, userId: user.id, origin: paymentOrigin, mode: paymentMode, integration }));
+    // Upfront (demo, or a replay after payment) is main's exact 201 {booking, url}; instalments add booking_id (C2).
+    return json(201, { booking: await viewBooking(db, user, booking.id), ...(instalments ? { booking_id: booking.id } : {}), url: (booking.status === 'paid' ? '/booking/' : '/checkout/') + booking.id });
+  }
+  // RC-30: read-only quote (write-free; the UI re-quotes on Apply and on plan change).
+  if (method === 'POST' && route === '/api/bookings/quote') {
+    requireUser(user, ['customer']);
+    return json(200, await quoteBlock(db, { blockId: body.block_id, plan: body.plan ?? 'upfront', discountCode: body.discount_code ?? null }));
   }
   const sub = route.match(/^\/api\/bookings\/([^/]+)\/(checkout|refund|pay|cancel)$/);
   if (method === 'POST' && sub) {
@@ -293,7 +308,9 @@ export async function handle(request, env) {
     if (sub[2] === 'refund') {
       requireUser(user, ['pt', 'admin']);
       requireStripeMode();
-      return operation(await write(env, 'prepareRefund', { bookingId, userId: user.id, token: body.request_token, mode: paymentMode }));
+      const refunded = await operation(await write(env, 'prepareRefund', { bookingId, userId: user.id, token: body.request_token, mode: paymentMode }));
+      await runPlanStops(env, db, bookingId, stripeOpts); // CR m2: a plan refund also cancels the subscription
+      return refunded;
     }
     // cancel: owner customer, owning PT or admin (scopeFor inside the ops)
     requireUser(user);
@@ -310,6 +327,18 @@ export async function handle(request, env) {
     requireUser(user);
     await expireHolds(db);
     return json(200, { booking: await viewBooking(db, user, idParam(bookingRoute[1], 'booking', { encoded: true })) });
+  }
+
+  // ---- RC-30 instalment plans ----
+  if (method === 'GET' && route === '/api/pt/instalment-plans') {
+    requireUser(user, ['pt', 'admin']);
+    return json(200, await instalmentPlans(db, user, { status: url.searchParams.get('status') || 'all' }));
+  }
+  const stopPlan = route.match(/^\/api\/pt\/instalment-plans\/([^/]+)\/stop$/);
+  if (method === 'POST' && stopPlan) {
+    // PM ruling (Kieran's trainer-only rule): the owning PT only; admin and customers get 403.
+    requireUser(user, ['pt']);
+    return operation(await write(env, 'prepareStopPlan', { bookingId: idParam(stopPlan[1], 'booking', { encoded: true }), userId: user.id, token: body.request_token, mode: paymentMode }));
   }
 
   // ---- PT payments setup (caller's own pt_id only) ----
@@ -367,7 +396,7 @@ export async function handle(request, env) {
   return null;
 }
 
-const DIAGNOSTIC = /^\/api\/(me|auth\/.*|dashboard|admin\/.*|public\/.*|pt\/profile|pt\/theme)$/;
+const DIAGNOSTIC = /^\/api\/(me|auth\/.*|dashboard|admin\/.*|public\/.*|pt\/profile|pt\/theme|pt\/instalment-plans)$/;
 const PT_WEBHOOK = /^\/api\/stripe\/pt\/[a-f0-9-]{36}\/webhook$/;
 /** Legacy platform.mjs:47-49 (`diagnostic` routes stay reachable so the owner can see and fix
  *  the configuration). Throws 503 before anything else runs. */
@@ -411,7 +440,11 @@ function temporaryPassword(env, key) {
  *  deploy of the default env (bound to the real D1 database) runs nothing on a schedule. */
 export async function cronTick(env) {
   if (env.CRON_ENABLED !== 'true') return { skipped: 'CRON_ENABLED is not "true"' };
-  return runScheduled(withoutDb(env), createDb(env.DB));
+  const appEnv = withoutDb(env), db = createDb(env.DB);
+  const out = await runScheduled(appEnv, db);
+  // RC-30: retry system plan jobs left pending (Stripe modes with Connect only).
+  const plans = await drainPlanJobs(appEnv, db);
+  return plans.pending ? { ...out, plan_jobs: plans } : out;
 }
 
 export default {

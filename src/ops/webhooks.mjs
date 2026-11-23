@@ -11,6 +11,7 @@
 import { confirmationInsert } from '../emails.mjs';
 import { isGuardFailure, isUniqueViolation } from '../db.mjs';
 import { httpError, live } from '../util.mjs';
+import { planCheckoutPaid, planCheckoutReleased, planEvent } from './instalment-webhooks.mjs';
 
 const accountMatches = (booking, eventAccount) => (booking.stripe_routing === 'platform' ? !eventAccount : eventAccount === booking.stripe_account_id);
 
@@ -21,16 +22,20 @@ export async function handleWebhook(db, { event, credentialId = null, mode = 'st
   if (await db.get('SELECT id FROM webhook_events WHERE id=?', eventKey)) return { duplicate: true };
   const obj = event.data?.object;
   if (typeof event.id !== 'string' || typeof event.type !== 'string' || !obj) throw httpError(400, 'Invalid Stripe event.');
-  const writes = [];
+  const writes = [], jobs = [];
   if (event.type.startsWith('checkout.session.')) {
     const row = await db.get('SELECT b.*,c.pt_id FROM bookings b JOIN blocks c ON c.id=b.block_id WHERE b.checkout_session=? OR b.id=?', obj.id, obj.metadata?.booking_id || '');
     if (row) {
       if (!row.checkout_session && !(await db.get('SELECT id FROM stripe_jobs WHERE id=?', 'checkout:' + row.id))) throw httpError(400, 'No persisted checkout operation matches this event.');
       const bound = row.stripe_account_id || (await db.get('SELECT stripe_account FROM pts WHERE id=?', row.pt_id))?.stripe_account;
-      if (row.mode !== mode || !matches({ ...row, stripe_account_id: bound }) || obj.metadata?.booking_id !== row.id || obj.metadata?.pt_id !== row.pt_id || obj.mode !== 'payment' || (row.checkout_session && row.checkout_session !== obj.id)) throw httpError(400, 'Payment account or booking mismatch.');
+      if (row.mode !== mode || !matches({ ...row, stripe_account_id: bound }) || obj.metadata?.booking_id !== row.id || obj.metadata?.pt_id !== row.pt_id || obj.mode !== (row.plan && row.plan !== 'upfront' ? 'subscription' : 'payment') || (row.checkout_session && row.checkout_session !== obj.id)) throw httpError(400, 'Payment account or booking mismatch.');
       if (obj.amount_total !== row.amount_pence || obj.currency !== 'gbp') throw httpError(400, 'Payment amount mismatch.');
       writes.push(db.stmt('UPDATE bookings SET checkout_session=coalesce(checkout_session,?),stripe_account_id=coalesce(stripe_account_id,?) WHERE id=?', obj.id, bound ?? null, row.id));
-      if (['checkout.session.completed', 'checkout.session.async_payment_succeeded'].includes(event.type) && obj.payment_status === 'paid') {
+      if (row.plan && row.plan !== 'upfront' && ['checkout.session.completed', 'checkout.session.async_payment_succeeded'].includes(event.type) && obj.payment_status === 'paid') {
+        // RC-30: payment 1 of an instalment plan (Checkout in subscription mode).
+        const r = await planCheckoutPaid(db, row, obj, { mode, emailMode, eventTime: Number(event.created) || 0, now });
+        writes.push(...r.writes); jobs.push(...r.jobs);
+      } else if (['checkout.session.completed', 'checkout.session.async_payment_succeeded'].includes(event.type) && obj.payment_status === 'paid') {
         const pi = typeof obj.payment_intent === 'object' ? obj.payment_intent?.id : obj.payment_intent;
         if (!/^pi_/.test(pi || '')) throw httpError(400, 'Missing payment reference.');
         if (row.payment_intent && row.payment_intent !== pi) throw httpError(400, 'Payment reference mismatch.');
@@ -42,6 +47,7 @@ export async function handleWebhook(db, { event, credentialId = null, mode = 'st
       } else if (['checkout.session.expired', 'checkout.session.async_payment_failed'].includes(event.type) && !row.paid_at && row.status === 'pending') {
         const expired = event.type.endsWith('expired');
         writes.push(db.stmt("UPDATE bookings SET status=?,payment_error=? WHERE id=? AND paid_at IS NULL AND status='pending'", expired ? 'expired' : 'failed', expired ? 'Checkout expired. Please choose a new place.' : 'Stripe reported a failed payment. No booking was confirmed.', row.id));
+        if (row.plan && row.plan !== 'upfront') writes.push(planCheckoutReleased(db, row));
       }
     }
   } else if (event.type === 'payment_intent.payment_failed') {
@@ -78,6 +84,10 @@ export async function handleWebhook(db, { event, credentialId = null, mode = 'st
         writes.push(...(await refundWrites(db, row, obj, Number(event.created) || 0)));
       }
     }
+  } else if (event.type.startsWith('invoice.') || event.type.startsWith('customer.subscription.')) {
+    // RC-30 instalment plans (connected-account events). Unrelated invoices change nothing.
+    const r = await planEvent(db, { event, mode, matches, emailMode, now });
+    writes.push(...r.writes); jobs.push(...r.jobs);
   } else if (event.type === 'account.updated') {
     const updatedAt = (Number(event.created) || 0) * 1000;
     if (credentialId) {
@@ -103,7 +113,8 @@ export async function handleWebhook(db, { event, credentialId = null, mode = 'st
     if (isGuardFailure(error)) throw httpError(400, 'Refund total exceeds the booking payment.');
     throw error;
   }
-  return { received: true };
+  // RC-30: jobs to run after commit (the Worker runs them; the cron drains any left over).
+  return jobs.length ? { received: true, jobs } : { received: true };
 }
 
 // applyRefund (app/payments.cjs:64-89) without SAVEPOINT. The original wrapped
