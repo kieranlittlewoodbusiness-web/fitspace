@@ -46,7 +46,7 @@ const MUTATIONS = {
   // env-destructuring bypass and shows it turns a 503 into a cross-PT leak.
   writer_env_without_db: ['src/writer.mjs', 'this.appEnv = withoutDb(env);', 'this.appEnv = env;'],
   wrapper_hides_binding: ['src/db.mjs', 'return Object.freeze({', 'return Object.freeze({ d1,'],
-  // RC-14:
+  // RC-14 / RC-5: one PT and at most one Connect account when MULTI_PT_ENABLED is not "true".
   single_pt_free: ['src/ops/manage.mjs', ...always('single_pt_free')],
   single_connect: ['src/ops/stripe-jobs.mjs', ...always('single_connect')]
 };

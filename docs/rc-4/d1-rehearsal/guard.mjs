@@ -14,3 +14,10 @@ export function safeDatabaseId(raw) {
 }
 /** True if the text names the production id (any case) or its 8-hex prefix. */
 export const mentionsProduction = text => String(text).toLowerCase().includes(PRODUCTION_DB.slice(0, 8));
+
+/** The production D1 may be targeted only when the caller passed `--env production`. */
+export function requireProductionEnv(envName) {
+  const name = String(envName ?? '').trim();
+  if (name !== 'production') throw new Error('refusing: the production database is allowed only with --env production');
+  return name;
+}

@@ -23,8 +23,11 @@ export const GRAPH = {
   // Node CLI scripts that read the legacy Netlify app's SQLite/Postgres code (never D1). Each edge
   // into app/ or netlify/ is listed; a new one, or any from Worker code, fails.
   // CR 5943169048 C1: relative imports out of src/worker/scripts must be listed here.
-  // Preview out-of-band reset reuses the shared normalised production-id guard.
-  outsideEdges: ['../src/ops/password-reset.mjs -> ../docs/rc-4/d1-rehearsal/guard.mjs'],
+  // Preview out-of-band reset and admin bootstrap reuse the shared production-id guard.
+  outsideEdges: [
+    '../src/ops/password-reset.mjs -> ../docs/rc-4/d1-rehearsal/guard.mjs',
+    '../scripts/bootstrap-admin.mjs -> ../docs/rc-4/d1-rehearsal/guard.mjs'
+  ],
   legacyEdges: [
     '../scripts/demo-snapshot.mjs -> ../app/db.cjs',
     '../scripts/dev.mjs -> ../netlify/functions/platform.mjs',
@@ -95,14 +98,20 @@ export const ALLOWED = {
   '../src/ops/stripe-jobs.mjs::prepareLink': {
     why: 'admin-only op (actor role checked first)',
     queries: [
-      '4b1f8101', // SELECT id FROM pts WHERE id=?
+      '4fe10a82', // SELECT id FROM pts WHERE id=? AND deleted_at IS NULL
     ]
   },
   '../src/ops/stripe-jobs.mjs::prepareConnect': {
-    why: "PT op: pts row for the caller's own pt_id",
+    why: "PT owner or admin: pts row for the resolved pt_id; single-connect pre-check",
     queries: [
       'abf4ec84', // SELECT * FROM pts WHERE id=?
       'd8aa094b', // SELECT pt_id FROM stripe_connections WHERE NOT (pt_id=? AND mode=?) LI
+    ]
+  },
+  '../src/ops/stripe-jobs.mjs::accountJobId': {
+    why: "RC-32: called only from prepareConnect for the resolved pt_id; reads that PT's latest account job",
+    queries: [
+      'b57123f8', // SELECT id,status FROM stripe_jobs WHERE kind='account' AND target_id=? AND
     ]
   },
   '../src/ops/stripe-jobs.mjs::bindStmts': {
@@ -137,15 +146,42 @@ export const ALLOWED = {
   '../src/ops/manage.mjs::createPt>replay': {
     why: 'admin-only op: replay lookup by create_key',
     queries: [
-      '7b19ade0', // SELECT p.id,p.slug,p.create_hash,u.email,u.must_change_password FROM p
+      '87bf779f', // SELECT p.id,p.slug,p.create_hash,u.email,u.must_change_password FROM p
     ]
   },
   '../src/ops/manage.mjs::createPt': {
     why: 'admin-only op (actor role checked first): creates the PT and its user',
     queries: [
       '33751c95', // INSERT INTO users(id,name,email,password_hash,role,pt_id,must_change_p
+      '7190ef7c', // NOT EXISTS(SELECT 1 FROM pts WHERE deleted_at IS NULL)
       '93b0bb8a', // INSERT INTO pts(id,slug,brand_name,tagline,description,about,accent,ba
-      'd6691f19', // NOT EXISTS(SELECT 1 FROM pts)
+    ]
+  },
+  '../src/ops/manage.mjs::deletePt': {
+    why: 'admin-only op (actor role checked first): soft-deletes a PT, keeps booking/payment rows',
+    queries: [
+      '21d34f50', // UPDATE users SET active=0,deleted_at=?,email='deleted+' || id || '@del
+      'a1ad6c46', // UPDATE pts SET slug=?,published=0,deleted_at=?,stripe_ready=0,create_k
+      '40a7eeb2', // UPDATE blocks SET published=0,closed=1 WHERE pt_id=?
+      '5e125b5b', // DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE pt_i
+      '791cef76', // SELECT id,role FROM users WHERE pt_id=? AND deleted_at IS NULL
+      '81e31db3', // SELECT deleted_at FROM pts WHERE id=?
+      '980dc246', // UPDATE pt_stripe_credentials SET enabled=0 WHERE pt_id=?
+      '9860104e', // DELETE FROM stripe_connections WHERE pt_id=?
+      'a986e2bf', // EXISTS(SELECT 1 FROM pts WHERE id=? AND deleted_at IS NULL)
+      'b9ea3965', // SELECT * FROM pts WHERE id=? AND deleted_at IS NULL
+    ]
+  },
+  '../src/ops/manage.mjs::upcomingBookingsSql': {
+    why: 'admin deletePt: count upcoming paid/pending bookings for this pt_id',
+    queries: [
+      'aa2b2344', // SELECT count(*) n FROM bookings b JOIN blocks bl ON bl.id=b.block_id W
+    ]
+  },
+  '../src/ops/manage.mjs::noUpcomingSql': {
+    why: 'admin deletePt: commit-time guard, same upcoming booking predicate for this pt_id',
+    queries: [
+      'f0b5ee57', // NOT EXISTS(SELECT 1 FROM bookings b JOIN blocks bl ON bl.id=b.block_id
     ]
   },
   '../src/ops/manage.mjs::actor': {
@@ -159,13 +195,13 @@ export const ALLOWED = {
     queries: [
       '7c8afa9c', // SELECT stripe_account,stripe_ready FROM pts WHERE id=?
       'a49c8539', // SELECT * FROM pt_stripe_credentials WHERE pt_id=? AND mode=?
-      'b64f1291', // SELECT account_id,routing,ready FROM stripe_connections WHERE pt_id=? 
+      'e4408298', // SELECT account_id,routing,ready,charges_enabled,payouts_enabled,detail
     ]
   },
   '../src/ops/accounts.mjs::updatePtBranding': {
     why: 'admin-only op (actor role checked first)',
     queries: [
-      'aca33a48', // UPDATE pts SET slug=?,brand_name=?,tagline=?,description=?,about=?,acc
+      '7f093749', // UPDATE pts SET slug=?,brand_name=?,tagline=?,description=?,about=?,acc
       'e9162fed', // SELECT id,role FROM users WHERE id=? AND active=1
     ]
   },
@@ -177,11 +213,19 @@ export const ALLOWED = {
     ]
   },
   '../src/ops/accounts.mjs::bindConnection': {
-    why: 'admin-only op (actor role checked first); binds by pt_id from the verified job',
+    why: 'PT owner or admin: persist the Connect snapshot for the resolved pt_id',
     queries: [
-      '45cb7122', // UPDATE stripe_connections SET ready=? WHERE pt_id=? AND mode=? AND acc
       '5f50fda9', // SELECT id,role,pt_id FROM users WHERE id=? AND active=1
+      '3e5fd513', // UPDATE stripe_connections SET ready=?,charges_enabled=?,payouts_enable
+      'def2c092', // SELECT requirements FROM stripe_connections WHERE pt_id=? AND mode=? A
       'd54e1a4c', // UPDATE pts SET stripe_ready=? WHERE id=? AND stripe_account=?
+    ]
+  },
+  '../src/connect-status.mjs::resolveConnectPtId': {
+    why: 'PT owner (own pt_id) or admin (explicit pt_id, or the one PT in single-PT mode)',
+    queries: [
+      '32ab894c', // SELECT id FROM pts WHERE deleted_at IS NULL ORDER BY created_at LIMIT
+      '4fe10a82', // SELECT id FROM pts WHERE id=? AND deleted_at IS NULL
     ]
   },
   '../src/mail.mjs::deliverAuthMail': {
@@ -255,7 +299,22 @@ export const ALLOWED = {
       '2e285986', // INSERT OR IGNORE INTO email_outbox(id,pt_id,customer_id,dedupe_key,rec
     ]
   },
-  '../src/mail.mjs::deliverOutbox': {
+  '../src/profile.mjs::readPtProfile': {
+    why: 'PT-only route: the signed-in PT reads their own pts row by user.pt_id',
+    queries: [
+      'abf4ec84', // SELECT * FROM pts WHERE id=?
+    ]
+  },
+  '../src/ops/profile.mjs::updatePtProfile': {
+    why: 'PT-only writer op: re-reads the actor, then updates only their own pts row by user.pt_id',
+    queries: [
+      '5f50fda9', // SELECT id,role,pt_id FROM users WHERE id=? AND active=1
+      'abf4ec84', // SELECT * FROM pts WHERE id=?
+      'abf4ec84', // SELECT * FROM pts WHERE id=?
+      '5f6b88e1', // UPDATE pts SET brand_name=?,about=?,business_name=?,contact_email=?,co
+    ]
+  },
+    '../src/mail.mjs::deliverOutbox': {
     why: "system (Cron Trigger): delivery of queued rows by id; nothing returned to a caller",
     queries: [
       '069786df', // UPDATE email_outbox SET status='failed',attempts=attempts+1,last_error
@@ -263,7 +322,7 @@ export const ALLOWED = {
       'de588a69', // UPDATE email_outbox SET status='sending',next_attempt_at=? WHERE id=? 
       'e17b2f90', // UPDATE email_outbox SET status='sent',provider_id=?,sent_at=?,last_err
       'e77454e4', // SELECT id FROM email_outbox WHERE status IN ('queued','failed','sendin
-      '8ceea2ec', // SELECT email FROM users WHERE pt_id=? AND role='pt' LIMIT 1
+      '0041d856', // SELECT u.email AS login_email, p.reply_to_email, p.reply_to_name FROM 
     ]
   },
   '../src/mail.mjs::runScheduled': {
@@ -332,8 +391,8 @@ export const ALLOWED = {
   '../src/ops/manage.mjs::createBlock': {
     why: "insert with pt_id = caller PT (admin: named PT); replay goes through scopeFor().blockByCreateKey",
     queries: [
+      '4fe10a82', // SELECT id FROM pts WHERE id=? AND deleted_at IS NULL
       'ba9eb617', // INSERT INTO blocks(id,pt_id,title,description,venue,price_pence,capaci
-      '4b1f8101', // SELECT id FROM pts WHERE id=?
     ]
   },
   '../src/ops/manage.mjs::markAttendance': {
@@ -412,6 +471,50 @@ export const ALLOWED = {
       '50851eae', // SELECT id FROM stripe_jobs WHERE target_id=? AND kind='refund' AND sta
       'aabc8d1d', // UPDATE bookings SET refund_status='requested',refund_error=NULL WHERE 
       'c782b604', // SELECT id FROM stripe_jobs WHERE id=?
+    ]
+  },
+  '../src/ops/theme.mjs::readPtTheme': {
+    why: 'PT-only route: the signed-in PT reads their own pts row by user.pt_id',
+    queries: [
+      '213549cf', // SELECT accent,background,foreground FROM pts WHERE id=?
+    ]
+  },
+  '../src/ops/theme.mjs::updatePtTheme': {
+    why: 'PT-only writer op: re-reads the actor, then updates only their own pts colour columns by user.pt_id',
+    queries: [
+      '5f50fda9', // SELECT id,role,pt_id FROM users WHERE id=? AND active=1
+      '43a9c952', // SELECT id,accent,background,foreground FROM pts WHERE id=?
+      '5a88c258', // UPDATE pts SET accent=?,background=?,foreground=? WHERE id=?
+    ]
+  },
+  '../src/theme-resolve.mjs::ptById': {
+    why: 'HTML theme inject: a signed-in PT reads only their own colour columns by user.pt_id',
+    queries: [
+      '7d81321e', // SELECT accent,background,foreground,id FROM pts WHERE id=?
+    ]
+  },
+  '../src/theme-resolve.mjs::publishedPtBySlug': {
+    why: 'HTML theme inject: public published PT colours by slug on /pt/:slug',
+    queries: [
+      '89d03958', // SELECT accent,background,foreground,id,slug FROM pts WHERE slug=? AND published=1
+    ]
+  },
+  '../src/theme-resolve.mjs::bookingPt': {
+    why: 'HTML theme inject: checkout/booking pages read pts colours only for a booking the caller can already see, and only when that PT is published (deleted_at IS NULL when the column exists)',
+    queries: [
+      '19cd571a', // customer, published=1 (no deleted_at column)
+      '863e6f89', // customer, published=1 AND deleted_at IS NULL
+      'a097a01d', // PT, published=1 (no deleted_at column)
+      'b2501664', // PT, published=1 AND deleted_at IS NULL
+      '68a5c0eb', // admin, published=1 (no deleted_at column)
+      'a8176532', // admin, published=1 AND deleted_at IS NULL
+    ]
+  },
+  '../src/theme-resolve.mjs::customerPt': {
+    why: 'HTML theme inject: a signed-in customer reads colours for the PT on their most recent published booking only (deleted_at IS NULL when the column exists)',
+    queries: [
+      '7ea05988', // published=1 (no deleted_at column)
+      'b9d904b1', // published=1 AND deleted_at IS NULL
     ]
   },
   '../src/ops/webhooks.mjs::handleWebhook': {
@@ -524,8 +627,8 @@ export const ALLOWED = {
   '../src/views.mjs::dashboard': {
     why: "PT dashboard count scoped by c.pt_id = user.pt_id",
     queries: [
+      '02bd1c35', // SELECT p.*,u.name owner_name,u.email owner_email,u.active owner_active
       '0e3720a6', // SELECT count(*) n FROM attendance a JOIN bookings b ON b.id=a.booking_
-      '2ce7f380', // SELECT p.*,u.name owner_name,u.email owner_email,u.active owner_active
       'abf4ec84', // SELECT * FROM pts WHERE id=?
       'b2e884bd', // SELECT count(*) n FROM users WHERE role='customer'
     ]
@@ -556,6 +659,8 @@ export const NONLITERAL = {
   '../src/ops/password-reset.mjs::requestReset::dynamic::0067fc82': '${limited} is a constant rate-limit predicate built in the same function; values are bound',
   '../src/ops/password-reset.mjs::requestReset::dynamic::aa8ad8ff': '${limited} is a constant rate-limit predicate built in the same function; values are bound',
   '../src/ops/stripe-jobs.mjs::prepareRefund::ident:activeSql': 'local constant literal in the same function (stripe_jobs by booking id already scoped)',
+  '../src/ops/manage.mjs::deletePt::ident:noUpcomingSql': 'local constant literal in the same file (upcoming paid/pending bookings for this pt_id)',
+  '../src/ops/manage.mjs::deletePt::ident:upcomingBookingsSql': 'local constant literal in the same file (upcoming paid/pending bookings for this pt_id)',
   '../src/ops/webhooks.mjs::refundWrites::dynamic::75b0d86d': '${total}/${pending} are constant SQL sub-expressions defined in the same function',
   '../src/scope.mjs::scopeFor>block::dynamic::bc8ac335': 'scopeFor: ${} is the role scope predicate',
   '../src/scope.mjs::scopeFor>booking::dynamic::36684df0': 'scopeFor: base select + role scope predicate',

@@ -9,12 +9,13 @@ import { scopeFor } from '../scope.mjs';
 import { isGuardFailure } from '../db.mjs';
 import { httpError, isStripe, live, uid } from '../util.mjs';
 import { platformLinkDisabledError, singleConnectExistsError } from '../multi-pt.mjs';
+import { resolveConnectPtId } from '../connect-status.mjs';
 import { stripeConnection } from './bookings.mjs';
 import { refundWrites } from './webhooks.mjs';
 
 async function actor(db, userId) {
   const user = await db.get('SELECT id,role,pt_id,email,name,must_change_password FROM users WHERE id=? AND active=1', userId);
-  if (!user) throw httpError(401, 'Please sign in to continue.');
+  if (!user) throw httpError(401, 'Please sign in to continue.', { code: 'UNAUTHENTICATED' });
   return user;
 }
 const jobStmt = (db, id, kind, target, actorId, payload, now) =>
@@ -84,34 +85,50 @@ export async function prepareRefund(db, { bookingId, userId, token, mode, now = 
   return id;
 }
 
-const onboardPayload = (mode, account, origin) => ({ mode, path: '/v2/core/account_links', v2: true, data: { account, use_case: { type: 'account_onboarding', account_onboarding: { configurations: ['merchant'], refresh_url: origin + '/dashboard?tab=payments&connect=refresh', return_url: origin + '/dashboard?tab=payments&connect=return', collection_options: { fields: 'eventually_due' } } } } });
+// RC-32: POST /v2/core/account_links (2026-09-30.endive) accepts only account and use_case{type, account_onboarding{refresh_url,
+// return_url, collection_options}}. `configurations` is not a request field (prod 400 invalid_fields 'Unknown field', 22 Nov);
+// Stripe infers it from the account's applied configurations (merchant).
+const onboardPayload = (mode, account, origin) => ({ mode, path: '/v2/core/account_links', v2: true, data: { account, use_case: { type: 'account_onboarding', account_onboarding: { refresh_url: origin + '/dashboard?tab=payments&connect=refresh', return_url: origin + '/dashboard?tab=payments&connect=return', collection_options: { fields: 'eventually_due' } } } } });
 
-/** POST /api/pt/stripe/connect: the caller's OWN pt only. */
-export async function prepareConnect(db, { userId, origin, mode, integration = 'connect', multiPt = false, now = Date.now() }) {
+/** RC-32: id (and so the Stripe Idempotency-Key) of the account-creation job for this PT and mode.
+ *  First attempt: the fixed `account:[live:]<pt>` id. While the latest attempt is pending, retrying
+ *  or done, its id is reused, so double taps still share one job and one key (prepareConnect runs in
+ *  the Writer, so this read-then-insert is serialised). Only after a non-retryable failure does the
+ *  next tap get a fresh `<base>:<uid>` id, so neither the stored failure nor Stripe's cached
+ *  idempotent response is replayed. Completion and status lookups use target_id, not this id. */
+export async function accountJobId(db, ptId, mode) {
+  const base = 'account:' + (live(mode) ? 'live:' : '') + ptId;
+  const latest = await db.get("SELECT id,status FROM stripe_jobs WHERE kind='account' AND target_id=? AND (id=? OR substr(id,1,?)=?) ORDER BY created_at DESC, rowid DESC LIMIT 1", ptId, base, base.length + 1, base + ':');
+  if (!latest) return base;
+  return latest.status === 'failed' ? base + ':' + uid() : latest.id;
+}
+
+/** POST /api/pt/stripe/connect: the PT owner or admin. multiPt defaults false (fail-closed). */
+export async function prepareConnect(db, { userId, origin, mode, integration = 'connect', multiPt = false, ptId = null, now = Date.now() }) {
   const user = await actor(db, userId);
-  if (user.role !== 'pt' || !user.pt_id) throw httpError(403, 'Your account does not have access to this action.');
-  if (user.must_change_password) throw httpError(403, 'Change your temporary password first.');
-  if (integration === 'pt_direct') throw httpError(409, 'Use Payments setup to save your own restricted key and webhook secret.');
-  const pt = await db.get('SELECT * FROM pts WHERE id=?', user.pt_id);
+  if (user.must_change_password) throw httpError(403, 'Change your temporary password first.', { code: 'PASSWORD_CHANGE_REQUIRED' });
+  if (integration === 'pt_direct') throw httpError(409, 'Use Payments setup to save your own restricted key and webhook secret.', { code: 'USE_PAYMENTS_SETUP' });
+  const targetId = await resolveConnectPtId(db, user, ptId, { multiPt });
+  const pt = await db.get('SELECT * FROM pts WHERE id=?', targetId);
   const c = await stripeConnection(db, pt.id, mode, integration);
   if (c) {
-    if (c.routing === 'platform') throw httpError(409, 'The admin has linked the platform Stripe account. Check its status instead.');
+    if (c.routing === 'platform') throw httpError(409, 'The admin has linked the platform Stripe account. Check its status instead.', { code: 'PLATFORM_ACCOUNT_LINKED' });
     return job(db, 'onboard:' + uid(), 'onboard', pt.id, user.id, { ...onboardPayload(mode, c.account_id, origin), multiPt }, now);
   }
   if (!multiPt) {
     const other = await db.get('SELECT pt_id FROM stripe_connections WHERE NOT (pt_id=? AND mode=?) LIMIT 1', pt.id, mode);
     if (other) throw singleConnectExistsError();
   }
-  return job(db, 'account:' + (live(mode) ? 'live:' : '') + pt.id, 'account', pt.id, user.id, { mode, origin, multiPt, path: '/v2/core/accounts', v2: true, data: { contact_email: user.email, display_name: pt.brand_name, dashboard: 'full', identity: { country: 'gb' }, configuration: { merchant: { capabilities: { card_payments: { requested: true } } } }, defaults: { currency: 'gbp', responsibilities: { fees_collector: 'stripe', losses_collector: 'stripe' }, locales: ['en-GB'] }, include: ['configuration.merchant'] } }, now);
+  return job(db, await accountJobId(db, pt.id, mode), 'account', pt.id, user.id, { mode, origin, multiPt, path: '/v2/core/accounts', v2: true, data: { contact_email: user.email, display_name: pt.brand_name, dashboard: 'full', identity: { country: 'gb' }, configuration: { merchant: { capabilities: { card_payments: { requested: true } } } }, defaults: { currency: 'gbp', responsibilities: { fees_collector: 'stripe', losses_collector: 'stripe' }, locales: ['en-GB'] }, include: ['configuration.merchant'] } }, now);
 }
 
-/** POST /api/admin/stripe/link (admin only). */
+/** POST /api/admin/stripe/link (admin only). Disabled in single-PT mode. multiPt defaults false (fail-closed). */
 export async function prepareLink(db, { userId, ptId, mode, integration = 'connect', multiPt = false, now = Date.now() }) {
   const user = await actor(db, userId);
-  if (user.role !== 'admin') throw httpError(403, 'Your account does not have access to this action.');
-  if (integration === 'pt_direct') throw httpError(403, 'Owner account linking is disabled. Each PT must configure their own account.');
+  if (user.role !== 'admin') throw httpError(403, 'Your account does not have access to this action.', { code: 'FORBIDDEN' });
+  if (integration === 'pt_direct') throw httpError(403, 'Owner account linking is disabled. Each PT must configure their own account.', { code: 'USE_PAYMENTS_SETUP' });
   if (!multiPt) throw platformLinkDisabledError();
-  if (typeof ptId !== 'string' || !(await db.get('SELECT id FROM pts WHERE id=?', ptId))) throw httpError(404, 'Trainer not found.');
+  if (typeof ptId !== 'string' || !(await db.get('SELECT id FROM pts WHERE id=? AND deleted_at IS NULL', ptId))) throw httpError(404, 'Trainer not found.', { code: 'TRAINER_NOT_FOUND' });
   return job(db, 'link:' + uid(), 'link_platform', ptId, user.id, { mode, multiPt, path: '/v1/account', method: 'GET' }, now);
 }
 
@@ -162,7 +179,7 @@ export async function completeJob(db, { id, result, now = Date.now() }) {
     const again = await db.get('SELECT status,result FROM stripe_jobs WHERE id=?', id);
     if (again?.status === 'done') return JSON.parse(again.result); // a concurrent run committed first
     if ((row.kind === 'account' || row.kind === 'link_platform') && p.multiPt !== true) throw singleConnectExistsError();
-    throw httpError(409, error.message.includes('account_not_other_pt') || row.kind === 'account' || row.kind === 'link_platform' ? 'This Stripe account is already assigned to another trainer in this payment mode.' : 'Checkout Session mismatch.');
+    throw httpError(409, error.message.includes('account_not_other_pt') || row.kind === 'account' || row.kind === 'link_platform' ? 'This Stripe account is already assigned to another trainer in this payment mode.' : 'Checkout Session mismatch.', { code: error.message.includes('account_not_other_pt') || row.kind === 'account' || row.kind === 'link_platform' ? 'ACCOUNT_ASSIGNED' : 'CHECKOUT_SESSION_MISMATCH' });
   }
   return out;
 }

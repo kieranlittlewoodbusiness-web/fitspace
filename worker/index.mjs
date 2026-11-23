@@ -23,9 +23,13 @@ import { bookingPathFor, isHiddenMultiPtRoute, multiPtDisabledError, multiPtEnab
 import { configured as resetConfigured, MESSAGE as RESET_MESSAGE } from '../src/ops/password-reset.mjs';
 import { runScheduled } from '../src/mail.mjs';
 import { stripeConnection } from '../src/ops/bookings.mjs';
+import { accountSnapshot, connectStatusView, resolveConnectPtId } from '../src/connect-status.mjs';
 import { password as validPassword } from '../src/validate.mjs';
 import { rateLimit } from '../src/ratelimit.mjs';
 import { errorExtras, hashPassword, httpError, isStripe, live, verifyPassword } from '../src/util.mjs';
+import { readPtProfile } from '../src/profile.mjs';
+import { readPtTheme } from '../src/ops/theme.mjs';
+import { serveThemedAsset } from '../src/theme-resolve.mjs';
 
 export { Writer } from '../src/writer.mjs';
 
@@ -37,6 +41,20 @@ export const securityHeaders = {
   'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'self'; base-uri 'self'; object-src 'none'",
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()'
 };
+
+export const APEX_HOST = 'resiliencecoaching.app';
+export const WWW_HOST = 'www.resiliencecoaching.app';
+
+/** 301 www to the apex, preserving path and query. Other hosts are unchanged. */
+export function wwwToApexRedirect(request) {
+  const url = new URL(request.url);
+  const host = (request.headers.get('Host') || url.hostname || '').split(':')[0].toLowerCase();
+  if (host !== WWW_HOST) return null;
+  url.protocol = 'https:';
+  url.hostname = APEX_HOST;
+  url.port = '';
+  return new Response(null, { status: 301, headers: { ...securityHeaders, Location: url.toString() } });
+}
 const json = (status, data, extraHeaders = {}) => new Response(JSON.stringify(data), { status, headers: { ...securityHeaders, 'Content-Type': 'application/json; charset=utf-8', ...extraHeaders } });
 
 async function boundedText(request, max) {
@@ -71,13 +89,17 @@ export async function handle(request, env) {
   const route = url.pathname;
   const method = request.method;
   const paymentMode = env.PAYMENT_MODE || 'demo';
+  const multiPt = multiPtEnabled(env);
   // Same default and validation as app/pt-stripe.cjs; wrangler.jsonc sets 'connect' explicitly.
   const integration = env.STRIPE_INTEGRATION || 'pt_direct';
   if (!['pt_direct', 'connect'].includes(integration)) throw httpError(503, 'Set STRIPE_INTEGRATION=pt_direct or connect.');
   if (!['demo', 'stripe_test', 'stripe_live'].includes(paymentMode)) throw httpError(503, 'Use PAYMENT_MODE=demo, stripe_test or stripe_live.');
   // netlify/functions/platform.mjs:47: with the owner (Connect) integration a configured key that
   // does not match the payment mode fails closed for every API route except sign-in, before any write.
-  if (integration !== 'pt_direct' && env.STRIPE_SECRET_KEY && route.startsWith('/api/') && !route.startsWith('/api/auth/')) validatePlatformKey(env, paymentMode);
+  if (integration !== 'pt_direct' && env.STRIPE_SECRET_KEY && route.startsWith('/api/') && !route.startsWith('/api/auth/')) {
+    try { validatePlatformKey(env, paymentMode); }
+    catch (error) { throw httpError(error.status || 503, error.message, { code: 'PAYMENTS_NOT_READY' }); }
+  }
   // CR 5941600057 M6: netlify/functions/platform.mjs:48-49. Every non-diagnostic API route in
   // Stripe mode needs a matching key (or, pt_direct, the credential encryption key), the
   // platform webhook secret and an https APP_URL, checked before rate limits, Stripe calls or
@@ -87,9 +109,8 @@ export async function handle(request, env) {
   const paymentOrigin = env.APP_URL ? new URL(env.APP_URL).origin : url.origin;
   const secure = url.protocol === 'https:';
   const emailMode = env.EMAIL_MODE || 'preview';
-  const multiPt = multiPtEnabled(env);
   if (!multiPt && isHiddenMultiPtRoute(method, route)) throw multiPtDisabledError();
-  const requireStripeMode = () => { if (!isStripe(paymentMode)) throw httpError(409, 'Stripe sandbox mode is not enabled.'); };
+  const requireStripeMode = () => { if (!isStripe(paymentMode)) throw httpError(409, 'Stripe sandbox mode is not enabled.', { code: 'STRIPE_MODE_DISABLED' }); };
   const operation = async jobId => { const o = await paymentOperation(env, db, jobId, stripeOpts); return json(o.status, o.body); };
 
   if (route === '/health') return json(200, { ok: true });
@@ -169,7 +190,7 @@ export async function handle(request, env) {
 
   // ---- public ----
   if (method === 'GET' && route === '/api/public/site') {
-    return json(200, await publicSite(db, { multiPt }), { 'Cache-Control': 'public, max-age=60' });
+    return json(200, await publicSite(db, { multiPt }), { 'Cache-Control': 'no-store' });
   }
   if (method === 'GET' && route === '/api/public/pts') return json(200, { pts: await publishedPts(db) });
   const ptPublic = route.match(/^\/api\/public\/pts\/([a-z0-9-]+)$/);
@@ -180,6 +201,24 @@ export async function handle(request, env) {
     requireUser(user);
     await expireHolds(db);
     return json(200, await dashboard(db, user, { paymentMode, integration }));
+  }
+
+  // ---- PT profile (session + CSRF on writes; PT role only) ----
+  if (method === 'GET' && route === '/api/pt/profile') {
+    requireUser(user, ['pt']);
+    return json(200, await readPtProfile(db, user));
+  }
+  if ((method === 'PATCH' || method === 'PUT') && route === '/api/pt/profile') {
+    requireUser(user, ['pt']);
+    return json(200, await write(env, 'updatePtProfile', { userId: user.id, body }));
+  }
+  if (method === 'GET' && route === '/api/pt/theme') {
+    requireUser(user, ['pt']);
+    return json(200, await readPtTheme(db, user));
+  }
+  if (method === 'PUT' && route === '/api/pt/theme') {
+    requireUser(user, ['pt']);
+    return json(200, await write(env, 'updatePtTheme', { userId: user.id, body }));
   }
 
   // ---- admin ----
@@ -204,9 +243,16 @@ export async function handle(request, env) {
     return json(201, await createPtRoute(env, user, body));
   }
   const adminPt = route.match(/^\/api\/admin\/pts\/([^/]+)$/);
+  const adminTrainer = route.match(/^\/api\/admin\/trainers\/([^/]+)$/);
   if (method === 'PUT' && adminPt) {
     requireUser(user, ['admin']);
     return json(200, await write(env, 'updatePtBranding', { userId: user.id, ptId: idParam(adminPt[1], 'trainer', { encoded: true }), body }));
+  }
+  if (method === 'DELETE' && (adminPt || adminTrainer)) {
+    requireUser(user, ['admin']);
+    const ptId = idParam((adminPt || adminTrainer)[1], 'trainer', { encoded: true });
+    const forceValues = url.searchParams.getAll('force');
+    return json(200, await write(env, 'deletePt', { userId: user.id, ptId, force: forceValues.at(-1) === '1' }));
   }
 
   // ---- classes and attendance ----
@@ -268,8 +314,12 @@ export async function handle(request, env) {
 
   // ---- PT payments setup (caller's own pt_id only) ----
   if (method === 'GET' && route === '/api/pt/stripe/setup') {
-    requireUser(user, ['pt']);
-    return json(200, await credentialStatus(db, env, scopeFor(db, user).ptId, integration));
+    requireUser(user, ['pt', 'admin']);
+    const ptId = await resolveConnectPtId(db, user, url.searchParams.get('pt_id'), { multiPt });
+    const setup = await credentialStatus(db, env, ptId, integration);
+    if (integration !== 'connect') return json(200, setup);
+    const connection = await stripeConnection(db, ptId, paymentMode, integration);
+    return json(200, { ...setup, ...connectStatusView(connection, { mode: paymentMode }) });
   }
   const ptStripeWrite = route.match(/^\/api\/pt\/stripe\/(credentials|check|enable|disconnect)$/);
   if (method === 'POST' && ptStripeWrite) {
@@ -278,28 +328,34 @@ export async function handle(request, env) {
     throw httpError(410, 'PT-owned Stripe keys can no longer be changed here. Use Stripe Connect, or ask the owner.', { code: 'PT_DIRECT_WRITES_RETIRED' });
   }
   if (method === 'POST' && route === '/api/pt/stripe/connect') {
-    requireUser(user, ['pt']);
-    if (!isStripe(paymentMode)) throw httpError(503, 'Stripe sandbox mode is not enabled.');
-    return operation(await write(env, 'prepareConnect', { userId: user.id, origin: paymentOrigin, mode: paymentMode, integration, multiPt }));
+    requireUser(user, ['pt', 'admin']);
+    if (!isStripe(paymentMode)) throw httpError(503, 'Stripe sandbox mode is not enabled.', { code: 'STRIPE_MODE_DISABLED' });
+    return operation(await write(env, 'prepareConnect', { userId: user.id, origin: paymentOrigin, mode: paymentMode, integration, multiPt, ptId: body.pt_id }));
   }
   if (method === 'POST' && route === '/api/pt/stripe/status') {
-    requireUser(user, ['pt']);
-    if (!isStripe(paymentMode)) throw httpError(503, 'Stripe sandbox mode is not enabled.');
-    const ptId = scopeFor(db, user).ptId;
+    requireUser(user, ['pt', 'admin']);
+    if (!isStripe(paymentMode)) throw httpError(503, 'Stripe sandbox mode is not enabled.', { code: 'STRIPE_MODE_DISABLED' });
+    const ptId = await resolveConnectPtId(db, user, body.pt_id, { multiPt });
     if (integration === 'pt_direct') return json(200, await credentialStatus(db, env, ptId, integration));
     const c = await stripeConnection(db, ptId, paymentMode, integration);
-    if (!c) return json(200, { ready: false });
-    let ready;
+    if (!c) return json(200, connectStatusView(null, { mode: paymentMode }));
+    let account;
     if (c.routing === 'platform') {
-      const a = await stripe(env, '/v1/account', null, { ...stripeOpts, method: 'GET' });
-      if (a.id !== c.account_id) throw httpError(409, 'The server key belongs to a different Stripe account.');
-      ready = Boolean(a.charges_enabled);
+      account = await stripe(env, '/v1/account', null, { ...stripeOpts, method: 'GET' });
+      if (account.id !== c.account_id) throw httpError(409, 'The server key belongs to a different Stripe account.', { code: 'CONNECT_ACCOUNT_MISMATCH' });
     } else {
-      const a = await stripe(env, '/v2/core/accounts/' + encodeURIComponent(c.account_id) + '?include[]=configuration.merchant', null, { ...stripeOpts, method: 'GET', v2: true });
-      if (a.id !== c.account_id || a.livemode !== live(paymentMode)) throw httpError(409, 'Unexpected Stripe account or payment mode.');
-      ready = a.configuration?.merchant?.capabilities?.card_payments?.status === 'active';
+      const retrieve = include => stripe(env, '/v2/core/accounts/' + encodeURIComponent(c.account_id) + include, null, { ...stripeOpts, method: 'GET', v2: true });
+      try {
+        account = await retrieve('?include[0]=configuration.merchant&include[1]=requirements');
+      } catch (error) {
+        // RC-33: if Stripe rejects the requirements include, retry once without it; the stored list is then kept.
+        if (error?.stripeStatus !== 400) throw error;
+        account = await retrieve('?include[0]=configuration.merchant');
+      }
+      if (account.id !== c.account_id || account.livemode !== live(paymentMode)) throw httpError(409, 'Unexpected Stripe account or payment mode.', { code: 'CONNECT_ACCOUNT_MISMATCH' });
     }
-    return json(200, await write(env, 'bindConnection', { userId: user.id, mode: paymentMode, accountId: c.account_id, routing: c.routing, ready }));
+    const snap = accountSnapshot(account);
+    return json(200, await write(env, 'bindConnection', { userId: user.id, mode: paymentMode, accountId: c.account_id, routing: c.routing, ptId, multiPt, ...snap }));
   }
 
   if (route.startsWith('/api/')) return json(404, { error: 'This action is not available.' });
@@ -311,7 +367,7 @@ export async function handle(request, env) {
   return null;
 }
 
-const DIAGNOSTIC = /^\/api\/(me|auth\/.*|dashboard|admin\/.*|public\/.*)$/;
+const DIAGNOSTIC = /^\/api\/(me|auth\/.*|dashboard|admin\/.*|public\/.*|pt\/profile|pt\/theme)$/;
 const PT_WEBHOOK = /^\/api\/stripe\/pt\/[a-f0-9-]{36}\/webhook$/;
 /** Legacy platform.mjs:47-49 (`diagnostic` routes stay reachable so the owner can see and fix
  *  the configuration). Throws 503 before anything else runs. */
@@ -326,10 +382,13 @@ export const STRIPE_ACTIONS = /^\/api\/(pt\/stripe\/(connect|status)|admin\/stri
 export function paymentReadiness(env, route, paymentMode, integration) {
   if (!STRIPE_ACTIONS.test(route) && (PT_WEBHOOK.test(route) || route.startsWith('/api/pt/stripe/') || DIAGNOSTIC.test(route))) return;
   if (integration === 'pt_direct') {
-    if (isStripe(paymentMode) && !encryptionConfigured(env)) throw httpError(503, 'The owner must configure CREDENTIAL_ENCRYPTION_KEY as 64 random hexadecimal characters.');
-  } else validatePlatformKey(env, paymentMode);
+    if (isStripe(paymentMode) && !encryptionConfigured(env)) throw httpError(503, 'The owner must configure CREDENTIAL_ENCRYPTION_KEY as 64 random hexadecimal characters.', { code: 'PAYMENTS_NOT_READY' });
+  } else {
+    try { validatePlatformKey(env, paymentMode); }
+    catch (error) { throw httpError(error.status || 503, error.message, { code: 'PAYMENTS_NOT_READY' }); }
+  }
   if (paymentMode !== 'demo' && ((integration !== 'pt_direct' && !env.STRIPE_WEBHOOK_SECRET) || !/^https:\/\/[^/]+(?:\/)?$/.test(env.APP_URL || ''))) {
-    throw httpError(503, 'Set STRIPE_WEBHOOK_SECRET and an HTTPS APP_URL before accepting Stripe payments.');
+    throw httpError(503, 'Set STRIPE_WEBHOOK_SECRET and an HTTPS APP_URL before accepting Stripe payments.', { code: 'PAYMENTS_NOT_READY' });
   }
 }
 
@@ -347,8 +406,8 @@ function temporaryPassword(env, key) {
   return crypto.createHmac('sha256', secret).update('fitspace-pt-temporary:' + key).digest('base64url').slice(0, 16) + '!';
 }
 
-/** CR 5941600057: the Cron Trigger is OFF unless CRON_ENABLED is exactly "true". Only
- *  env.preview sets it; production sets it at the approved go-live step. So an accidental
+/** CR 5941600057: the Cron Trigger is OFF unless CRON_ENABLED is exactly "true".
+ *  env.preview and env.production set it; the default env does not. So an accidental
  *  deploy of the default env (bound to the real D1 database) runs nothing on a schedule. */
 export async function cronTick(env) {
   if (env.CRON_ENABLED !== 'true') return { skipped: 'CRON_ENABLED is not "true"' };
@@ -361,14 +420,13 @@ export default {
   },
   async fetch(request, env) {
     try {
+      const redirected = wwwToApexRedirect(request);
+      if (redirected) return redirected;
       const response = await handle(request, env);
       if (response) return response;
       if (!['GET', 'HEAD'].includes(request.method)) return new Response('Method not allowed.', { status: 405, headers: securityHeaders });
       const asset = await env.ASSETS.fetch(request);
-      const out = new Response(asset.body, asset);
-      for (const [name, value] of Object.entries(securityHeaders)) out.headers.set(name, value);
-      if (new URL(request.url).pathname === '/reset-password') out.headers.set('Referrer-Policy', 'no-referrer');
-      return out;
+      return await serveThemedAsset(asset, request, env, securityHeaders);
     } catch (error) {
       if (error.status) return json(error.status, { error: error.message, ...errorExtras(error) });
       console.error('RC-4 request failed:', error.code || error.name || 'Error');

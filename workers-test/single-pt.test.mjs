@@ -37,14 +37,14 @@ describe('GET /api/public/site', () => {
   it('returns the contract, Cache-Control, and null pt when none is published', async () => {
     const empty = await send(new Request(ORIGIN + '/api/public/site'), single());
     expect(empty.status).toBe(200);
-    expect(empty.headers.get('Cache-Control')).toBe('public, max-age=60');
+    expect(empty.headers.get('Cache-Control')).toBe('no-store');
     expect(await jsonOf(empty)).toEqual({ multi_pt_enabled: false, pt: null, default_slug: null });
 
     const s = await seedBlock({ customers: 0 });
     const row = await db().get('SELECT * FROM pts WHERE id=?', s.ptId);
     const ok = await send(new Request(ORIGIN + '/api/public/site'), single());
     const body = await jsonOf(ok);
-    expect(ok.headers.get('Cache-Control')).toBe('public, max-age=60');
+    expect(ok.headers.get('Cache-Control')).toBe('no-store');
     expect(body.multi_pt_enabled).toBe(false);
     expect(body.default_slug).toBe(row.slug);
     expect(body.pt).toMatchObject({
@@ -57,6 +57,25 @@ describe('GET /api/public/site', () => {
 
     const on = await send(new Request(ORIGIN + '/api/public/site'), multi());
     expect((await jsonOf(on)).multi_pt_enabled).toBe(true);
+  });
+
+  it('does not publicly cache /api/public/site or the PT page payloads', async () => {
+    const s = await seedBlock({ customers: 0 });
+    const row = await db().get('SELECT * FROM pts WHERE id=?', s.ptId);
+    // /api/public/pts (the directory) is 404 in single-PT mode; check it when multi-PT is on.
+    for (const [path, env] of [
+      ['/api/public/site', single()],
+      ['/api/public/pts', multi()],
+      ['/api/public/pts/' + row.slug, multi()]
+    ]) {
+      const res = await send(new Request(ORIGIN + path), env);
+      expect(res.status, path).toBe(200);
+      const cache = (res.headers.get('Cache-Control') || '').toLowerCase();
+      expect(cache, path).toContain('no-store');
+      expect(cache, path).not.toContain('max-age');
+      expect(cache, path).not.toMatch(/(?:^|,)\s*public(?:$|,)/);
+      await res.text();
+    }
   });
 });
 
@@ -199,6 +218,7 @@ describe('Stripe Connect: at most one account, direct charges, no application fe
       .rejects.toMatchObject({ status: 409, code: 'PLATFORM_LINK_DISABLED' });
   });
 
+
   it('single_connect: a second PT cannot bind another account when single-PT mode is on', async () => {
     const a = await seedBlock({ customers: 0, blockId: 'conn-a' });
     const b = await seedBlock({ customers: 0, blockId: 'conn-b' });
@@ -240,6 +260,39 @@ describe('Stripe Connect: at most one account, direct charges, no application fe
     expect(created.data.defaults.responsibilities.losses_collector).toBe('stripe');
   });
 });
+
+
+  it('omitting multiPt on prepareConnect is fail-closed (409 SINGLE_CONNECT_EXISTS)', async () => {
+    await db().run('DELETE FROM stripe_jobs');
+    await db().run('DELETE FROM stripe_connections');
+    const a = await seedBlock({ customers: 0, blockId: 'omit-prep-a' });
+    const b = await seedBlock({ customers: 0, blockId: 'omit-prep-b' });
+    const ptA = await seedUser({ role: 'pt', ptId: a.ptId });
+    const ptB = await seedUser({ role: 'pt', ptId: b.ptId });
+    const jobA = await prepareConnect(db(), { userId: ptA.id, origin: ORIGIN, mode: 'stripe_test' });
+    await completeJob(db(), { id: jobA, result: { id: 'acct_test_omit_prep' } });
+    await expect(prepareConnect(db(), { userId: ptB.id, origin: ORIGIN, mode: 'stripe_test' }))
+      .rejects.toMatchObject({ status: 409, code: 'SINGLE_CONNECT_EXISTS' });
+  });
+
+  it('omitting multiPt on completeJob is fail-closed (409 SINGLE_CONNECT_EXISTS)', async () => {
+    await db().run('DELETE FROM stripe_jobs');
+    await db().run('DELETE FROM stripe_connections');
+    const a = await seedBlock({ customers: 0, blockId: 'omit-job-a' });
+    const b = await seedBlock({ customers: 0, blockId: 'omit-job-b' });
+    const ptA = await seedUser({ role: 'pt', ptId: a.ptId });
+    const ptB = await seedUser({ role: 'pt', ptId: b.ptId });
+    const jobA = await prepareConnect(db(), { userId: ptA.id, origin: ORIGIN, mode: 'stripe_test' });
+    const jobB = await prepareConnect(db(), { userId: ptB.id, origin: ORIGIN, mode: 'stripe_test' });
+    const row = await db().get('SELECT payload FROM stripe_jobs WHERE id=?', jobB);
+    const payload = JSON.parse(row.payload);
+    delete payload.multiPt;
+    await db().run('UPDATE stripe_jobs SET payload=? WHERE id=?', JSON.stringify(payload), jobB);
+    await completeJob(db(), { id: jobA, result: { id: 'acct_test_omit_one' } });
+    await expect(completeJob(db(), { id: jobB, result: { id: 'acct_test_omit_two' } }))
+      .rejects.toMatchObject({ status: 409, code: 'SINGLE_CONNECT_EXISTS' });
+    expect(await db().all('SELECT account_id FROM stripe_connections')).toEqual([{ account_id: 'acct_test_omit_one' }]);
+  });
 
 describe('customer 409 copy', () => {
   it('tells the customer to contact their coach to refund a completed payment', async () => {

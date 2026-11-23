@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { scopeFor } from '../scope.mjs';
 import { isGuardFailure, isUniqueViolation } from '../db.mjs';
 import { digest, httpError, uid } from '../util.mjs';
+import { connectStatusView, parseRequirements, resolveConnectPtId } from '../connect-status.mjs';
 import { branding } from '../validate.mjs';
 
 const SESSION_MS = 7 * 86400000;
@@ -40,7 +41,7 @@ export async function updatePtBranding(db, { userId, ptId, body }) {
   let r;
   try {
     [r] = await db.batch([
-      db.stmt('UPDATE pts SET slug=?,brand_name=?,tagline=?,description=?,about=?,accent=?,background=?,foreground=?,features=?,published=? WHERE id=?', b.slug, b.name, b.tagline, b.description, b.about, b.accent, b.background, b.foreground, JSON.stringify(b.features), b.published, ptId),
+      db.stmt('UPDATE pts SET slug=?,brand_name=?,tagline=?,description=?,about=?,accent=?,background=?,foreground=?,features=?,published=? WHERE id=? AND deleted_at IS NULL', b.slug, b.name, b.tagline, b.description, b.about, b.accent, b.background, b.foreground, JSON.stringify(b.features), b.published, ptId),
       db.stmt('INSERT INTO audit_log VALUES(?,?,?,?,?)', uid(), user.id, 'pt_branding_updated', ptId, Date.now())
     ]);
   } catch (error) {
@@ -51,15 +52,31 @@ export async function updatePtBranding(db, { userId, ptId, body }) {
   return { ok: true, path: '/pt/' + b.slug };
 }
 
-/** POST /api/pt/stripe/status result: refresh readiness for the caller's OWN connection. */
-export async function bindConnection(db, { userId, mode, accountId, routing, ready }) {
+/** POST /api/pt/stripe/status result: persist the full Connect snapshot for the PT owner or admin. */
+export async function bindConnection(db, { userId, mode, accountId, routing, ready, charges_enabled, payouts_enabled, details_submitted, requirements, ptId = null, multiPt = false, now = Date.now() }) {
   const user = await db.get('SELECT id,role,pt_id FROM users WHERE id=? AND active=1', userId);
-  if (user?.role !== 'pt' || !user.pt_id) throw httpError(403, 'Your account does not have access to this action.');
+  const targetId = await resolveConnectPtId(db, user, ptId, { multiPt });
+  const snap = {
+    account_id: accountId, routing, ready,
+    charges_enabled: Boolean(charges_enabled), payouts_enabled: Boolean(payouts_enabled),
+    details_submitted: Boolean(details_submitted),
+    // RC-33: null/absent means the Stripe response carried no requirements; keep the stored list,
+    // unless the account is ready (CR m1): then clear it so an active card never shows a stale 'restricted'.
+    requirements: requirements != null ? parseRequirements(requirements) : ready ? parseRequirements({}) : null
+  };
   await db.batch([
-    db.stmt('UPDATE stripe_connections SET ready=? WHERE pt_id=? AND mode=? AND account_id=? AND routing=?', ready ? 1 : 0, user.pt_id, mode, accountId, routing),
-    mode === 'stripe_test' && routing === 'connected' ? db.stmt('UPDATE pts SET stripe_ready=? WHERE id=? AND stripe_account=?', ready ? 1 : 0, user.pt_id, accountId) : null
+    db.stmt(
+      'UPDATE stripe_connections SET ready=?,charges_enabled=?,payouts_enabled=?,details_submitted=?,requirements=COALESCE(?,requirements),updated_at=? WHERE pt_id=? AND mode=? AND account_id=? AND routing=?',
+      snap.ready ? 1 : 0, snap.charges_enabled ? 1 : 0, snap.payouts_enabled ? 1 : 0, snap.details_submitted ? 1 : 0,
+      snap.requirements ? JSON.stringify(snap.requirements) : null, now, targetId, mode, accountId, routing
+    ),
+    mode === 'stripe_test' && routing === 'connected' ? db.stmt('UPDATE pts SET stripe_ready=? WHERE id=? AND stripe_account=?', snap.ready ? 1 : 0, targetId, accountId) : null
   ]);
-  return { ready, account_id: accountId, routing, mode };
+  if (!snap.requirements) {
+    const stored = await db.get('SELECT requirements FROM stripe_connections WHERE pt_id=? AND mode=? AND account_id=? AND routing=?', targetId, mode, accountId, routing);
+    snap.requirements = parseRequirements(stored?.requirements);
+  }
+  return connectStatusView(snap, { mode });
 }
 
 /** POST /api/bookings/:id/cancel for demo bookings (owner customer, owning PT or admin). */

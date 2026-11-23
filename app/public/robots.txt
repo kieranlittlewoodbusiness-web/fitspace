@@ -1,0 +1,5 @@
+# Canonical origin: https://resiliencecoaching.app
+User-agent: *
+Allow: /
+
+Sitemap: https://resiliencecoaching.app/sitemap.xml

@@ -52,11 +52,16 @@ test('preview-apply.mjs refuses the production id in any case or padding, before
 });
 
 test('guard.mjs: normalised production check shared by the generators', async () => {
-  const { safeDatabaseId, isProduction, mentionsProduction } = await import('../docs/rc-4/d1-rehearsal/guard.mjs');
+  const { safeDatabaseId, isProduction, mentionsProduction, requireProductionEnv } = await import('../docs/rc-4/d1-rehearsal/guard.mjs');
   for (const id of PROD_VARIANTS) { assert.equal(isProduction(id), true, JSON.stringify(id)); assert.throws(() => safeDatabaseId(id), /production/); }
   assert.equal(safeDatabaseId(' 81379D2E-C718-48B7-870D-1D189FEEA966 '), '81379d2e-c718-48b7-870d-1d189feea966');
   assert.equal(mentionsProduction('x FD8A613F y'), true);
   assert.equal(mentionsProduction('81379d2e-c718-48b7-870d-1d189feea966'), false);
+  assert.equal(requireProductionEnv('production'), 'production');
+  assert.equal(requireProductionEnv(' production '), 'production');
+  for (const name of [undefined, '', 'preview', 'Production', 'prod']) {
+    assert.throws(() => requireProductionEnv(name), /only with --env production/);
+  }
   for (const f of ['docs/rc-4/d1-rehearsal/generate.mjs', 'docs/rc-4/d1-rehearsal/preview-apply.mjs', 'docs/rc-4/preview/gen-upload.mjs']) {
     const src = readFileSync(f, 'utf8');
     assert.match(src, /from '\.\.?\/(?:d1-rehearsal\/)?guard\.mjs'/, f + ' uses the shared guard');
@@ -64,47 +69,138 @@ test('guard.mjs: normalised production check shared by the generators', async ()
   }
 });
 
-test('wrangler.jsonc: the default env does not enable the cron; only env.preview does', () => {
+test('wrangler.jsonc: the default env does not enable the cron; preview and production do', () => {
   const cfg = readFileSync('wrangler.jsonc', 'utf8');
-  const preview = cfg.slice(cfg.indexOf('"preview": {'));
   const top = cfg.slice(0, cfg.indexOf('"env": {'));
+  const previewStart = cfg.indexOf('"preview": {');
+  const productionStart = cfg.indexOf('"production": {');
+  assert.ok(previewStart >= 0 && productionStart > previewStart);
+  const preview = cfg.slice(previewStart, productionStart);
+  const production = cfg.slice(productionStart);
   assert.doesNotMatch(top, /"CRON_ENABLED"/);
+  assert.doesNotMatch(top, /"D1_DATABASE_ID"/);
+  assert.doesNotMatch(top, /"triggers"/);
+  assert.doesNotMatch(top, new RegExp(PRODUCTION), 'default env must not contain the production D1 id');
   assert.match(preview, /"CRON_ENABLED": "true"/);
   assert.match(preview, /"database_id": "81379d2e-c718-48b7-870d-1d189feea966"/);
   assert.match(preview, /"D1_DATABASE_ID": "81379d2e-c718-48b7-870d-1d189feea966"/);
-  assert.doesNotMatch(top, /"D1_DATABASE_ID"/);
-  assert.doesNotMatch(preview, new RegExp(PRODUCTION));
+  assert.doesNotMatch(preview, new RegExp(PRODUCTION), 'preview env must not contain the production D1 id');
+  assert.match(top, /"database_id": "00000000-0000-4000-8000-000000000000"/);
+  assert.match(production, /"CRON_ENABLED": "true"/);
+  assert.match(production, /"PAYMENT_MODE": "stripe_live"/);
+  assert.match(production, new RegExp('"D1_DATABASE_ID": "' + PRODUCTION + '"'));
+  assert.match(production, /"MAIL_FROM": "bookings@mail.resiliencecoaching.app"/);
 });
 
-// QA D3 (f978692): the production/default env has neither a cron trigger nor CRON_ENABLED;
-// env.preview has both. Resolved through wrangler's own config reader (the one `wrangler
-// deploy` uses), so top-level -> env inheritance is applied exactly as a deploy would.
-test('wrangler.jsonc resolved by wrangler: no cron trigger on the default (production) env; preview has it', async () => {
+// Default env: no cron, no CRON_ENABLED (QA D3). env.production has both, and is selected
+// only with `--env production`. Resolved through wrangler's own config reader.
+test('wrangler.jsonc resolved by wrangler: cron and live Stripe only under --env production', async () => {
   const { unstable_readConfig: readConfig } = await import('wrangler');
+  const { previewOutOfBandAllowed } = await import('../src/ops/password-reset.mjs');
   const resolve = (env) => readConfig({ config: 'wrangler.jsonc', env });
-  const prod = resolve(undefined), preview = resolve('preview');
+  const def = resolve(undefined), preview = resolve('preview'), production = resolve('production');
   const PRODUCTION_DB = 'fd8a613f-4dd4-462b-83e0-d7673031a6fc';
-  assert.equal(prod.d1_databases[0].database_id, PRODUCTION_DB);
-  assert.deepEqual(prod.triggers?.crons ?? [], [], 'default env must not register a cron trigger');
-  assert.equal(prod.vars?.CRON_ENABLED, undefined);
+  const LOCAL_DB = '00000000-0000-4000-8000-000000000000';
+  assert.equal(def.d1_databases[0].database_id, LOCAL_DB);
+  assert.notEqual(def.d1_databases[0].database_id, PRODUCTION_DB);
+  assert.deepEqual(def.triggers?.crons ?? [], [], 'default env must not register a cron trigger');
+  assert.equal(def.vars?.CRON_ENABLED, undefined);
+  assert.equal(def.vars?.D1_DATABASE_ID, undefined);
+  assert.equal(def.vars?.PAYMENT_MODE, 'demo');
+  assert.equal(def.vars?.EMAIL_MODE, 'preview');
   assert.deepEqual(preview.triggers?.crons, ['* * * * *']);
   assert.equal(preview.vars?.CRON_ENABLED, 'true');
   assert.equal(preview.vars?.D1_DATABASE_ID, '81379d2e-c718-48b7-870d-1d189feea966');
-  assert.equal(prod.vars?.D1_DATABASE_ID, undefined);
   assert.notEqual(preview.d1_databases[0].database_id, PRODUCTION_DB);
-  // Any other env that ever gets a schedule must not be bound to the production database.
+  assert.notEqual(preview.vars?.PAYMENT_MODE, 'stripe_live');
+  assert.deepEqual(production.triggers?.crons, ['* * * * *']);
+  assert.equal(production.vars?.CRON_ENABLED, 'true');
+  assert.equal(production.vars?.PAYMENT_MODE, 'stripe_live');
+  assert.equal(production.vars?.EMAIL_MODE, 'send');
+  assert.equal(production.vars?.RESET_EMAIL_MODE, 'send');
+  assert.equal(production.vars?.MAIL_FROM, 'bookings@mail.resiliencecoaching.app');
+  assert.equal(production.vars?.APP_URL, 'https://resiliencecoaching.app');
+  assert.equal(production.vars?.D1_DATABASE_ID, PRODUCTION_DB);
+  assert.equal(production.d1_databases[0].database_id, PRODUCTION_DB);
+  assert.equal(production.vars?.STRIPE_INTEGRATION, 'connect');
+  assert.equal(previewOutOfBandAllowed(production.vars), false, 'preview reset path must stay fail-closed on prod');
+  const routes = (production.routes || production.custom_domains || []).map(r => r.pattern || r);
+  assert.ok(routes.some(r => String(r).includes('resiliencecoaching.app')));
+  assert.ok(routes.some(r => String(r).includes('www.resiliencecoaching.app')));
+  // Only the explicit production env may combine a cron trigger with the production database.
   const raw = (await import('wrangler')).experimental_readRawConfig({ config: 'wrangler.jsonc' }).rawConfig;
   for (const name of Object.keys(raw.env || {})) {
     const c = resolve(name);
-    if ((c.triggers?.crons ?? []).length) assert.notEqual(c.d1_databases?.[0]?.database_id, PRODUCTION_DB, name);
+    if ((c.triggers?.crons ?? []).length && c.d1_databases?.[0]?.database_id === PRODUCTION_DB) {
+      assert.equal(name, 'production', name);
+    }
   }
+  assert.notEqual((resolve('preview').vars?.PAYMENT_MODE), 'stripe_live');
+  assert.notEqual(def.vars?.PAYMENT_MODE, 'stripe_live');
+  // The full production D1 id is resolved only under --env production.
+  assert.notEqual(def.d1_databases[0].database_id, PRODUCTION_DB);
+  assert.notEqual(preview.d1_databases[0].database_id, PRODUCTION_DB);
+  assert.notEqual(preview.vars?.D1_DATABASE_ID, PRODUCTION_DB);
+  assert.equal(production.d1_databases[0].database_id, PRODUCTION_DB);
+  assert.equal(production.vars?.D1_DATABASE_ID, PRODUCTION_DB);
 });
 
-test('wrangler.jsonc: MULTI_PT_ENABLED is "false" on the default and preview envs', async () => {
+test('wrangler.jsonc: MULTI_PT_ENABLED is "false" on the default, preview and production envs', async () => {
   const { unstable_readConfig: readConfig } = await import('wrangler');
   const resolve = (env) => readConfig({ config: 'wrangler.jsonc', env });
   assert.equal(resolve(undefined).vars?.MULTI_PT_ENABLED, 'false');
   assert.equal(resolve('preview').vars?.MULTI_PT_ENABLED, 'false');
+  assert.equal(resolve('production').vars?.MULTI_PT_ENABLED, 'false');
+});
+
+test('wrangler.jsonc: only env.production is named resiliencecoaching', async () => {
+  const { unstable_readConfig: readConfig } = await import('wrangler');
+  const resolve = (env) => readConfig({ config: 'wrangler.jsonc', env });
+  const def = resolve(undefined), preview = resolve('preview'), production = resolve('production');
+  assert.equal(def.name, 'resiliencecoaching-local');
+  assert.equal(preview.name, 'resiliencecoaching-preview');
+  assert.equal(production.name, 'resiliencecoaching');
+  assert.notEqual(def.name, production.name, 'default Worker name must never equal the production name');
+});
+
+test('wrangler.jsonc: default has no routes or custom domains; preview has none for the prod zone', async () => {
+  const { unstable_readConfig: readConfig } = await import('wrangler');
+  const resolve = (env) => readConfig({ config: 'wrangler.jsonc', env });
+  const patterns = (cfg) => [...(cfg.routes || []), ...(cfg.custom_domains || []), cfg.route].filter(Boolean).map(r => String(r.pattern || r));
+  const def = resolve(undefined), preview = resolve('preview');
+  assert.deepEqual(patterns(def), [], 'default env must have no routes or custom domains');
+  const prodZone = /(^|\.)resiliencecoaching\.app$/i;
+  for (const pattern of patterns(preview)) {
+    assert.doesNotMatch(pattern, prodZone, 'preview must not route the production zone: ' + pattern);
+  }
+});
+
+
+test('gen-upload writes a script from the preview bundle and refuses a prod-bound config', async () => {
+  const { assertSafePreviewUpload, PREVIEW_DB } = await import('../docs/rc-4/preview/gen-upload.mjs');
+  const previewMeta = () => ({ bindings: [{ type: 'd1', name: 'DB', id: PREVIEW_DB }] });
+  assert.doesNotThrow(() => assertSafePreviewUpload(previewMeta(), { database_id: PREVIEW_DB, D1_DATABASE_ID: PREVIEW_DB }));
+  // The guard comparison constant in the bundle must not, by itself, refuse a preview-bound upload.
+  assert.doesNotThrow(() => assertSafePreviewUpload(previewMeta(), { database_id: PREVIEW_DB }));
+  assert.throws(() => assertSafePreviewUpload(previewMeta(), { database_id: PRODUCTION }), /refusing: production database id present in the upload/);
+  assert.throws(() => assertSafePreviewUpload(previewMeta(), { D1_DATABASE_ID: PRODUCTION }), /refusing: production database id present in the upload/);
+  assert.throws(() => assertSafePreviewUpload({ bindings: [{ type: 'd1', name: 'DB', id: PRODUCTION }] }, { database_id: PREVIEW_DB }), /refusing: production database id present in the upload/);
+
+  const outdir = tmp('rc4-prev-bundle-');
+  const wrangler = spawnSync(join(process.cwd(), 'node_modules/.bin/wrangler'), ['deploy', '--dry-run', '--env', 'preview', '--outdir', outdir], { encoding: 'utf8' });
+  assert.equal(wrangler.status, 0, wrangler.stderr || wrangler.stdout);
+  const bundle = readFileSync(join(outdir, 'index.js'), 'utf8');
+  assert.match(bundle, new RegExp(PRODUCTION, 'i'), 'preview bundle still inlines the guard comparison constant');
+
+  const script = join(tmp('rc4-gen-upload-'), 'upload.js');
+  const r = run('docs/rc-4/preview/gen-upload.mjs', [script, outdir]);
+  assert.equal(r.status, 0, r.stderr || r.stdout);
+  assert.match(r.stdout, /^ok /);
+  assert.equal(existsSync(script), true);
+  const generated = readFileSync(script, 'utf8');
+  assert.match(generated, new RegExp(PREVIEW_DB));
+  assert.match(generated, /"type":"d1"/);
+  assert.doesNotMatch(generated, new RegExp(`"id":"${PRODUCTION}"`));
 });
 
 test('seed-dev-pt.mjs refuses --remote (even with --confirm-remote) and requires --local', () => {

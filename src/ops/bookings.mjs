@@ -15,11 +15,11 @@ export async function stripeConnection(db, ptId, mode, integration = 'connect') 
     const c = await db.get('SELECT * FROM pt_stripe_credentials WHERE pt_id=? AND mode=?', ptId, mode);
     return c?.api_cipher ? { account_id: c.account_id, routing: 'platform', credential_id: c.id, ready: Boolean(c.enabled && c.charges_ready && c.webhook_cipher) } : null;
   }
-  const saved = await db.get('SELECT account_id,routing,ready FROM stripe_connections WHERE pt_id=? AND mode=?', ptId, mode);
+  const saved = await db.get('SELECT account_id,routing,ready,charges_enabled,payouts_enabled,details_submitted,requirements,updated_at FROM stripe_connections WHERE pt_id=? AND mode=?', ptId, mode);
   if (saved) return saved;
   if (mode === 'stripe_test') {
     const old = await db.get('SELECT stripe_account,stripe_ready FROM pts WHERE id=?', ptId);
-    if (old?.stripe_account) return { account_id: old.stripe_account, routing: 'connected', ready: old.stripe_ready };
+    if (old?.stripe_account) return { account_id: old.stripe_account, routing: 'connected', ready: old.stripe_ready, charges_enabled: Boolean(old.stripe_ready), payouts_enabled: Boolean(old.stripe_ready), details_submitted: Boolean(old.stripe_ready), requirements: '{}' };
   }
   return null;
 }

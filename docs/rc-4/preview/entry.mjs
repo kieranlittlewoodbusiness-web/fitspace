@@ -4,8 +4,11 @@
 // wrapper gives the unchanged Worker an env.ASSETS with the same behaviour as wrangler.jsonc's
 // assets config: exact file, "/" -> index.html, otherwise index.html (single-page-application).
 // Production keeps the real assets binding via `wrangler deploy`.
-// RC-28: fonts and images are shipped as base64 text modules (~382 KB of module source) and
-// decoded here so /fonts/* and /images/* are served with the correct types.
+// RC-28: fonts and images are shipped as base64 text modules and decoded here so /fonts/*
+// and /images/* are served with the correct types. Launch-1 also inlines favicon, apple-touch
+// and sitemap.xml. The production Open Graph image is not inlined here (it stays in app/public).
+// Production robots.txt is not
+// inlined: this entry still intercepts /robots.txt with Disallow-all.
 import worker, { Writer } from './index.js';
 import indexHtml from './public/index.html.txt';
 import appJs from './public/app.js.txt';
@@ -17,6 +20,9 @@ import classStrengthWebp from './public/images/class-strength.webp.b64.txt';
 import classConditioningWebp from './public/images/class-conditioning.webp.b64.txt';
 import emptyClassesWebp from './public/images/empty-classes.webp.b64.txt';
 import emptyBookingsWebp from './public/images/empty-bookings.webp.b64.txt';
+import faviconIco from './public/favicon.ico.b64.txt';
+import appleTouchIcon from './public/apple-touch-icon.png.b64.txt';
+import sitemapXml from './public/sitemap.xml.txt';
 export { Writer };
 const bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const FILES = {
@@ -29,7 +35,10 @@ const FILES = {
   '/images/class-strength.webp': [bytes(classStrengthWebp), 'image/webp', 'public, max-age=86400'],
   '/images/class-conditioning.webp': [bytes(classConditioningWebp), 'image/webp', 'public, max-age=86400'],
   '/images/empty-classes.webp': [bytes(emptyClassesWebp), 'image/webp', 'public, max-age=86400'],
-  '/images/empty-bookings.webp': [bytes(emptyBookingsWebp), 'image/webp', 'public, max-age=86400']
+  '/images/empty-bookings.webp': [bytes(emptyBookingsWebp), 'image/webp', 'public, max-age=86400'],
+  '/favicon.ico': [bytes(faviconIco), 'image/x-icon', 'public, max-age=86400'],
+  '/apple-touch-icon.png': [bytes(appleTouchIcon), 'image/png', 'public, max-age=86400'],
+  '/sitemap.xml': [sitemapXml, 'application/xml; charset=utf-8', 'no-cache']
 };
 const ASSETS = {
   async fetch(request) {
@@ -59,8 +68,8 @@ export default {
     }
     const res = withRobots(await worker.fetch(request, { ...env, ASSETS }, ctx));
     // Worker securityHeaders set Cache-Control: no-store on every response. Restore
-    // the long-lived cache only for the preview-inlined font and image paths.
-    if (FILES[path]?.[2] && (path.startsWith('/fonts/') || path.startsWith('/images/'))) {
+    // the long-lived cache only for preview-inlined font and image (including icon) paths.
+    if (FILES[path]?.[2]?.startsWith('public')) {
       res.headers.set('Cache-Control', FILES[path][2]);
     }
     return res;
