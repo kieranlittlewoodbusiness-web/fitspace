@@ -12,6 +12,7 @@
 import worker, { Writer } from './index.js';
 import indexHtml from './public/index.html.txt';
 import appJs from './public/app.js.txt';
+import instalmentsApiJs from './public/instalments-api.js.txt';
 import stylesCss from './public/styles.css.txt';
 import soraWoff2 from './public/fonts/sora-latin-wght.woff2.b64.txt';
 import heroWebp from './public/images/hero.webp.b64.txt';
@@ -28,6 +29,7 @@ const bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const FILES = {
   '/index.html': [indexHtml, 'text/html; charset=utf-8', 'no-cache'],
   '/app.js': [appJs, 'application/javascript; charset=utf-8', 'no-cache'],
+  '/instalments-api.js': [instalmentsApiJs, 'application/javascript; charset=utf-8', 'no-cache'],
   '/styles.css': [stylesCss, 'text/css; charset=utf-8', 'no-cache'],
   '/fonts/sora-latin-wght.woff2': [bytes(soraWoff2), 'font/woff2', 'public, max-age=31536000, immutable'],
   '/images/hero.webp': [bytes(heroWebp), 'image/webp', 'public, max-age=86400'],
