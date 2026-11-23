@@ -100,6 +100,25 @@ export function planStatusLabel(status) {
   return status ? String(status) : '';
 }
 
+export const LATE_PAYMENT_HINT = 'A late payment came in after this place was released. Refund the first payment or add a place for this client.';
+
+export function attentionReasonLabel(reason) {
+  if (reason === 'late_payment') return 'Late payment, plan stopped';
+  return reason ? String(reason) : '';
+}
+
+export function needsAttentionCopy(attention) {
+  const count = Number(attention && attention.count) || 0;
+  if (count <= 0) return '';
+  const message = attention && attention.message;
+  if (message != null && String(message).trim() !== '') return String(message);
+  return count === 1 ? '1 plan needs your attention' : count + ' plans need your attention';
+}
+
+export function sortPlansForDisplay(plans) {
+  return [...(plans || [])].sort((a, b) => Number(!!b.needs_attention) - Number(!!a.needs_attention));
+}
+
 /** Server rule, used only by the mock: leftover pence go on payment 1. The UI displays the quote as returned. */
 export function splitInstalments(totalPence, count) {
   const total = Number(totalPence);
@@ -313,12 +332,43 @@ const SPEC_EXAMPLE = {
     paid_pence: 2500,
     remaining_pence: 7500,
     created_at: '2026-11-23T22:00:00Z',
+    needs_attention: false,
+    attention_reason: null,
     can_stop: true,
     payments: [
       { seq: 1, amount_pence: 1250, due_at: '2026-11-23T22:00:00Z', status: 'paid', paid_at: '2026-11-23T22:01:10Z' },
       { seq: 2, amount_pence: 1250, due_at: '2026-11-30T22:00:00Z', status: 'paid', paid_at: '2026-11-30T22:03:00Z' },
       { seq: 3, amount_pence: 1250, due_at: '2026-12-07T22:00:00Z', status: 'failed', attempts: 2, next_retry_at: '2026-12-10T22:00:00Z', failure: 'Card declined' },
       { seq: 4, amount_pence: 1250, due_at: '2026-12-14T22:00:00Z', status: 'upcoming' }
+    ]
+  },
+  attention: {
+    count: 1,
+    message: '1 plan took a first payment after the booking hold had expired, so there is no place. We stopped further payments. Refund the first payment or add a place.'
+  },
+  flaggedPlan: {
+    booking_id: 'bk_late',
+    block_id: 'blk_example',
+    block_title: '8-week strength block',
+    customer: { name: 'Riley Chen', email: 'riley@example.com' },
+    booking_status: 'review',
+    needs_attention: true,
+    attention_reason: 'late_payment',
+    plan: 'weekly',
+    status: 'stopped',
+    count: 8,
+    list_total_pence: 10000,
+    discount_pence: 0,
+    total_pence: 10000,
+    paid_pence: 1250,
+    remaining_pence: 0,
+    created_at: '2026-11-23T21:30:00Z',
+    can_stop: false,
+    payments: [
+      { seq: 1, amount_pence: 1250, due_at: '2026-11-23T21:30:00Z', status: 'paid', paid_at: '2026-11-23T22:20:00Z' },
+      { seq: 2, amount_pence: 1250, due_at: '2026-11-30T21:30:00Z', status: 'void' },
+      { seq: 3, amount_pence: 1250, due_at: '2026-12-07T21:30:00Z', status: 'void' },
+      { seq: 4, amount_pence: 1250, due_at: '2026-12-14T21:30:00Z', status: 'void' }
     ]
   }
 };
@@ -331,6 +381,7 @@ function createMockApi({ now = () => new Date(), paymentMode = 'stripe_test' } =
   const paidIds = new Set();
   blocks.set(SPEC_EXAMPLE.block.id, { ...SPEC_EXAMPLE.block, payment_options: structuredClone(SPEC_EXAMPLE.options) });
   plans.set(SPEC_EXAMPLE.plan.booking_id, structuredClone(SPEC_EXAMPLE.plan));
+  plans.set(SPEC_EXAMPLE.flaggedPlan.booking_id, structuredClone(SPEC_EXAMPLE.flaggedPlan));
   let ids = 1;
 
   function savedBlock(id, options) {
@@ -409,9 +460,12 @@ function createMockApi({ now = () => new Date(), paymentMode = 'stripe_test' } =
     async listInstalmentPlans({ status = 'all' } = {}) {
       let list = [...plans.values()];
       if (status && status !== 'all') list = list.filter(p => p.status === status);
-      const pastDue = [...plans.values()].filter(p => p.status === 'past_due').length;
+      const all = [...plans.values()];
+      const pastDue = all.filter(p => p.status === 'past_due').length;
+      const flagged = all.filter(p => p.needs_attention).length;
       return {
         past_due_reminder: pastDue ? { ...SPEC_EXAMPLE.reminder, show: true, count: pastDue } : { show: false, count: 0, message: '' },
+        needs_attention: flagged ? { ...SPEC_EXAMPLE.attention, count: flagged } : { count: 0, message: null },
         plans: list
       };
     },
@@ -433,7 +487,7 @@ function createMockApi({ now = () => new Date(), paymentMode = 'stripe_test' } =
     },
     async dashboardCounts() {
       const list = [...plans.values()];
-      return { instalments: { past_due_count: list.filter(p => p.status === 'past_due').length, active_count: list.filter(p => p.status === 'active').length } };
+      return { instalments: { past_due_count: list.filter(p => p.status === 'past_due').length, active_count: list.filter(p => p.status === 'active').length, needs_attention_count: list.filter(p => p.needs_attention).length } };
     }
   };
 }
@@ -488,7 +542,7 @@ if (typeof window !== 'undefined') {
   window.Instalments = {
     PLAN_IDS, PLAN_LABELS, ERROR_COPY, WEEKLY_COUNT, MONTHLY_COUNT, MIN_INSTALMENT_PENCE, MIN_UPFRONT_PENCE, MAX_PRICE_PENCE,
     friendlyError, followCheckoutUrl, instalmentsModeFromLocation, instalmentsMockHostAllowed, formatDueAt, poundsToPence,
-    paymentStatusLabel, planStatusLabel, splitInstalments, addInterval, planTotals,
+    paymentStatusLabel, planStatusLabel, LATE_PAYMENT_HINT, attentionReasonLabel, needsAttentionCopy, sortPlansForDisplay, splitInstalments, addInterval, planTotals,
     emptyPaymentOptions, optionsFromBlock, parsePaymentOptionsFromForm, compactPaymentOptions, validatePaymentOptions,
     enabledQuotesFromBlock, createInstalmentsApi
   };
