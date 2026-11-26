@@ -8,7 +8,8 @@ import {
   parsePaymentOptionsFromForm, compactPaymentOptions, validatePaymentOptions, enabledQuotesFromBlock,
   optionsFromBlock, createInstalmentsApi, instalmentsModeFromLocation, instalmentsMockHostAllowed, planTotals,
   followCheckoutUrl, MIN_UPFRONT_PENCE, MAX_PRICE_PENCE,
-  attentionReasonLabel, needsAttentionCopy, sortPlansForDisplay, LATE_PAYMENT_HINT
+  attentionReasonLabel, needsAttentionCopy, sortPlansForDisplay, LATE_PAYMENT_HINT,
+  paymentDotLabel, formatPence, paymentStatusLabel
 } from '../app/public/instalments-api.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -197,7 +198,12 @@ test('mock save, quote, booking, list, counts and stop follow the contract shape
   assert.equal(listed.plans[0].payments[2].status, 'failed');
 
   const counts = await api.dashboardCounts();
-  assert.deepEqual(counts.instalments, { past_due_count: 1, active_count: 0, needs_attention_count: 1 });
+  assert.deepEqual(counts.instalments, { past_due_count: 1, active_count: 1, needs_attention_count: 1 });
+  const year = listed.plans.find(p => p.booking_id === 'bk_year');
+  assert.equal(year.payments.length, 52);
+  assert.equal(year.status, 'active');
+  assert.equal(year.payments.filter(p => p.status === 'paid').length, 8);
+  assert.equal(year.payments.filter(p => p.status === 'upcoming').length, 44);
   assert.equal(listed.needs_attention.count, 1);
   assert.equal(listed.needs_attention.message.includes('no place'), true);
   const flagged = listed.plans.find(p => p.needs_attention);
@@ -266,7 +272,7 @@ test('live save omits price_pence when upfront is not enabled', async () => {
     upfront: { enabled: false, price_pence: 0 },
     weekly: { enabled: true, amount_pence: 1250, count: 8 },
     monthly: { enabled: false, amount_pence: 0, count: 2 }
-  }, { lastSessionAt: '2027-01-12T19:00:00Z', body: { title: '8-week strength block' } });
+  }, { lastSessionAt: '2027-06-01T19:00:00Z', body: { title: '8-week strength block' } });
   assert.equal('price_pence' in calls[0], false);
   assert.equal(calls[0].payment_options.weekly.enabled, true);
 });
@@ -429,4 +435,40 @@ test('needs_attention copy, late-payment label and flagged plans sort first', ()
   assert.ok(css.includes('.pill.attention{'));
   assert.ok(css.includes('.plan-choice{display:flex;gap:10px;align-items:center;margin:0 0 10px;font-weight:400;min-height:44px;cursor:pointer}'));
   assert.ok(css.includes('.plan-choice input{margin-top:0;flex-shrink:0;width:17px;height:17px}'));
+});
+
+test('payment timeline labels, 44px marks and compact instalment row hooks', () => {
+  const failed = paymentDotLabel({
+    seq: 3, amount_pence: 1250, due_at: '2026-12-07T22:00:00Z', status: 'failed',
+    next_retry_at: '2026-12-10T22:00:00Z', failure: 'Card declined'
+  });
+  assert.equal(failed.includes('Payment 3'), true);
+  assert.equal(failed.includes('Failed'), true);
+  assert.equal(failed.includes(formatPence(1250)), true);
+  assert.equal(failed.includes(formatDueAt('2026-12-07T22:00:00Z')), true);
+  assert.equal(failed.includes('Next retry ' + formatDueAt('2026-12-10T22:00:00Z')), true);
+  assert.equal(failed.includes('Card declined'), true);
+  assert.equal(paymentStatusLabel('void'), 'Cancelled');
+  assert.equal(paymentDotLabel({ seq: 2, amount_pence: 1250, due_at: '2026-11-30T21:30:00Z', status: 'void' }).includes('Cancelled'), true);
+  const appJs = readFileSync(join(root, 'app/public/app.js'), 'utf8');
+  assert.ok(appJs.includes('class="pay-dot pay-dot--${kind}"'));
+  assert.ok(appJs.includes('data-action="instalment-payment"'));
+  assert.ok(appJs.includes('aria-label="${esc(label)}"'));
+  assert.ok(appJs.includes('title="${esc(label)}"'));
+  assert.ok(appJs.includes('class="pay-detail"'));
+  assert.ok(appJs.includes("action==='instalment-payment'"));
+  assert.ok(appJs.includes("plan.can_stop&&me.role==='pt'&&!plan.needs_attention"));
+  assert.ok(appJs.includes('class="btn outline small instalment-stop"'));
+  assert.ok(appJs.includes('Late payment, plan stopped'));
+  assert.ok(appJs.includes(LATE_PAYMENT_HINT));
+  const css = readFileSync(join(root, 'app/public/styles.css'), 'utf8');
+  assert.ok(css.includes('.pay-dot{width:44px;height:44px'));
+  assert.ok(css.includes('.instalment-stop{min-height:44px;min-width:44px}'));
+  assert.ok(css.includes('.payment-timeline{display:flex;flex-wrap:wrap'));
+  assert.ok(css.includes('--pay-ok:color-mix(in srgb,#16a34a 55%,var(--fg))'));
+  assert.ok(css.includes('--pay-bad:color-mix(in srgb,#dc2626 55%,var(--fg))'));
+  assert.ok(css.includes('.pay-dot--paid{color:var(--pay-ok)}'));
+  assert.ok(css.includes('.pay-dot--failed{color:var(--pay-bad)}'));
+  assert.ok(css.includes('.pay-dot--upcoming,.pay-dot--void{color:var(--pay-muted)}'));
+  assert.ok(css.includes('.instalment-list,.instalment-card{min-width:0;max-width:100%}'));
 });
