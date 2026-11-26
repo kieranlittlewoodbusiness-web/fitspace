@@ -154,20 +154,43 @@ input[type=time]::-webkit-date-and-time-value{text-align:left}
 .plan-choice input{margin-top:0;flex-shrink:0;width:17px;height:17px}
 .payment-quote,.payment-dates ol{margin:0;padding:0;list-style:none}
 .payment-dates ol{display:flex;flex-direction:column;gap:6px}
-.payment-dates li{display:flex;align-items:baseline;justify-content:flex-end;gap:6px;flex-wrap:nowrap;min-width:0;margin:0}.payment-dates .payment-due{min-width:0;flex:1 1 auto}.payment-dates .money{white-space:nowrap;flex-shrink:0}.payment-timeline li{margin:0}
+.payment-dates li{display:flex;align-items:baseline;justify-content:flex-end;gap:6px;flex-wrap:nowrap;min-width:0;margin:0}.payment-dates .payment-due{min-width:0;flex:1 1 auto}.payment-dates .money{white-space:nowrap;flex-shrink:0}
 .discount-field{margin:14px 0 8px}
-.instalment-list{display:flex;flex-direction:column;gap:16px}
-.instalment-card h2{font-size:22px;margin-bottom:8px}.pill-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:flex-end}.pill.attention{background:color-mix(in srgb,var(--fg) 12%,var(--bg));color:var(--fg);border:1px solid color-mix(in srgb,var(--fg) 28%,var(--bg))}.attention-reason{margin:8px 0 4px;font-weight:600;color:var(--fg)}.attention-hint{margin:0 0 12px;color:var(--muted)}.nav-count{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;margin-left:auto;border-radius:99px;background:var(--fg);color:var(--bg);font-size:11px;font-weight:700;line-height:1}.side-link{gap:10px}.instalment-card .panel-head{flex-wrap:wrap;gap:8px}
-.payment-timeline{margin:12px 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
-.payment-timeline li{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card,#fff);min-width:0}
-.payment-timeline small{color:var(--muted)}
+.instalment-list,.instalment-card{min-width:0;max-width:100%}
+.instalment-list{display:flex;flex-direction:column;gap:10px}
+.instalment-card{--pay-ok:color-mix(in srgb,#16a34a 55%,var(--fg));--pay-bad:color-mix(in srgb,#dc2626 55%,var(--fg));--pay-muted:color-mix(in srgb,var(--fg) 75%,var(--bg));--pay-shade:color-mix(in srgb,var(--fg) 16%,var(--bg))}
+.instalment-card h2{font-size:16px;margin:0 0 2px;letter-spacing:-.03em;line-height:1.25}
+.instalment-row{display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px 12px;min-width:0}
+.instalment-who{flex:1 1 160px;min-width:0}
+.instalment-who p{margin:0;font-size:13px;color:var(--muted)}
+.instalment-who .money{color:var(--fg)}
+.instalment-row-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-left:auto}
+.instalment-stop{min-height:44px;min-width:44px}
+.pill-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:flex-end}
+.pill.attention{background:color-mix(in srgb,var(--fg) 12%,var(--bg));color:var(--fg);border:1px solid color-mix(in srgb,var(--fg) 28%,var(--bg))}
+.attention-reason{margin:6px 0 0;font-weight:600;color:var(--fg)}
+.attention-hint{margin:2px 0 0;color:var(--muted)}
+.nav-count{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;margin-left:auto;border-radius:99px;background:var(--fg);color:var(--bg);font-size:11px;font-weight:700;line-height:1}
+.side-link{gap:10px}
+.payment-legend{margin:0 0 10px}
+.payment-timeline{display:flex;flex-wrap:wrap;gap:0;margin:4px 0 0;padding:0;list-style:none;min-width:0;max-width:100%}
+.payment-timeline li{display:block;margin:0;padding:0;min-width:0}
+.pay-dot{width:44px;height:44px;padding:0;margin:0;border:0;background:transparent;display:inline-grid;place-items:center;flex-shrink:0;border-radius:50%;cursor:pointer}
+.pay-dot .pay-mark{width:22px;height:22px;border-radius:50%;box-sizing:border-box;border:2px solid currentColor;display:grid;place-items:center;position:relative}
+.pay-dot svg{width:14px;height:14px}
+.pay-dot--paid{color:var(--pay-ok)}
+.pay-dot--paid .pay-mark{background:color-mix(in srgb,var(--pay-ok) 16%,var(--bg))}
+.pay-dot--failed{color:var(--pay-bad)}
+.pay-dot--failed .pay-mark{background:color-mix(in srgb,var(--pay-bad) 16%,var(--bg))}
+.pay-dot--upcoming,.pay-dot--void{color:var(--pay-muted)}
+.pay-dot--upcoming .pay-mark,.pay-dot--void .pay-mark{background:var(--pay-shade)}
+.pay-detail{margin:4px 0 0;font-size:13px;color:var(--fg)}
 .price-plans{display:flex;flex-direction:column;gap:8px}
 .price-plans small{display:block;font-weight:400;color:var(--muted)}
 .modal-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
 .modal-actions .btn{flex:1 1 140px}
 @media(max-width:768px){
   .payment-options .plan-fields{grid-template-columns:minmax(0,1fr);margin-left:0}
-  .instalment-card .panel-head{flex-direction:column;align-items:flex-start;gap:8px}
 }
 @media(max-width:390px){
   .price-plans,.payment-quote{font-size:14px}

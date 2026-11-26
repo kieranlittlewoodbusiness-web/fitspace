@@ -92,6 +92,27 @@ export function paymentStatusLabel(status) {
   return status ? String(status) : '';
 }
 
+
+export function formatPence(pence) {
+  const n = Number(pence);
+  if (!Number.isFinite(n)) return '';
+  return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP', maximumFractionDigits: n % 100 ? 2 : 0 }).format(n / 100).replace(/ |\u202f/g, '\u00a0');
+}
+
+export function paymentDotLabel(pay) {
+  if (!pay) return '';
+  const parts = [];
+  if (pay.seq != null) parts.push('Payment ' + pay.seq);
+  const status = paymentStatusLabel(pay.status);
+  if (status) parts.push(status);
+  if (pay.amount_pence != null) parts.push(formatPence(pay.amount_pence));
+  const due = formatDueAt(pay.due_at);
+  if (due) parts.push(due);
+  if (pay.next_retry_at) parts.push('Next retry ' + formatDueAt(pay.next_retry_at));
+  if (pay.failure) parts.push(String(pay.failure));
+  return parts.join(' · ');
+}
+
 export function planStatusLabel(status) {
   if (status === 'active') return 'Active';
   if (status === 'past_due') return 'Past due';
@@ -299,6 +320,40 @@ function apiError(code, { status = 400, fields, url, booking_id } = {}) {
   return err;
 }
 
+
+function longWeeklyPlan() {
+  const count = 52;
+  const amount = 1250;
+  const start = new Date('2026-11-23T22:00:00Z');
+  const payments = Array.from({ length: count }, (_, i) => {
+    const due = new Date(start);
+    due.setUTCDate(due.getUTCDate() + 7 * i);
+    const due_at = due.toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const seq = i + 1;
+    if (i < 8) return { seq, amount_pence: amount, due_at, status: 'paid', paid_at: due_at };
+    return { seq, amount_pence: amount, due_at, status: 'upcoming' };
+  });
+  return {
+    booking_id: 'bk_year',
+    block_id: 'blk_year',
+    block_title: '52-week strength block',
+    customer: { name: 'Alex Morgan', email: 'alex@example.com' },
+    plan: 'weekly',
+    status: 'active',
+    count,
+    list_total_pence: amount * count,
+    discount_pence: 0,
+    total_pence: amount * count,
+    paid_pence: amount * 8,
+    remaining_pence: amount * 44,
+    created_at: '2026-11-23T22:00:00Z',
+    needs_attention: false,
+    attention_reason: null,
+    can_stop: true,
+    payments
+  };
+}
+
 const SPEC_EXAMPLE = {
   options: {
     upfront: { enabled: true, price_pence: 10000 },
@@ -370,7 +425,8 @@ const SPEC_EXAMPLE = {
       { seq: 3, amount_pence: 1250, due_at: '2026-12-07T21:30:00Z', status: 'void' },
       { seq: 4, amount_pence: 1250, due_at: '2026-12-14T21:30:00Z', status: 'void' }
     ]
-  }
+  },
+  longPlan: longWeeklyPlan()
 };
 
 function createMockApi({ now = () => new Date(), paymentMode = 'stripe_test' } = {}) {
@@ -382,6 +438,7 @@ function createMockApi({ now = () => new Date(), paymentMode = 'stripe_test' } =
   blocks.set(SPEC_EXAMPLE.block.id, { ...SPEC_EXAMPLE.block, payment_options: structuredClone(SPEC_EXAMPLE.options) });
   plans.set(SPEC_EXAMPLE.plan.booking_id, structuredClone(SPEC_EXAMPLE.plan));
   plans.set(SPEC_EXAMPLE.flaggedPlan.booking_id, structuredClone(SPEC_EXAMPLE.flaggedPlan));
+  plans.set(SPEC_EXAMPLE.longPlan.booking_id, structuredClone(SPEC_EXAMPLE.longPlan));
   let ids = 1;
 
   function savedBlock(id, options) {
@@ -541,8 +598,8 @@ if (typeof window !== 'undefined') {
   window.createInstalmentsApi = createInstalmentsApi;
   window.Instalments = {
     PLAN_IDS, PLAN_LABELS, ERROR_COPY, WEEKLY_COUNT, MONTHLY_COUNT, MIN_INSTALMENT_PENCE, MIN_UPFRONT_PENCE, MAX_PRICE_PENCE,
-    friendlyError, followCheckoutUrl, instalmentsModeFromLocation, instalmentsMockHostAllowed, formatDueAt, poundsToPence,
-    paymentStatusLabel, planStatusLabel, LATE_PAYMENT_HINT, attentionReasonLabel, needsAttentionCopy, sortPlansForDisplay, splitInstalments, addInterval, planTotals,
+    friendlyError, followCheckoutUrl, instalmentsModeFromLocation, instalmentsMockHostAllowed, formatDueAt, formatPence, poundsToPence,
+    paymentStatusLabel, paymentDotLabel, planStatusLabel, LATE_PAYMENT_HINT, attentionReasonLabel, needsAttentionCopy, sortPlansForDisplay, splitInstalments, addInterval, planTotals,
     emptyPaymentOptions, optionsFromBlock, parsePaymentOptionsFromForm, compactPaymentOptions, validatePaymentOptions,
     enabledQuotesFromBlock, createInstalmentsApi
   };
